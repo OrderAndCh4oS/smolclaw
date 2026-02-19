@@ -1,0 +1,30 @@
+
+# 2026-02-18 21:59:35.075452
++Research the current state of usage-based pricing in SaaS. Find authoritative sources and store what you find in memory.
+
+# 2026-02-18 22:28:52.837032
++/quit
+
+# 2026-02-18 22:29:12.501622
++ Write the article from the usage-based pricing outline in vault/articles/content-outlines/
+
+# 2026-02-18 22:38:08.851396
++we need to write an article on mcp and skills how they're different and how they support each other difference between claude code and codex skill requirements and patterns
+
+# 2026-02-19 00:17:26.011779
++ok
+
+# 2026-02-19 00:24:37.618798
++we need to write an article on mcp and skills how they're different and how they support each other difference between claude code and codex skill requirements and patterns
+
+# 2026-02-19 00:38:23.844559
++continue
+
+# 2026-02-19 00:39:23.537222
++we need ideas for another article
+
+# 2026-02-19 00:40:55.761775
++did we save the article?
+
+# 2026-02-19 00:41:25.368196
++in vault?

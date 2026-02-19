@@ -1,0 +1,3 @@
+{"key": "writer-sub-7", "last_consolidated": 0}
+{"role": "user", "content": "Write a comprehensive article, based on the given outline, clearly explaining the differences between Modular Capability Providers (MCPs) and skills, how they work together in AI agents, and how the skills requirements and patterns differ between Claude Code and Codex. Use practical examples and actionable insights. Target a technical audience familiar with AI workflows."}
+{"role": "assistant", "content": "I need an article outline before I can write. Please run the planner agent first to create one:\n`.venv/bin/python -m cli.main chat --agent planner`"}

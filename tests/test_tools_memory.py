@@ -1,0 +1,198 @@
+import os
+from datetime import datetime
+from unittest.mock import MagicMock, AsyncMock
+
+import pytest
+
+from app.obsidian import parse_frontmatter, parse_tags
+from app.tools.memory_tools import (
+    MEMORY_TYPES,
+    MemorySearchTool,
+    MemoryGraphQueryTool,
+    MemoryStoreTool,
+    format_memory_content,
+)
+
+
+class TestMemorySearchTool:
+    @pytest.mark.asyncio
+    async def test_memory_search_calls_mix_query(self, mock_smol_rag):
+        tool = MemorySearchTool(mock_smol_rag)
+        await tool.execute(query="test query")
+        mock_smol_rag.mix_query.assert_called_once_with("test query")
+
+    @pytest.mark.asyncio
+    async def test_memory_search_returns_result(self, mock_smol_rag):
+        mock_smol_rag.mix_query = AsyncMock(return_value="found X")
+        tool = MemorySearchTool(mock_smol_rag)
+        result = await tool.execute(query="test")
+        assert result == "found X"
+
+
+class TestMemoryGraphQueryTool:
+    @pytest.mark.asyncio
+    async def test_memory_graph_query_returns_subgraph(self, mock_smol_rag):
+        mock_smol_rag.graph.get_node.return_value = {"category": "language", "description": "A programming language"}
+        mock_smol_rag.graph.get_node_edges.return_value = [("Python", "FastAPI")]
+        mock_smol_rag.graph.get_edge.return_value = {"description": "used by"}
+        tool = MemoryGraphQueryTool(mock_smol_rag)
+        result = await tool.execute(entity="Python")
+        assert "Python" in result
+        assert "language" in result
+        assert "FastAPI" in result
+
+    @pytest.mark.asyncio
+    async def test_memory_graph_query_unknown_entity(self, mock_smol_rag):
+        mock_smol_rag.graph.get_node.return_value = None
+        tool = MemoryGraphQueryTool(mock_smol_rag)
+        result = await tool.execute(entity="Unknown")
+        assert "No entity found" in result
+
+
+class TestMemoryStoreTool:
+    @pytest.mark.asyncio
+    async def test_memory_store_calls_ingest(self, mock_smol_rag, temp_dir):
+        tool = MemoryStoreTool(mock_smol_rag, temp_dir)
+        await tool.execute(content="some knowledge")
+        mock_smol_rag.ingest_text.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_memory_store_writes_file(self, mock_smol_rag, temp_dir):
+        tool = MemoryStoreTool(mock_smol_rag, temp_dir)
+        await tool.execute(content="some knowledge", source_id="test-id")
+        file_path = os.path.join(temp_dir, "test-id.md")
+        assert os.path.exists(file_path)
+        with open(file_path) as f:
+            assert f.read() == "some knowledge"
+
+
+class TestFormatMemoryContent:
+    def test_format_plain(self):
+        result = format_memory_content("some content")
+        assert result == "some content"
+
+    def test_format_with_type(self):
+        result = format_memory_content("body", memory_type="reference")
+        assert "memory_type: reference" in result
+        assert "#reference" in result
+
+    def test_format_with_tags(self):
+        result = format_memory_content("body", tags=["pricing", "saas"])
+        fm = parse_frontmatter(result)
+        assert fm["tags"] == ["pricing", "saas"]
+        assert "#pricing" in result
+        assert "#saas" in result
+
+    def test_format_with_type_and_tags(self):
+        result = format_memory_content("body", memory_type="fact", tags=["pricing", "stripe"])
+        fm = parse_frontmatter(result)
+        assert fm["memory_type"] == "fact"
+        assert fm["tags"] == ["pricing", "stripe"]
+        assert "#fact" in result
+        assert "#pricing" in result
+        assert "#stripe" in result
+
+    def test_format_without_taxonomy_ignores_source_id(self):
+        result = format_memory_content("body", source_id="src-1")
+        assert result == "body"
+
+    def test_format_created_at_is_iso(self):
+        result = format_memory_content("body", memory_type="fact")
+        fm = parse_frontmatter(result)
+        ts = fm["created_at"]
+        parsed = datetime.fromisoformat(ts)
+        assert parsed.tzinfo is not None
+
+    def test_format_roundtrips_through_parse_frontmatter(self):
+        result = format_memory_content("body", memory_type="decision", tags=["billing"])
+        fm = parse_frontmatter(result)
+        assert fm["memory_type"] == "decision"
+        assert fm["tags"] == ["billing"]
+        assert "created_at" in fm
+
+    def test_format_tags_found_by_parse_tags(self):
+        result = format_memory_content("body", memory_type="reference", tags=["pricing", "saas"])
+        found = parse_tags(result)
+        assert "reference" in found
+        assert "pricing" in found
+        assert "saas" in found
+
+
+class TestMemoryStoreToolSchema:
+    def test_schema_has_memory_type_enum(self, mock_smol_rag, temp_dir):
+        tool = MemoryStoreTool(mock_smol_rag, temp_dir)
+        props = tool.parameters["properties"]
+        assert props["memory_type"]["enum"] == MEMORY_TYPES
+
+    def test_schema_has_tags_array(self, mock_smol_rag, temp_dir):
+        tool = MemoryStoreTool(mock_smol_rag, temp_dir)
+        props = tool.parameters["properties"]
+        assert props["tags"]["type"] == "array"
+        assert props["tags"]["items"]["type"] == "string"
+
+    def test_schema_required_unchanged(self, mock_smol_rag, temp_dir):
+        tool = MemoryStoreTool(mock_smol_rag, temp_dir)
+        assert tool.parameters["required"] == ["content"]
+
+
+class TestMemoryStoreToolExecuteTaxonomy:
+    @pytest.mark.asyncio
+    async def test_store_without_taxonomy_unchanged(self, mock_smol_rag, temp_dir):
+        tool = MemoryStoreTool(mock_smol_rag, temp_dir)
+        await tool.execute(content="raw content", source_id="plain-id")
+        file_path = os.path.join(temp_dir, "plain-id.md")
+        with open(file_path) as f:
+            assert f.read() == "raw content"
+        mock_smol_rag.ingest_text.assert_called_once_with("raw content", source_id="plain-id")
+
+    @pytest.mark.asyncio
+    async def test_store_with_type_writes_frontmatter(self, mock_smol_rag, temp_dir):
+        tool = MemoryStoreTool(mock_smol_rag, temp_dir)
+        await tool.execute(content="some fact", source_id="typed-id", memory_type="fact")
+        file_path = os.path.join(temp_dir, "typed-id.md")
+        with open(file_path) as f:
+            on_disk = f.read()
+        assert "memory_type: fact" in on_disk
+        assert "---" in on_disk
+
+    @pytest.mark.asyncio
+    async def test_store_with_type_passes_formatted_to_ingest(self, mock_smol_rag, temp_dir):
+        tool = MemoryStoreTool(mock_smol_rag, temp_dir)
+        await tool.execute(content="some fact", memory_type="reference", tags=["pricing"])
+        call_args = mock_smol_rag.ingest_text.call_args
+        ingested = call_args[0][0]
+        assert "#reference" in ingested
+        assert "#pricing" in ingested
+
+    @pytest.mark.asyncio
+    async def test_store_with_tags_only(self, mock_smol_rag, temp_dir):
+        tool = MemoryStoreTool(mock_smol_rag, temp_dir)
+        await tool.execute(content="tagged content", source_id="tags-id", tags=["saas", "billing"])
+        file_path = os.path.join(temp_dir, "tags-id.md")
+        with open(file_path) as f:
+            on_disk = f.read()
+        assert "#saas" in on_disk
+        assert "#billing" in on_disk
+        fm = parse_frontmatter(on_disk)
+        assert fm["tags"] == ["saas", "billing"]
+
+    @pytest.mark.asyncio
+    async def test_store_return_value_unchanged(self, mock_smol_rag, temp_dir):
+        tool = MemoryStoreTool(mock_smol_rag, temp_dir)
+        result = await tool.execute(content="x", source_id="ret-id", memory_type="fact")
+        assert result == "Stored memory: ret-id"
+
+
+class TestToolSchemas:
+    def test_tool_schemas_valid(self, mock_smol_rag, temp_dir):
+        tools = [
+            MemorySearchTool(mock_smol_rag),
+            MemoryGraphQueryTool(mock_smol_rag),
+            MemoryStoreTool(mock_smol_rag, temp_dir),
+        ]
+        for tool in tools:
+            schema = tool.to_schema()
+            assert schema["type"] == "function"
+            assert "name" in schema["function"]
+            assert "description" in schema["function"]
+            assert "parameters" in schema["function"]
