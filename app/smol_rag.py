@@ -602,7 +602,12 @@ class SmolRag:
         system_prompt = get_kg_query_system_prompt(context)
         return await self.rate_limited_get_completion(text, context=system_prompt.strip(), use_cache=True)
 
-    async def mix_query(self, text):
+    @staticmethod
+    def _filter_excerpts_by_type(excerpts: list[dict], memory_type: str) -> list[dict]:
+        tag = f"#{memory_type}"
+        return [e for e in excerpts if tag in e.get("excerpt", "")]
+
+    async def mix_query(self, text, memory_type: str | None = None):
         prompt = get_high_low_level_keywords_prompt(text)
         result = await self.rate_limited_get_completion(prompt)
         keyword_data = extract_json_from_text(result) or {}
@@ -615,6 +620,11 @@ class SmolRag:
         kg_relations = ll_relations + hl_dataset
         kg_excerpts = ll_entity_excerpts + hl_entity_excerpts
         query_excerpts = await self._get_query_excerpts(text)
+
+        if memory_type:
+            kg_excerpts = self._filter_excerpts_by_type(kg_excerpts, memory_type)
+            query_excerpts = self._filter_excerpts_by_type(query_excerpts, memory_type)
+
         kg_context = self._get_kg_query_context(kg_entities, kg_excerpts, kg_relations)
         excerpt_context = self._get_excerpt_context(query_excerpts)
         system_prompt = get_mix_system_prompt(excerpt_context, kg_context)

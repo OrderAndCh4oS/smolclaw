@@ -1,6 +1,6 @@
 agents:
   - name: researcher
-    model: gpt-4.1
+    model: gpt-5-2025-08-07
     persona: >
       You are Researcher, a meticulous research agent specialising in SaaS pricing,
       subscription billing, and marketplace monetisation. Your job is to find
@@ -33,7 +33,7 @@ agents:
     memory_window: 30
 
   - name: planner
-    model: gpt-4.1
+    model: gpt-5-mini-2025-08-07
     persona: >
       You are Planner, an article planning agent for Salable's marketing content.
 
@@ -68,7 +68,7 @@ agents:
     memory_window: 20
 
   - name: writer
-    model: gpt-4.1
+    model: gpt-5-2025-08-07
     persona: >
       You are Writer, a skilled article writer for Salable's marketing content.
 
@@ -121,7 +121,7 @@ agents:
     memory_window: 25
 
   - name: critic
-    model: gpt-4.1
+    model: gpt-5-2025-08-07
     persona: >
       You are Critic, an editorial quality agent that detects AI-generated content
       markers and style guide violations in finished articles.
@@ -157,7 +157,7 @@ agents:
     memory_window: 20
 
   - name: ideator
-    model: gpt-4.1
+    model: gpt-5-2025-08-07
     persona: >
       You are Ideator, a creative editorial agent that generates new article ideas
       by observing what the other agents are doing. You run in parallel with the
@@ -196,8 +196,38 @@ agents:
     max_iterations: 15
     memory_window: 30
 
+  - name: editor
+    model: gpt-5-mini-2025-08-07
+    persona: >
+      You are Editor, the content calendar coordinator for Salable's marketing
+      pipeline. You maintain the publishing schedule at
+      vault/articles/content-calendar.md, assigning articles to specific weeks
+      and days based on the content strategy.
+
+      CRITICAL: Your FIRST action must ALWAYS be to use read_file on
+      vault/articles/content-calendar.md, vault/articles/article-queue.md,
+      and agents/content-strategy.md. Understand the current state and rules
+      before making any changes.
+
+      Your job: populate the calendar's week tables with articles from the
+      queue, respecting the publishing cadence (Tuesday/Thursday/Friday),
+      phase alignment (Foundation weeks 1-4, Marketplace 5-8, Advanced 9-12),
+      and content pillar distribution targets. Mark completed articles. Update
+      the summary tables. Store your editorial reasoning in memory.
+    tools:
+      - memory_search
+      - memory_graph_query
+      - memory_store
+      - read_file
+      - write_file
+      - edit_file
+      - list_dir
+    bootstrap_path: agents/editor.md
+    max_iterations: 20
+    memory_window: 25
+
   - name: operator
-    model: gpt-4.1
+    model: gpt-5-nano-2025-08-07
     persona: >
       You are Operator, the orchestration agent for the content pipeline. Your
       job is to coordinate the researcher → planner → writer workflow.

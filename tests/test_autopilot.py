@@ -95,7 +95,7 @@ class TestParseContentCalendar:
             assert "---" not in b.title
 
     def test_parses_real_calendar(self):
-        """Parse the actual content calendar to verify against real data."""
+        """Parse the actual content calendar (currently empty — editor populates it)."""
         calendar_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
             "vault", "articles", "content-calendar.md",
@@ -103,7 +103,8 @@ class TestParseContentCalendar:
         if not os.path.exists(calendar_path):
             pytest.skip("Content calendar not found")
         briefs = parse_content_calendar(calendar_path)
-        assert len(briefs) == 34
+        # Calendar starts empty; the editor agent populates it at runtime
+        assert isinstance(briefs, list)
 
 
 # ---------------------------------------------------------------------------
@@ -506,3 +507,156 @@ class TestArticleStatus:
         expected = {"pending", "researching", "planning", "writing", "critiquing", "revising", "completed", "failed", "skip"}
         actual = {s.value for s in ArticleStatus}
         assert actual == expected
+
+
+# ---------------------------------------------------------------------------
+# Editor integration
+# ---------------------------------------------------------------------------
+
+class TestEditorIntegration:
+    @pytest.fixture
+    def setup(self, tmp_path):
+        """Set up mocked Autopilot with editor config."""
+        posts_dir = tmp_path / "posts"
+        posts_dir.mkdir()
+        queue_path = str(tmp_path / "article-queue.md")
+        calendar_path = str(tmp_path / "calendar.md")
+        sessions_dir = str(tmp_path / "sessions")
+        os.makedirs(sessions_dir)
+
+        (tmp_path / "calendar.md").write_text("""# Calendar
+
+### Week 1
+
+| Day | Article | Content Type |
+| --- | ------- | ------------ |
+| Tuesday | Test Article One: Subtitle | Guide |
+| Thursday | Test Article Two: Another | Feature |
+""")
+
+        from app.agent_config import AgentConfig
+        configs = {
+            name: AgentConfig(name=name, model="gpt-4.1", persona=f"{name} persona", tools=[])
+            for name in ["researcher", "planner", "writer", "critic", "ideator", "editor"]
+        }
+
+        mock_smol_rag = MagicMock()
+        mock_smol_rag.mix_query = AsyncMock(return_value="Mock result")
+        mock_smol_rag.ingest_text = AsyncMock()
+
+        from app.session import SessionManager
+        session_manager = SessionManager(sessions_dir)
+
+        registry = MagicMock()
+
+        pilot = Autopilot(
+            configs=configs,
+            tool_registry=registry,
+            smol_rag=mock_smol_rag,
+            session_manager=session_manager,
+            calendar_path=calendar_path,
+            posts_dir=str(posts_dir),
+            queue_path=queue_path,
+            pause_seconds=0,
+            ideator_interval=100,
+        )
+
+        return pilot, posts_dir, queue_path
+
+    @pytest.mark.asyncio
+    async def test_run_editor_called_on_startup(self, setup):
+        """Editor runs after queue is loaded."""
+        pilot, posts_dir, queue_path = setup
+
+        editor_calls = []
+
+        async def mock_process(prompt):
+            return "Done"
+
+        mock_agent = MagicMock()
+        mock_agent.process = AsyncMock(side_effect=mock_process)
+
+        original_build = None
+
+        def tracking_build(**kwargs):
+            if kwargs.get("config").name == "editor":
+                editor_calls.append("build")
+            return mock_agent
+
+        with patch("app.autopilot.build_agent_loop", side_effect=tracking_build):
+            await pilot._run_inner()
+
+        # Editor should have been called at least once (on startup)
+        assert len(editor_calls) >= 1
+
+    @pytest.mark.asyncio
+    async def test_run_editor_called_after_success(self, setup):
+        """Editor runs after each successful article."""
+        pilot, posts_dir, queue_path = setup
+
+        editor_calls = []
+
+        async def mock_process(prompt):
+            return "Done"
+
+        mock_agent = MagicMock()
+        mock_agent.process = AsyncMock(side_effect=mock_process)
+
+        def tracking_build(**kwargs):
+            if kwargs.get("config").name == "editor":
+                editor_calls.append("build")
+            return mock_agent
+
+        with patch("app.autopilot.build_agent_loop", side_effect=tracking_build):
+            await pilot._run_inner()
+
+        # 1 call on startup + 1 call per completed article (2 articles in fixture)
+        assert len(editor_calls) == 3
+
+    @pytest.mark.asyncio
+    async def test_run_editor_failure_non_blocking(self, setup):
+        """Editor failure doesn't block the pipeline."""
+        pilot, posts_dir, queue_path = setup
+
+        call_count = 0
+
+        async def mock_process(prompt):
+            nonlocal call_count
+            call_count += 1
+            return "Done"
+
+        mock_agent = MagicMock()
+        mock_agent.process = AsyncMock(side_effect=mock_process)
+
+        def failing_editor_build(**kwargs):
+            config = kwargs.get("config")
+            if config.name == "editor":
+                agent = MagicMock()
+                agent.process = AsyncMock(side_effect=Exception("Editor broke"))
+                return agent
+            return mock_agent
+
+        with patch("app.autopilot.build_agent_loop", side_effect=failing_editor_build):
+            await pilot._run_inner()
+
+        # Pipeline should still complete both articles (5 stages each = 10 calls)
+        assert len(pilot._results) == 2
+        assert all(r.success for r in pilot._results)
+
+    @pytest.mark.asyncio
+    async def test_run_editor_skipped_without_config(self, setup):
+        """Editor is skipped if not in configs (backward compatible)."""
+        pilot, posts_dir, queue_path = setup
+
+        # Remove editor from configs
+        del pilot.configs["editor"]
+
+        mock_agent = MagicMock()
+        mock_agent.process = AsyncMock(return_value="Done")
+
+        with patch("app.autopilot.build_agent_loop", return_value=mock_agent):
+            await pilot._run_inner()
+
+        # Pipeline should still work fine
+        assert len(pilot._results) == 2
+        assert all(r.success for r in pilot._results)

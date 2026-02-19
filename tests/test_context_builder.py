@@ -81,3 +81,54 @@ class TestContextBuilderPersona:
         assert "Writer" in prompt
         assert "Custom bootstrap instructions." in prompt
         assert "SmolClaw" not in prompt
+
+
+class TestContextBuilderSharedBootstrap:
+    def test_shared_bootstrap_included(self, temp_dir):
+        shared = os.path.join(temp_dir, "AGENT.md")
+        with open(shared, "w") as f:
+            f.write("Shared docs reference.")
+        builder = ContextBuilder(shared_bootstrap_path=shared)
+        prompt = builder.build_system_prompt()
+        assert "Shared docs reference." in prompt
+        assert "Shared Bootstrap" in prompt
+
+    def test_shared_and_agent_bootstrap_both_included(self, temp_dir):
+        shared = os.path.join(temp_dir, "AGENT.md")
+        agent = os.path.join(temp_dir, "writer.md")
+        with open(shared, "w") as f:
+            f.write("Shared docs reference.")
+        with open(agent, "w") as f:
+            f.write("Writer-specific instructions.")
+        builder = ContextBuilder(
+            shared_bootstrap_path=shared, bootstrap_path=agent, persona="You are Writer.",
+        )
+        prompt = builder.build_system_prompt()
+        assert "Shared docs reference." in prompt
+        assert "Writer-specific instructions." in prompt
+        assert "Shared Bootstrap" in prompt
+        assert "Agent Bootstrap" in prompt
+
+    def test_shared_and_agent_same_file_no_duplication(self, temp_dir):
+        shared = os.path.join(temp_dir, "AGENT.md")
+        with open(shared, "w") as f:
+            f.write("Shared docs reference.")
+        builder = ContextBuilder(shared_bootstrap_path=shared, bootstrap_path=shared)
+        prompt = builder.build_system_prompt()
+        assert prompt.count("Shared docs reference.") == 1
+
+    def test_shared_bootstrap_missing_file(self, temp_dir):
+        builder = ContextBuilder(shared_bootstrap_path=os.path.join(temp_dir, "missing.md"))
+        prompt = builder.build_system_prompt()
+        assert "SmolClaw" in prompt
+        assert "Shared Bootstrap" not in prompt
+
+    def test_shared_bootstrap_with_persona(self, temp_dir):
+        shared = os.path.join(temp_dir, "AGENT.md")
+        with open(shared, "w") as f:
+            f.write("Shared context here.")
+        builder = ContextBuilder(shared_bootstrap_path=shared, persona="You are Researcher.")
+        prompt = builder.build_system_prompt()
+        assert "Researcher" in prompt
+        assert "Shared context here." in prompt
+        assert "SmolClaw" not in prompt

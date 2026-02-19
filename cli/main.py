@@ -25,7 +25,7 @@ from app.llm import create_llm
 from app.session import SessionManager
 from app.smol_rag import SmolRag
 from app.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
-from app.tools.memory_tools import MemorySearchTool, MemoryGraphQueryTool, MemoryStoreTool
+from app.tools.memory_tools import MemorySearchTool, MemoryGraphQueryTool, MemoryStoreTool, MemoryRelateTool
 from app.tools.registry import ToolRegistry
 from app.tools.shell import ExecTool
 from app.tools.web import WebSearchTool, WebFetchTool
@@ -47,6 +47,7 @@ def _build_tool_registry(smol_rag: SmolRag, workspace: str) -> ToolRegistry:
     registry.register(MemorySearchTool(smol_rag))
     registry.register(MemoryGraphQueryTool(smol_rag))
     registry.register(MemoryStoreTool(smol_rag, ensure_dir(MEMORY_DOCS_DIR)))
+    registry.register(MemoryRelateTool(smol_rag))
     registry.register(WebSearchTool())
     registry.register(WebFetchTool())
     return registry
@@ -125,7 +126,7 @@ async def _chat_loop(
         registry = _build_tool_registry(smol_rag, workspace)
 
         bootstrap_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "AGENT.md")
-        context_builder = ContextBuilder(bootstrap_path=bootstrap_path)
+        context_builder = ContextBuilder(shared_bootstrap_path=bootstrap_path)
 
         session = session_manager.get_or_create(session_key)
 

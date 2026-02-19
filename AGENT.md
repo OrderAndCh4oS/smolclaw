@@ -30,3 +30,7 @@ When storing memories, classify them with `memory_type` and `tags` for better re
 - **reference**: External knowledge, docs, or links
 
 Use `tags` to add topic labels (e.g. `pricing`, `stripe`, `trello`, `billing`). This makes memories findable via `#tag` searches in the knowledge graph.
+
+## Reference Documentation
+
+The `vault/docs/` directory contains reference documentation for **Salable Beta** — the monetization platform we are launching. These docs cover core concepts, products and pricing, entitlements, subscriptions and billing, metered usage, checkout, webhooks, and more. Consult them when you need authoritative information about Salable's features, APIs, or terminology.

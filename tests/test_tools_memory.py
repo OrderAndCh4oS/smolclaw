@@ -7,6 +7,7 @@ import pytest
 from app.obsidian import parse_frontmatter, parse_tags
 from app.tools.memory_tools import (
     MEMORY_TYPES,
+    MemoryRelateTool,
     MemorySearchTool,
     MemoryGraphQueryTool,
     MemoryStoreTool,
@@ -19,7 +20,7 @@ class TestMemorySearchTool:
     async def test_memory_search_calls_mix_query(self, mock_smol_rag):
         tool = MemorySearchTool(mock_smol_rag)
         await tool.execute(query="test query")
-        mock_smol_rag.mix_query.assert_called_once_with("test query")
+        mock_smol_rag.mix_query.assert_called_once_with("test query", memory_type=None)
 
     @pytest.mark.asyncio
     async def test_memory_search_returns_result(self, mock_smol_rag):
@@ -183,12 +184,84 @@ class TestMemoryStoreToolExecuteTaxonomy:
         assert result == "Stored memory: ret-id"
 
 
+class TestMemoryRelateTool:
+    @pytest.mark.asyncio
+    async def test_relate_creates_edge(self, mock_smol_rag):
+        mock_smol_rag.graph.get_node.return_value = {"category": "entity"}
+        mock_smol_rag.graph.async_add_edge = AsyncMock()
+        tool = MemoryRelateTool(mock_smol_rag)
+        result = await tool.execute(
+            source_entity="Python", target_entity="FastAPI", relationship="used_by",
+        )
+        mock_smol_rag.graph.async_add_edge.assert_called_once_with(
+            "Python", "FastAPI", description="used_by", keywords="used_by", weight=1.0,
+        )
+        assert "Python" in result
+        assert "FastAPI" in result
+        assert "used_by" in result
+
+    @pytest.mark.asyncio
+    async def test_relate_creates_missing_nodes(self, mock_smol_rag):
+        mock_smol_rag.graph.get_node.return_value = None
+        mock_smol_rag.graph.async_add_node = AsyncMock()
+        mock_smol_rag.graph.async_add_edge = AsyncMock()
+        tool = MemoryRelateTool(mock_smol_rag)
+        await tool.execute(
+            source_entity="Alpha", target_entity="Beta", relationship="links_to",
+        )
+        assert mock_smol_rag.graph.async_add_node.call_count == 2
+        mock_smol_rag.graph.async_add_edge.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_relate_with_description(self, mock_smol_rag):
+        mock_smol_rag.graph.get_node.return_value = {"category": "entity"}
+        mock_smol_rag.graph.async_add_edge = AsyncMock()
+        tool = MemoryRelateTool(mock_smol_rag)
+        await tool.execute(
+            source_entity="A", target_entity="B",
+            relationship="depends_on", description="A depends on B for auth",
+        )
+        mock_smol_rag.graph.async_add_edge.assert_called_once_with(
+            "A", "B", description="A depends on B for auth", keywords="depends_on", weight=1.0,
+        )
+
+    def test_relate_schema(self, mock_smol_rag):
+        tool = MemoryRelateTool(mock_smol_rag)
+        schema = tool.to_schema()
+        params = schema["function"]["parameters"]
+        assert "source_entity" in params["properties"]
+        assert "target_entity" in params["properties"]
+        assert "relationship" in params["properties"]
+        assert params["required"] == ["source_entity", "target_entity", "relationship"]
+
+
+class TestMemorySearchFiltered:
+    @pytest.mark.asyncio
+    async def test_search_passes_memory_type(self, mock_smol_rag):
+        tool = MemorySearchTool(mock_smol_rag)
+        await tool.execute(query="pricing", memory_type="fact")
+        mock_smol_rag.mix_query.assert_called_once_with("pricing", memory_type="fact")
+
+    @pytest.mark.asyncio
+    async def test_search_without_type_passes_none(self, mock_smol_rag):
+        tool = MemorySearchTool(mock_smol_rag)
+        await tool.execute(query="pricing")
+        mock_smol_rag.mix_query.assert_called_once_with("pricing", memory_type=None)
+
+    def test_search_schema_has_memory_type_enum(self, mock_smol_rag):
+        tool = MemorySearchTool(mock_smol_rag)
+        props = tool.parameters["properties"]
+        assert "memory_type" in props
+        assert props["memory_type"]["enum"] == MEMORY_TYPES
+
+
 class TestToolSchemas:
     def test_tool_schemas_valid(self, mock_smol_rag, temp_dir):
         tools = [
             MemorySearchTool(mock_smol_rag),
             MemoryGraphQueryTool(mock_smol_rag),
             MemoryStoreTool(mock_smol_rag, temp_dir),
+            MemoryRelateTool(mock_smol_rag),
         ]
         for tool in tools:
             schema = tool.to_schema()

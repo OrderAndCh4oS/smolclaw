@@ -40,6 +40,51 @@ def format_memory_content(
     return "\n".join(fm_lines) + "\n\n" + " ".join(inline_tags) + "\n\n" + content
 
 
+class MemoryRelateTool(Tool):
+    @property
+    def name(self) -> str:
+        return "memory_relate"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Create an explicit relationship between two entities in the knowledge graph. "
+            "Use this to connect concepts, people, tools, or any named things that are related."
+        )
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "source_entity": {"type": "string", "description": "Name of the source entity"},
+                "target_entity": {"type": "string", "description": "Name of the target entity"},
+                "relationship": {"type": "string", "description": "Type of relationship (e.g. 'uses', 'depends_on', 'related_to')"},
+                "description": {"type": "string", "description": "Optional description of the relationship"},
+            },
+            "required": ["source_entity", "target_entity", "relationship"],
+        }
+
+    def __init__(self, smol_rag):
+        self.smol_rag = smol_rag
+
+    async def execute(self, **kwargs) -> str:
+        source = kwargs["source_entity"]
+        target = kwargs["target_entity"]
+        relationship = kwargs["relationship"]
+        description = kwargs.get("description", relationship)
+
+        graph = self.smol_rag.graph
+        # Ensure both entity nodes exist
+        if not graph.get_node(source):
+            await graph.async_add_node(source, category="entity", description=source)
+        if not graph.get_node(target):
+            await graph.async_add_node(target, category="entity", description=target)
+        # Create the edge
+        await graph.async_add_edge(source, target, description=description, keywords=relationship, weight=1.0)
+        return f"Related: {source} --[{relationship}]--> {target}"
+
+
 class MemorySearchTool(Tool):
     @property
     def name(self) -> str:
@@ -47,7 +92,7 @@ class MemorySearchTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Search memory using vector + knowledge graph retrieval."
+        return "Search memory using vector + knowledge graph retrieval. Optionally filter by memory type."
 
     @property
     def parameters(self) -> dict:
@@ -55,6 +100,11 @@ class MemorySearchTool(Tool):
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query text"},
+                "memory_type": {
+                    "type": "string",
+                    "enum": MEMORY_TYPES,
+                    "description": "Optional: filter results to only this memory type",
+                },
             },
             "required": ["query"],
         }
@@ -64,7 +114,8 @@ class MemorySearchTool(Tool):
 
     async def execute(self, **kwargs) -> str:
         query = kwargs["query"]
-        return await self.smol_rag.mix_query(query)
+        memory_type = kwargs.get("memory_type")
+        return await self.smol_rag.mix_query(query, memory_type=memory_type)
 
 
 class MemoryGraphQueryTool(Tool):

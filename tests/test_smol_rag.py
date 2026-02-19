@@ -479,3 +479,40 @@ class TestSmolRagEdgeCases:
 
         result = await rag.query("What is Python?")
         assert result is not None
+
+
+class TestFilterExcerptsByType:
+    def test_filters_matching_type(self):
+        excerpts = [
+            {"excerpt": "#fact some factual content"},
+            {"excerpt": "#reference a reference document"},
+            {"excerpt": "#fact another fact"},
+        ]
+        result = SmolRag._filter_excerpts_by_type(excerpts, "fact")
+        assert len(result) == 2
+        assert all("#fact" in e["excerpt"] for e in result)
+
+    def test_returns_empty_when_no_match(self):
+        excerpts = [
+            {"excerpt": "#fact some content"},
+            {"excerpt": "#reference a reference"},
+        ]
+        result = SmolRag._filter_excerpts_by_type(excerpts, "decision")
+        assert result == []
+
+    def test_returns_all_when_all_match(self):
+        excerpts = [
+            {"excerpt": "#fact content A"},
+            {"excerpt": "#fact content B"},
+        ]
+        result = SmolRag._filter_excerpts_by_type(excerpts, "fact")
+        assert len(result) == 2
+
+    def test_handles_empty_list(self):
+        result = SmolRag._filter_excerpts_by_type([], "fact")
+        assert result == []
+
+    def test_handles_missing_excerpt_key(self):
+        excerpts = [{"summary": "no excerpt key"}]
+        result = SmolRag._filter_excerpts_by_type(excerpts, "fact")
+        assert result == []

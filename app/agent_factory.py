@@ -1,9 +1,14 @@
+import os
+
 from app.agent_config import AgentConfig
 from app.agent_loop import AgentLoop
 from app.context_builder import ContextBuilder
 from app.llm import create_llm
 from app.session import SessionManager
 from app.tools.registry import ToolRegistry
+
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
+_SHARED_BOOTSTRAP_PATH = os.path.join(_PROJECT_ROOT, "AGENT.md")
 
 
 def build_agent_loop(
@@ -18,6 +23,7 @@ def build_agent_loop(
     context_builder = ContextBuilder(
         bootstrap_path=config.bootstrap_path,
         persona=config.persona,
+        shared_bootstrap_path=_SHARED_BOOTSTRAP_PATH,
     )
     session_key = f"{config.name}-{session_key_prefix}"
     session = session_manager.get_or_create(session_key)

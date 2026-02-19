@@ -4,9 +4,17 @@ from typing import Dict, List
 
 
 class ContextBuilder:
-    def __init__(self, bootstrap_path: str = None, persona: str = None):
+    def __init__(self, bootstrap_path: str = None, persona: str = None, shared_bootstrap_path: str = None):
         self.bootstrap_path = bootstrap_path
         self.persona = persona
+        self.shared_bootstrap_path = shared_bootstrap_path
+
+    def _load_file(self, path: str) -> str | None:
+        if path and os.path.exists(path):
+            with open(path) as f:
+                content = f.read().strip()
+            return content or None
+        return None
 
     def build_system_prompt(self) -> str:
         if self.persona:
@@ -22,11 +30,14 @@ class ContextBuilder:
                 "Use your memory tools to recall and store information across conversations.",
             ]
 
-        if self.bootstrap_path and os.path.exists(self.bootstrap_path):
-            with open(self.bootstrap_path) as f:
-                bootstrap = f.read().strip()
-            if bootstrap:
-                parts.append(f"\n--- Agent Bootstrap ---\n{bootstrap}")
+        shared = self._load_file(self.shared_bootstrap_path)
+        agent = self._load_file(self.bootstrap_path)
+
+        # Avoid duplicating content when shared and agent bootstrap are the same file
+        if shared:
+            parts.append(f"\n--- Shared Bootstrap ---\n{shared}")
+        if agent and agent != shared:
+            parts.append(f"\n--- Agent Bootstrap ---\n{agent}")
 
         return "\n".join(parts)
 

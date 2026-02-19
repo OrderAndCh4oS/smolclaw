@@ -276,6 +276,10 @@ class Autopilot:
     async def _run_inner(self):
         # Load or build queue
         queue = self._load_or_build_queue()
+
+        # Populate calendar from initial queue state
+        await self._run_editor(queue)
+
         pending = [b for b in queue if b.status == ArticleStatus.pending]
 
         if not pending:
@@ -309,8 +313,13 @@ class Autopilot:
 
             if result.success:
                 console.print(f"[green]Completed:[/green] {brief.title} ({result.duration:.0f}s)")
+
             else:
                 console.print(f"[red]Failed:[/red] {brief.title} — {result.error}")
+
+            # Update calendar after each completed article
+            if result.success and not self._shutdown_requested:
+                await self._run_editor(queue)
 
             # Run ideator periodically
             if articles_since_ideator >= self.ideator_interval and not self._shutdown_requested:
@@ -518,6 +527,38 @@ class Autopilot:
             added += 1
 
         console.print(f"[green]Ideator added {added} new topics to queue.[/green]")
+
+    async def _run_editor(self, queue: List[ArticleBrief]):
+        """Run editor agent to update the content calendar from queue state."""
+        if "editor" not in self.configs:
+            return
+
+        session_prefix = f"autopilot-editor-{int(time.time())}"
+        completed = [b for b in queue if b.status == ArticleStatus.completed]
+        pending = [b for b in queue if b.status == ArticleStatus.pending]
+
+        prompt = (
+            "Update the content calendar. "
+            f"The queue currently has {len(pending)} pending and {len(completed)} completed articles. "
+            "Read the calendar, queue, and content strategy. "
+            "Populate empty week tables with pending articles respecting cadence and phase rules. "
+            "Mark any completed articles. Update the summary distribution tables."
+        )
+
+        console.print("[dim]Running editor to update content calendar...[/dim]")
+
+        try:
+            agent_loop = build_agent_loop(
+                config=self.configs["editor"],
+                master_registry=self.tool_registry,
+                smol_rag=self.smol_rag,
+                session_manager=self.session_manager,
+                session_key_prefix=session_prefix,
+            )
+            await asyncio.wait_for(agent_loop.process(prompt), timeout=300)
+            console.print("[dim]Calendar updated.[/dim]")
+        except (asyncio.TimeoutError, Exception) as e:
+            console.print(f"[yellow]Editor failed (non-blocking): {e}[/yellow]")
 
     def _handle_signal(self):
         """Handle Ctrl+C: first press = graceful shutdown, second = force exit."""
