@@ -1,0 +1,12 @@
+services:
+  smolclaw:
+    build: .
+    ports:
+      - "18789:18789"
+    env_file: .env
+    volumes:
+      - ./store:/app/store
+      - ./cache:/app/cache
+      - ./logs:/app/logs
+      - ./sessions:/app/sessions
+      - ./vault/memory:/app/vault/memory

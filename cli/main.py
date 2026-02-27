@@ -216,59 +216,46 @@ async def _ingest(path: str):
 
 
 @app.command()
-def autopilot(
-    pause: int = typer.Option(30, "--pause", "-p", help="Seconds to pause between articles"),
-    ideator_interval: int = typer.Option(5, "--ideator-interval", help="Run ideator every N articles"),
-    calendar: str = typer.Option(
-        os.path.join(os.path.dirname(os.path.dirname(__file__)), "vault", "articles", "content-calendar.md"),
-        "--calendar", "-c", help="Path to content calendar markdown",
+def watch(
+    memory_dir: str = typer.Option(
+        MEMORY_DOCS_DIR, "--memory-dir", "-d", help="Memory directory to watch",
     ),
-    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace directory"),
-    agents_config: str = typer.Option(DEFAULT_AGENTS_CONFIG, "--agents-config", help="Path to agents YAML config"),
+    interval: float = typer.Option(5.0, "--interval", "-i", help="Poll interval in seconds"),
 ):
-    """Run autonomous content production loop."""
-    asyncio.run(_autopilot_loop(pause, ideator_interval, calendar, workspace, agents_config))
+    """Watch the memory directory for changes and re-ingest."""
+    asyncio.run(_watch(memory_dir, interval))
 
 
-async def _autopilot_loop(
-    pause: int,
-    ideator_interval: int,
-    calendar: str,
-    workspace: str,
-    agents_config: str,
-):
-    from app.agent_config import AgentConfigLoader
-    from app.autopilot import Autopilot
-
-    ensure_dir(SESSIONS_DIR)
-
-    configs = AgentConfigLoader.load(agents_config)
-    required_agents = ["researcher", "planner", "writer", "ideator"]
-    missing = [a for a in required_agents if a not in configs]
-    if missing:
-        console.print(f"[red]Missing required agents in config:[/red] {', '.join(missing)}")
-        raise typer.Exit(1)
-
+async def _watch(memory_dir: str, interval: float):
+    from app.watcher import MemoryFileWatcher
     smol_rag = SmolRag()
-    session_manager = SessionManager(SESSIONS_DIR)
-    registry = _build_tool_registry(smol_rag, workspace)
+    watcher = MemoryFileWatcher(memory_dir, smol_rag, poll_interval=interval)
+    console.print(f"[bold green]Watching[/bold green] {memory_dir} (poll every {interval}s)")
+    try:
+        await watcher.start()
+    except KeyboardInterrupt:
+        watcher.stop()
+        console.print("[dim]Watcher stopped.[/dim]")
 
-    project_root = os.path.dirname(os.path.dirname(__file__))
-    posts_dir = os.path.join(project_root, "vault", "articles", "posts")
-    queue_path = os.path.join(project_root, "vault", "articles", "article-queue.md")
 
-    pilot = Autopilot(
-        configs=configs,
-        tool_registry=registry,
-        smol_rag=smol_rag,
-        session_manager=session_manager,
-        calendar_path=calendar,
-        posts_dir=posts_dir,
-        queue_path=queue_path,
-        pause_seconds=pause,
-        ideator_interval=ideator_interval,
-    )
-    await pilot.run()
+@app.command()
+def serve(
+    port: int = typer.Option(18789, "--port", "-p", help="WebSocket port"),
+    token_issuer: str = typer.Option(
+        "http://client:3000/mcp-tokens", "--token-issuer", help="MCP token issuer URL",
+    ),
+    gateway: str = typer.Option(
+        "http://mcp-gateway:3200/mcp", "--gateway", help="MCP gateway URL",
+    ),
+):
+    """Start the WebSocket gateway server."""
+    asyncio.run(_serve(port, token_issuer, gateway))
+
+
+async def _serve(port: int, token_issuer: str, gateway_url: str):
+    from app.gateway import Gateway
+    gw = Gateway(port=port, token_issuer_url=token_issuer, gateway_url=gateway_url)
+    await gw.start()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,5 @@
+{"key": "rapid-2", "last_consolidated": 0}
+{"role": "user", "content": "Reply with only the number 3."}
+{"role": "assistant", "content": "3"}
+{"role": "user", "content": "Reply with only the number 3."}
+{"role": "assistant", "content": "3"}

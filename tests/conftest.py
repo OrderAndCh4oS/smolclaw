@@ -233,3 +233,39 @@ def sessions_dir(temp_dir):
     d = os.path.join(temp_dir, "sessions")
     os.makedirs(d)
     return d
+
+
+import json
+
+
+class FakeWebSocket:
+    """Queue-based fake WebSocket for testing the gateway protocol."""
+
+    def __init__(self):
+        self._inbox = asyncio.Queue()
+        self._messages: list = []
+        self._closed = False
+
+    async def send(self, data):
+        self._messages.append(json.loads(data))
+
+    async def recv(self):
+        return await self._inbox.get()
+
+    async def close(self, code=None, reason=None):
+        self._closed = True
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return self._inbox.get_nowait()
+        except asyncio.QueueEmpty:
+            raise StopAsyncIteration
+
+
+@pytest.fixture
+def fake_ws():
+    """Return a fresh FakeWebSocket instance."""
+    return FakeWebSocket()

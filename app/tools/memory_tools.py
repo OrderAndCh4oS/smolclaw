@@ -200,15 +200,22 @@ class MemoryStoreTool(Tool):
             "required": ["content"],
         }
 
-    def __init__(self, smol_rag, memory_docs_dir: str):
+    def __init__(self, smol_rag, memory_docs_dir: str, llm=None):
         self.smol_rag = smol_rag
         self.memory_docs_dir = memory_docs_dir
+        self.llm = llm
 
     async def execute(self, **kwargs) -> str:
         content = kwargs["content"]
         source_id = kwargs.get("source_id")
         memory_type = kwargs.get("memory_type")
         tags = kwargs.get("tags")
+
+        # Auto-classify if no memory_type provided and LLM is available
+        if not memory_type and self.llm:
+            from app.taxonomy import classify_chunk
+            classified_type, confidence = await classify_chunk(content, self.llm)
+            memory_type = classified_type.value
 
         formatted = format_memory_content(content, memory_type, tags, source_id)
 
@@ -220,3 +227,39 @@ class MemoryStoreTool(Tool):
 
         await self.smol_rag.ingest_text(formatted, source_id=source_id)
         return f"Stored memory: {file_id}"
+
+
+class MemoryGetTool(Tool):
+    @property
+    def name(self) -> str:
+        return "memory_get"
+
+    @property
+    def description(self) -> str:
+        return "Read a memory file by its path or identifier from the memory directory."
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File name or path within the memory directory (e.g. 'mem-abc123.md')",
+                },
+            },
+            "required": ["path"],
+        }
+
+    def __init__(self, memory_docs_dir: str):
+        self.memory_docs_dir = memory_docs_dir
+
+    async def execute(self, **kwargs) -> str:
+        path = kwargs["path"]
+        # If it's just a filename, resolve relative to memory dir
+        if not os.path.isabs(path):
+            path = os.path.join(self.memory_docs_dir, path)
+        if not os.path.exists(path):
+            return f"Not found: {path}"
+        with open(path) as f:
+            return f.read()

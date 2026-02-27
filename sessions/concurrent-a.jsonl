@@ -1,0 +1,5 @@
+{"key": "concurrent-a", "last_consolidated": 0}
+{"role": "user", "content": "Say exactly: ALPHA"}
+{"role": "assistant", "content": "ALPHA"}
+{"role": "user", "content": "Say exactly: ALPHA"}
+{"role": "assistant", "content": "ALPHA"}

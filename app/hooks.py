@@ -1,0 +1,74 @@
+import logging
+from typing import Any, Awaitable, Callable, Dict, List
+
+logger = logging.getLogger("smolclaw.hooks")
+
+HookFn = Callable[[Dict[str, Any]], Awaitable[None]]
+
+
+class HookRunner:
+    """Lifecycle hook system for firing events at key agent loop points."""
+
+    def __init__(self):
+        self._hooks: Dict[str, List[HookFn]] = {}
+
+    def on(self, event: str, fn: HookFn):
+        """Register a hook for the given event."""
+        self._hooks.setdefault(event, []).append(fn)
+
+    def off(self, event: str, fn: HookFn):
+        """Unregister a hook."""
+        if event in self._hooks:
+            self._hooks[event] = [f for f in self._hooks[event] if f is not fn]
+
+    async def fire(self, event: str, context: Dict[str, Any] = None):
+        """Fire all hooks registered for the given event."""
+        context = context or {}
+        for fn in self._hooks.get(event, []):
+            try:
+                await fn(context)
+            except Exception as e:
+                logger.warning(f"Hook error on {event}: {e}")
+
+    @property
+    def events(self) -> List[str]:
+        """List all registered event names."""
+        return list(self._hooks.keys())
+
+
+# Standard event names
+ON_SESSION_START = "on_session_start"
+ON_BEFORE_TURN = "on_before_turn"
+ON_AFTER_TURN = "on_after_turn"
+ON_COMPACTION_FLUSH = "on_compaction_flush"
+ON_FILE_CHANGE = "on_file_change"
+
+
+class PromotionHook:
+    """Built-in hook that promotes accessed memories on_after_turn."""
+
+    def __init__(self, lifecycle_manager):
+        self.lifecycle_manager = lifecycle_manager
+
+    async def __call__(self, context: Dict[str, Any]):
+        tool_calls = context.get("tool_calls", [])
+        for tc in tool_calls:
+            if tc in ("memory_search", "memory_graph_query"):
+                # The actual excerpt promotion happens through the lifecycle manager
+                # when specific excerpt IDs are known — this hook serves as the trigger point
+                pass
+
+
+class DecayHook:
+    """Built-in hook that decays stale memories on_session_start."""
+
+    def __init__(self, lifecycle_manager, threshold_days: float = 30.0, factor: float = 0.95):
+        self.lifecycle_manager = lifecycle_manager
+        self.threshold_days = threshold_days
+        self.factor = factor
+
+    async def __call__(self, context: Dict[str, Any]):
+        await self.lifecycle_manager.decay(
+            threshold_days=self.threshold_days,
+            factor=self.factor,
+        )

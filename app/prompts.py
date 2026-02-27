@@ -285,3 +285,44 @@ def get_consolidation_prompt():
         Omit greetings, filler, and repetitive exchanges.
         Format as bullet points grouped by topic.
     """)
+
+
+def get_journal_prompt(conversation: str) -> str:
+    return inspect.cleandoc(f"""
+        You are reflecting on a conversation session. Write a first-person journal entry
+        that captures the key insights, decisions, and themes from this session.
+
+        Guidelines:
+        - Write in first person ("I learned...", "We discussed...", "The key insight was...")
+        - Focus on what was meaningful, surprising, or worth remembering
+        - Note any decisions made and their rationale
+        - Identify connections to broader themes or previous knowledge
+        - Be reflective and interpretive, not just summarising
+        - Keep it concise (2-4 paragraphs)
+
+        Session transcript:
+        {conversation}
+
+        Journal entry:
+    """)
+
+
+def get_classify_memory_prompt(content: str) -> str:
+    return inspect.cleandoc(f"""
+        Classify the following content into exactly one memory type and provide a confidence score.
+
+        Memory types:
+        - fact: Durable atomic knowledge (definitions, statistics, stable truths)
+        - decision: A choice with rationale
+        - preference: Personal attribute, style, or taste
+        - episode: Summary of a session event or interaction
+        - task: Active work in progress or action item
+        - journal: First-person reflection or synthesis
+        - reference: External knowledge, documentation, or links
+
+        Content:
+        {content}
+
+        Respond with JSON only:
+        {{"memory_type": "<type>", "confidence": <0.0-1.0>}}
+    """)

@@ -275,6 +275,12 @@ class SmolRag:
         if save_tasks:
             await asyncio.gather(*save_tasks)
 
+    async def remove_document_by_source(self, source_id: str):
+        """Remove a document by its source ID (file path)."""
+        if await self.source_to_doc_kv.has(source_id):
+            doc_id = await self.source_to_doc_kv.get_by_key(source_id)
+            await self.remove_document_by_id(doc_id)
+
     async def ingest_text(self, content: str, source_id: str = None, save: bool = True):
         """Ingest raw text into the RAG pipeline (chunks, embeds, extracts entities).
         Also parses obsidian wiki links into graph edges and tags into entity labels.
@@ -357,8 +363,27 @@ class SmolRag:
         await self.doc_to_source_kv.add(doc_id, source)
         # Saves are batched in import_documents()
 
+    @staticmethod
+    def _extract_frontmatter(content: str) -> dict:
+        """Extract YAML frontmatter metadata from content if present."""
+        metadata = {}
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            if len(parts) >= 3:
+                import yaml
+                try:
+                    fm = yaml.safe_load(parts[1])
+                    if isinstance(fm, dict):
+                        for key in ("memory_type", "tags", "confidence", "importance", "source_id"):
+                            if key in fm:
+                                metadata[key] = fm[key]
+                except Exception:
+                    pass
+        return metadata
+
     async def _embed_document(self, content, doc_id):
         start_time = time.time()
+        doc_metadata = self._extract_frontmatter(content)
         excerpts = self.excerpt_fn(content, self.excerpt_size, self.overlap)
         excerpt_ids = []
 
@@ -381,13 +406,18 @@ class SmolRag:
                     "__inserted_at__": time.time()
                 }
             ]))
-            storage_tasks.append(self.excerpt_kv.add(excerpt_id, {
+            excerpt_data = {
                 "doc_id": doc_id,
                 "doc_order_index": i,
                 "excerpt": excerpt,
                 "summary": summary,
-                "indexed_at": time.time()
-            }))
+                "indexed_at": time.time(),
+            }
+            # Propagate taxonomy metadata from frontmatter
+            for key in ("memory_type", "tags", "confidence", "importance"):
+                if key in doc_metadata:
+                    excerpt_data[key] = doc_metadata[key]
+            storage_tasks.append(self.excerpt_kv.add(excerpt_id, excerpt_data))
             logger.info(f"Created embedding for excerpt {excerpt_id} associated with document {doc_id}")
         await asyncio.gather(*storage_tasks)
 

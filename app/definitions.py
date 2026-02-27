@@ -1,7 +1,5 @@
 import os
 
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 COMPLETION_MODEL = os.getenv('COMPLETION_MODEL', 'gpt-4.1-mini')
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
 
@@ -16,7 +14,6 @@ DATA_DIR = os.path.join(PROJECT_ROOT, "store")
 CACHE_DIR = os.path.join(PROJECT_ROOT, "cache")
 LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
 INPUT_DOCS_DIR = os.path.join(PROJECT_ROOT, "input_docs")
-TEST_SET_DIR = os.path.join(PROJECT_ROOT, "evaluation", "test_sets")
 
 SOURCE_TO_DOC_ID_KV_PATH = os.path.join(DATA_DIR, "source_to_doc_id_map.json")
 DOC_ID_TO_SOURCE_KV_PATH = os.path.join(DATA_DIR, "doc_id_to_source_map.json")
@@ -32,8 +29,6 @@ ENTITIES_DB = os.path.join(DATA_DIR, "entities_db.json")
 RELATIONSHIPS_DB = os.path.join(DATA_DIR, "relationships_db.json")
 
 KG_DB = os.path.join(DATA_DIR, "kg_db.graphml")
-
-EVALUATION_DATA_SET = os.path.join(TEST_SET_DIR, "evaluation_data_set.json")
 
 QUERY_CACHE_KV_PATH = os.path.join(CACHE_DIR, "query_cache.json")
 EMBEDDING_CACHE_KV_PATH = os.path.join(CACHE_DIR, "embedding_cache.json")

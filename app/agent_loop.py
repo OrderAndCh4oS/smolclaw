@@ -1,8 +1,9 @@
 import json
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from app.context_builder import ContextBuilder
 from app.definitions import MAX_ITERATIONS, MEMORY_WINDOW
+from app.hooks import HookRunner, ON_BEFORE_TURN, ON_AFTER_TURN, ON_COMPACTION_FLUSH
 from app.logger import logger
 from app.session import Session, SessionManager
 from app.tools.registry import ToolRegistry
@@ -19,6 +20,7 @@ class AgentLoop:
         max_iterations: int = MAX_ITERATIONS,
         memory_window: int = MEMORY_WINDOW,
         smol_rag=None,
+        hook_runner: Optional[HookRunner] = None,
     ):
         self.llm = llm
         self.tool_registry = tool_registry
@@ -28,8 +30,14 @@ class AgentLoop:
         self.max_iterations = max_iterations
         self.memory_window = memory_window
         self.smol_rag = smol_rag
+        self.hook_runner = hook_runner or HookRunner()
+        self._stop_after_current = False
 
-    async def process(self, user_content: str) -> str:
+    async def process(
+        self,
+        user_content: str,
+        on_output: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> str:
         self.session.add_message({"role": "user", "content": user_content})
 
         await self._maybe_consolidate()
@@ -47,6 +55,18 @@ class AgentLoop:
         tools = self.tool_registry.get_definitions() or None
 
         for iteration in range(self.max_iterations):
+            if self._stop_after_current:
+                msg = "Stopped: time limit reached."
+                self.session.add_message({"role": "assistant", "content": msg})
+                self.session_manager.save(self.session)
+                return msg
+
+            await self.hook_runner.fire(ON_BEFORE_TURN, {
+                "iteration": iteration,
+                "session_key": self.session.key,
+                "user_content": user_content,
+            })
+
             result = await self.llm.get_tool_completion(
                 messages=messages,
                 tools=tools,
@@ -54,8 +74,17 @@ class AgentLoop:
 
             if not result["has_tool_calls"]:
                 content = result["content"] or ""
+                if on_output and content:
+                    await on_output(content)
                 self.session.add_message({"role": "assistant", "content": content})
                 self.session_manager.save(self.session)
+
+                await self.hook_runner.fire(ON_AFTER_TURN, {
+                    "iteration": iteration,
+                    "session_key": self.session.key,
+                    "response": content,
+                    "had_tool_calls": False,
+                })
                 return content
 
             # Process tool calls
@@ -85,11 +114,22 @@ class AgentLoop:
                     "content": tool_result,
                 })
 
+            await self.hook_runner.fire(ON_AFTER_TURN, {
+                "iteration": iteration,
+                "session_key": self.session.key,
+                "tool_calls": [tc["name"] for tc in result["tool_calls"]],
+                "had_tool_calls": True,
+            })
+
         # Exceeded max iterations
         msg = "Stopped: reached max iterations without a final response."
         self.session.add_message({"role": "assistant", "content": msg})
         self.session_manager.save(self.session)
         return msg
+
+    def request_stop(self):
+        """Signal the loop to stop after the current iteration completes."""
+        self._stop_after_current = True
 
     async def _maybe_consolidate(self):
         if not self.smol_rag:
@@ -113,5 +153,10 @@ class AgentLoop:
         if text_parts:
             text = "\n".join(text_parts)
             await self.smol_rag.ingest_text(text, source_id=f"session-{self.session.key}")
+
+            await self.hook_runner.fire(ON_COMPACTION_FLUSH, {
+                "session_key": self.session.key,
+                "message_count": len(to_consolidate),
+            })
 
         self.session.last_consolidated = end

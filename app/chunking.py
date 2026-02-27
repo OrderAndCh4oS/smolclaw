@@ -1,7 +1,6 @@
 import re
 from typing import List, Optional
 
-from nltk import tokenize
 from nltk.tokenize import sent_tokenize
 
 
@@ -146,64 +145,5 @@ def preserve_markdown_code_excerpts(
                 ex = excerpts[i - 1][-overlap:] + ex
             overlapped.append(ex)
         return overlapped
-
-    return excerpts
-
-
-
-
-def naive_overlap_excerpts(content, n=2000, overlap=200):
-    excerpts = []
-    step = n - overlap
-    for i in range(0, len(content), step):
-        excerpts.append(content[i:i + n])
-    return excerpts
-
-
-def word_boundary_overlap_excerpts(content, n=2000, overlap=200):
-    """
-    Break content into excerpts of ~n characters with overlap, making sure not to split words.
-
-    Parameters:
-        content (str): The complete text.
-        n (int): Approximate target length for each excerpt.
-        overlap (int): Number of overlapping characters between consecutive excerpts.
-
-    Returns:
-        list of str: Excerpts that do not split words.
-    """
-    tokenizer = tokenize.TreebankWordTokenizer()
-    token_spans = list(tokenizer.span_tokenize(content))
-
-    excerpts = []
-    text_length = len(content)
-    start = 0
-
-    while start < text_length:
-        target_end = start + n
-        if target_end >= text_length:
-            excerpts.append(content[start:])
-            break
-
-        boundary = None
-        for span in token_spans:
-            if span[0] < start:
-                continue
-            if span[1] <= target_end:
-                boundary = span[1]
-            else:
-                break
-
-        if boundary is None:
-            boundary = target_end
-
-        excerpts.append(content[start:boundary])
-
-        new_start = boundary - overlap
-
-        if new_start <= start:
-            new_start = boundary
-
-        start = new_start
 
     return excerpts

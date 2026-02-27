@@ -20,11 +20,22 @@ def build_agent_loop(
 ) -> AgentLoop:
     llm = create_llm(completion_model=config.model)
     filtered_registry = master_registry.filter_by_names(config.tools)
-    context_builder = ContextBuilder(
-        bootstrap_path=config.bootstrap_path,
-        persona=config.persona,
-        shared_bootstrap_path=_SHARED_BOOTSTRAP_PATH,
-    )
+
+    if smol_rag:
+        from app.context_assembly import ContextAssembler
+        context_builder = ContextAssembler(
+            smol_rag=smol_rag,
+            bootstrap_path=config.bootstrap_path,
+            persona=config.persona,
+            shared_bootstrap_path=_SHARED_BOOTSTRAP_PATH,
+        )
+    else:
+        context_builder = ContextBuilder(
+            bootstrap_path=config.bootstrap_path,
+            persona=config.persona,
+            shared_bootstrap_path=_SHARED_BOOTSTRAP_PATH,
+        )
+
     session_key = f"{config.name}-{session_key_prefix}"
     session = session_manager.get_or_create(session_key)
     return AgentLoop(

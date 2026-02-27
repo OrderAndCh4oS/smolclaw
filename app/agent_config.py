@@ -13,6 +13,7 @@ class AgentConfig:
     bootstrap_path: Optional[str] = None
     max_iterations: int = 15
     memory_window: int = 20
+    timeout: int = 600
 
 
 class AgentConfigLoader:
@@ -30,6 +31,7 @@ class AgentConfigLoader:
                 bootstrap_path=entry.get("bootstrap_path"),
                 max_iterations=entry.get("max_iterations", 15),
                 memory_window=entry.get("memory_window", 20),
+                timeout=entry.get("timeout", 600),
             )
             agents[config.name] = config
         return agents

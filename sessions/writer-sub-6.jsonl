@@ -1,3 +1,0 @@
-{"key": "writer-sub-6", "last_consolidated": 0}
-{"role": "user", "content": "Write an in-depth technical article from the provided outline: Modular Capability Providers vs. Skills: How AI Agents Get Their Superpowers. Cover definitions and contrasts of MCPs vs. skills, how they support each other, differences between Claude code and Codex skill requirements and patterns, implementation best practices, practical examples, and guidance for agent builders. Target technical readers; aim for 2000 words."}
-{"role": "assistant", "content": "I need an article outline before I can write. Please run the planner agent first to create one:\n`.venv/bin/python -m cli.main chat --agent planner`"}

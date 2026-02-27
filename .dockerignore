@@ -1,0 +1,32 @@
+.git
+.github
+.gitignore
+.env
+.venv
+.idea
+.obsidian
+.pytest_cache
+.claude
+__pycache__
+*.pyc
+
+# Test and dev artifacts
+tests/
+pytest.ini
+rebuild_rag.py
+graph_visualisation/
+
+# Data stores (mounted at runtime, not baked in)
+store/
+cache/
+logs/
+sessions/
+
+# Vault content pipeline leftovers
+vault/articles/
+
+# Docs
+README.md
+LICENSE
+smolclaw-spec.md
+articles/

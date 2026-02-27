@@ -222,3 +222,102 @@ class TestAgentLoop:
         old_consolidated = session.last_consolidated
         await loop.process("trigger consolidation")
         assert session.last_consolidated > old_consolidated
+
+    @pytest.mark.asyncio
+    async def test_on_output_called_with_response(self, mock_tool_llm, temp_dir):
+        """on_output callback receives the agent's final response text."""
+        registry = ToolRegistry()
+        builder = ContextBuilder()
+        session = Session(key="output-test")
+        sm = SessionManager(temp_dir)
+
+        loop = AgentLoop(
+            llm=mock_tool_llm, tool_registry=registry,
+            context_builder=builder, session=session, session_manager=sm,
+        )
+
+        received = []
+        async def capture(content):
+            received.append(content)
+
+        await loop.process("hello", on_output=capture)
+        assert received == ["Mock response"]
+
+    @pytest.mark.asyncio
+    async def test_hooks_fire_before_and_after_turn(self, mock_tool_llm, temp_dir):
+        """HookRunner fires ON_BEFORE_TURN and ON_AFTER_TURN with correct context."""
+        from app.hooks import HookRunner, ON_BEFORE_TURN, ON_AFTER_TURN
+
+        fired_events = []
+
+        async def capture_hook(context):
+            fired_events.append(context)
+
+        hook_runner = HookRunner()
+        hook_runner.on(ON_BEFORE_TURN, capture_hook)
+        hook_runner.on(ON_AFTER_TURN, capture_hook)
+
+        registry = ToolRegistry()
+        builder = ContextBuilder()
+        session = Session(key="hooks-test")
+        sm = SessionManager(temp_dir)
+
+        loop = AgentLoop(
+            llm=mock_tool_llm, tool_registry=registry,
+            context_builder=builder, session=session, session_manager=sm,
+            hook_runner=hook_runner,
+        )
+        await loop.process("test hooks")
+
+        assert len(fired_events) == 2
+        # First event is ON_BEFORE_TURN
+        assert fired_events[0]["iteration"] == 0
+        assert fired_events[0]["session_key"] == "hooks-test"
+        assert fired_events[0]["user_content"] == "test hooks"
+        # Second event is ON_AFTER_TURN
+        assert fired_events[1]["iteration"] == 0
+        assert fired_events[1]["response"] == "Mock response"
+        assert fired_events[1]["had_tool_calls"] is False
+
+    @pytest.mark.asyncio
+    async def test_hooks_fire_on_compaction(self, temp_dir):
+        """ON_COMPACTION_FLUSH fires when session exceeds memory_window."""
+        from app.hooks import HookRunner, ON_COMPACTION_FLUSH
+
+        compaction_events = []
+
+        async def capture_compaction(context):
+            compaction_events.append(context)
+
+        hook_runner = HookRunner()
+        hook_runner.on(ON_COMPACTION_FLUSH, capture_compaction)
+
+        mock_rag = MagicMock()
+        mock_rag.ingest_text = AsyncMock()
+
+        llm = MagicMock()
+        llm.get_tool_completion = AsyncMock(return_value={
+            "content": "ok",
+            "tool_calls": None,
+            "has_tool_calls": False,
+        })
+
+        registry = ToolRegistry()
+        builder = ContextBuilder()
+        session = Session(key="compact-hooks-test")
+        for i in range(25):
+            session.add_message({"role": "user", "content": f"msg {i}"})
+            session.add_message({"role": "assistant", "content": f"reply {i}"})
+        sm = SessionManager(temp_dir)
+
+        loop = AgentLoop(
+            llm=llm, tool_registry=registry,
+            context_builder=builder, session=session, session_manager=sm,
+            memory_window=20, smol_rag=mock_rag,
+            hook_runner=hook_runner,
+        )
+        await loop.process("trigger compaction")
+
+        assert len(compaction_events) == 1
+        assert compaction_events[0]["session_key"] == "compact-hooks-test"
+        assert compaction_events[0]["message_count"] > 0
