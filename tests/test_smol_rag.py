@@ -3,6 +3,7 @@ Tests for SmolRag main class, focusing on integration and performance bottleneck
 Tests bottlenecks #5 (embedding batching), #6 (string concatenation), #7 (caching).
 """
 import asyncio
+import os
 import time
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -20,18 +21,13 @@ class TestSmolRagBaseline:
     @pytest.mark.integration
     async def test_initialization(self, temp_dir, mock_openai_llm):
         """Test SmolRag initialization."""
-        import os
-
         rag = SmolRag(
             llm=mock_openai_llm,
             embeddings_db=os.path.join(temp_dir, "embeddings"),
             entities_db=os.path.join(temp_dir, "entities"),
             relationships_db=os.path.join(temp_dir, "relationships"),
-            source_to_doc_kv=os.path.join(temp_dir, "source_to_doc.json"),
-            doc_to_source_kv=os.path.join(temp_dir, "doc_to_source.json"),
-            doc_to_excerpt_kv=os.path.join(temp_dir, "doc_to_excerpt.json"),
-            excerpt_kv=os.path.join(temp_dir, "excerpt.json"),
-            graph_db=os.path.join(temp_dir, "graph.graphml")
+            graph_db=os.path.join(temp_dir, "graph.graphml"),
+            db_path=os.path.join(temp_dir, "test.db"),
         )
 
         assert rag is not None
@@ -42,11 +38,12 @@ class TestSmolRagBaseline:
     @pytest.mark.slow
     async def test_document_ingestion_flow(self, temp_dir, mock_openai_llm, sample_document_content):
         """Test full document ingestion pipeline."""
-        import os
-        import tempfile
         from app.vector_store import NanoVectorStore
-        from app.kv_store import JsonKvStore
+        from app.sqlite_store import SqliteKvStore
+        from app.sqlite_mapping_store import SqliteMappingStore
         from app.graph_store import NetworkXGraphStore
+
+        db_path = os.path.join(temp_dir, "test.db")
 
         # Create temporary document file
         doc_path = os.path.join(temp_dir, "test_doc.md")
@@ -59,11 +56,12 @@ class TestSmolRagBaseline:
             embeddings_db=NanoVectorStore(os.path.join(temp_dir, "embeddings"), dimensions=1536),
             entities_db=NanoVectorStore(os.path.join(temp_dir, "entities"), dimensions=1536),
             relationships_db=NanoVectorStore(os.path.join(temp_dir, "relationships"), dimensions=1536),
-            source_to_doc_kv=JsonKvStore(os.path.join(temp_dir, "source_to_doc.json")),
-            doc_to_source_kv=JsonKvStore(os.path.join(temp_dir, "doc_to_source.json")),
-            doc_to_excerpt_kv=JsonKvStore(os.path.join(temp_dir, "doc_to_excerpt.json")),
-            excerpt_kv=JsonKvStore(os.path.join(temp_dir, "excerpt.json")),
-            graph_db=NetworkXGraphStore(os.path.join(temp_dir, "graph.graphml"))
+            source_doc_map=SqliteMappingStore(db_path, "source_doc_map", "source", "doc_id"),
+            doc_excerpt_map=SqliteMappingStore(db_path, "doc_excerpt_map", "doc_id", "excerpt_id"),
+            doc_entity_map=SqliteMappingStore(db_path, "doc_entity_map", "doc_id", "entity_id"),
+            doc_relationship_map=SqliteMappingStore(db_path, "doc_relationship_map", "doc_id", "relationship_id"),
+            excerpt_kv=SqliteKvStore(db_path, "excerpts"),
+            graph_db=NetworkXGraphStore(os.path.join(temp_dir, "graph.graphml")),
         )
 
         # Mock entity extraction response
@@ -82,7 +80,7 @@ class TestSmolRagBaseline:
             await rag.import_documents()
 
         # Verify document was processed
-        doc_id = await rag.source_to_doc_kv.get_by_key(doc_path)
+        doc_id = await rag.source_doc_map.get_right_single(doc_path)
         assert doc_id is not None
 
 
@@ -108,17 +106,13 @@ class TestSmolRagEmbeddingBottlenecks:
         mock_llm.get_embeddings = AsyncMock(side_effect=mock_get_embeddings)
         mock_llm.get_completion = AsyncMock(return_value="Summary")
 
-        import os
         rag = SmolRag(
             llm=mock_llm,
             embeddings_db=os.path.join(temp_dir, "embeddings"),
             entities_db=os.path.join(temp_dir, "entities"),
             relationships_db=os.path.join(temp_dir, "relationships"),
-            source_to_doc_kv=os.path.join(temp_dir, "source_to_doc.json"),
-            doc_to_source_kv=os.path.join(temp_dir, "doc_to_source.json"),
-            doc_to_excerpt_kv=os.path.join(temp_dir, "doc_to_excerpt.json"),
-            excerpt_kv=os.path.join(temp_dir, "excerpt.json"),
-            graph_db=os.path.join(temp_dir, "graph.graphml")
+            graph_db=os.path.join(temp_dir, "graph.graphml"),
+            db_path=os.path.join(temp_dir, "test.db"),
         )
 
         # Process excerpts (simulate document import flow)
@@ -182,21 +176,24 @@ class TestSmolRagStringConcatenationBottleneck:
     @pytest.mark.integration
     async def test_description_growth_pattern(self, temp_dir, mock_openai_llm):
         """Test that entity descriptions grow with each mention."""
-        import os
         from app.graph_store import NetworkXGraphStore
         from app.vector_store import NanoVectorStore
-        from app.kv_store import JsonKvStore
+        from app.sqlite_store import SqliteKvStore
+        from app.sqlite_mapping_store import SqliteMappingStore
+
+        db_path = os.path.join(temp_dir, "test.db")
 
         rag = SmolRag(
             llm=mock_openai_llm,
             embeddings_db=NanoVectorStore(os.path.join(temp_dir, "embeddings"), dimensions=1536),
             entities_db=NanoVectorStore(os.path.join(temp_dir, "entities"), dimensions=1536),
             relationships_db=NanoVectorStore(os.path.join(temp_dir, "relationships"), dimensions=1536),
-            source_to_doc_kv=JsonKvStore(os.path.join(temp_dir, "source_to_doc.json")),
-            doc_to_source_kv=JsonKvStore(os.path.join(temp_dir, "doc_to_source.json")),
-            doc_to_excerpt_kv=JsonKvStore(os.path.join(temp_dir, "doc_to_excerpt.json")),
-            excerpt_kv=JsonKvStore(os.path.join(temp_dir, "excerpt.json")),
-            graph_db=NetworkXGraphStore(os.path.join(temp_dir, "graph.graphml"))
+            source_doc_map=SqliteMappingStore(db_path, "source_doc_map", "source", "doc_id"),
+            doc_excerpt_map=SqliteMappingStore(db_path, "doc_excerpt_map", "doc_id", "excerpt_id"),
+            doc_entity_map=SqliteMappingStore(db_path, "doc_entity_map", "doc_id", "entity_id"),
+            doc_relationship_map=SqliteMappingStore(db_path, "doc_relationship_map", "doc_id", "relationship_id"),
+            excerpt_kv=SqliteKvStore(db_path, "excerpts"),
+            graph_db=NetworkXGraphStore(os.path.join(temp_dir, "graph.graphml")),
         )
 
         # Simulate adding the same entity multiple times with different descriptions
@@ -274,10 +271,12 @@ class TestSmolRagCachingBottleneck:
     @pytest.mark.integration
     async def test_identical_queries_not_cached(self, temp_dir, mock_openai_llm):
         """Test that identical queries are not cached (use_cache=False)."""
-        import os
         from app.graph_store import NetworkXGraphStore
         from app.vector_store import NanoVectorStore
-        from app.kv_store import JsonKvStore
+        from app.sqlite_store import SqliteKvStore
+        from app.sqlite_mapping_store import SqliteMappingStore
+
+        db_path = os.path.join(temp_dir, "test.db")
 
         call_count = {"completion": 0, "embedding": 0}
 
@@ -300,11 +299,12 @@ class TestSmolRagCachingBottleneck:
             embeddings_db=NanoVectorStore(os.path.join(temp_dir, "embeddings"), dimensions=1536),
             entities_db=NanoVectorStore(os.path.join(temp_dir, "entities"), dimensions=1536),
             relationships_db=NanoVectorStore(os.path.join(temp_dir, "relationships"), dimensions=1536),
-            source_to_doc_kv=JsonKvStore(os.path.join(temp_dir, "source_to_doc.json")),
-            doc_to_source_kv=JsonKvStore(os.path.join(temp_dir, "doc_to_source.json")),
-            doc_to_excerpt_kv=JsonKvStore(os.path.join(temp_dir, "doc_to_excerpt.json")),
-            excerpt_kv=JsonKvStore(os.path.join(temp_dir, "excerpt.json")),
-            graph_db=NetworkXGraphStore(os.path.join(temp_dir, "graph.graphml"))
+            source_doc_map=SqliteMappingStore(db_path, "source_doc_map", "source", "doc_id"),
+            doc_excerpt_map=SqliteMappingStore(db_path, "doc_excerpt_map", "doc_id", "excerpt_id"),
+            doc_entity_map=SqliteMappingStore(db_path, "doc_entity_map", "doc_id", "entity_id"),
+            doc_relationship_map=SqliteMappingStore(db_path, "doc_relationship_map", "doc_id", "relationship_id"),
+            excerpt_kv=SqliteKvStore(db_path, "excerpts"),
+            graph_db=NetworkXGraphStore(os.path.join(temp_dir, "graph.graphml")),
         )
 
         # Make same query multiple times
@@ -374,21 +374,24 @@ class TestSmolRagGraphQueryBottleneck:
     @pytest.mark.integration
     async def test_n_plus_one_entity_queries(self, temp_dir, mock_openai_llm, sample_entities):
         """Test N+1 pattern when retrieving entity details."""
-        import os
         from app.graph_store import NetworkXGraphStore
         from app.vector_store import NanoVectorStore
-        from app.kv_store import JsonKvStore
+        from app.sqlite_store import SqliteKvStore
+        from app.sqlite_mapping_store import SqliteMappingStore
+
+        db_path = os.path.join(temp_dir, "test.db")
 
         rag = SmolRag(
             llm=mock_openai_llm,
             embeddings_db=NanoVectorStore(os.path.join(temp_dir, "embeddings"), dimensions=1536),
             entities_db=NanoVectorStore(os.path.join(temp_dir, "entities"), dimensions=1536),
             relationships_db=NanoVectorStore(os.path.join(temp_dir, "relationships"), dimensions=1536),
-            source_to_doc_kv=JsonKvStore(os.path.join(temp_dir, "source_to_doc.json")),
-            doc_to_source_kv=JsonKvStore(os.path.join(temp_dir, "doc_to_source.json")),
-            doc_to_excerpt_kv=JsonKvStore(os.path.join(temp_dir, "doc_to_excerpt.json")),
-            excerpt_kv=JsonKvStore(os.path.join(temp_dir, "excerpt.json")),
-            graph_db=NetworkXGraphStore(os.path.join(temp_dir, "graph.graphml"))
+            source_doc_map=SqliteMappingStore(db_path, "source_doc_map", "source", "doc_id"),
+            doc_excerpt_map=SqliteMappingStore(db_path, "doc_excerpt_map", "doc_id", "excerpt_id"),
+            doc_entity_map=SqliteMappingStore(db_path, "doc_entity_map", "doc_id", "entity_id"),
+            doc_relationship_map=SqliteMappingStore(db_path, "doc_relationship_map", "doc_id", "relationship_id"),
+            excerpt_kv=SqliteKvStore(db_path, "excerpts"),
+            graph_db=NetworkXGraphStore(os.path.join(temp_dir, "graph.graphml")),
         )
 
         # Add entities to graph
@@ -427,10 +430,12 @@ class TestSmolRagEdgeCases:
     @pytest.mark.integration
     async def test_empty_document_import(self, temp_dir, mock_openai_llm):
         """Test importing an empty document."""
-        import os
         from app.graph_store import NetworkXGraphStore
         from app.vector_store import NanoVectorStore
-        from app.kv_store import JsonKvStore
+        from app.sqlite_store import SqliteKvStore
+        from app.sqlite_mapping_store import SqliteMappingStore
+
+        db_path = os.path.join(temp_dir, "test.db")
 
         doc_path = os.path.join(temp_dir, "empty.md")
         with open(doc_path, 'w') as f:
@@ -441,40 +446,44 @@ class TestSmolRagEdgeCases:
             embeddings_db=NanoVectorStore(os.path.join(temp_dir, "embeddings"), dimensions=1536),
             entities_db=NanoVectorStore(os.path.join(temp_dir, "entities"), dimensions=1536),
             relationships_db=NanoVectorStore(os.path.join(temp_dir, "relationships"), dimensions=1536),
-            source_to_doc_kv=JsonKvStore(os.path.join(temp_dir, "source_to_doc.json")),
-            doc_to_source_kv=JsonKvStore(os.path.join(temp_dir, "doc_to_source.json")),
-            doc_to_excerpt_kv=JsonKvStore(os.path.join(temp_dir, "doc_to_excerpt.json")),
-            excerpt_kv=JsonKvStore(os.path.join(temp_dir, "excerpt.json")),
-            graph_db=NetworkXGraphStore(os.path.join(temp_dir, "graph.graphml"))
+            source_doc_map=SqliteMappingStore(db_path, "source_doc_map", "source", "doc_id"),
+            doc_excerpt_map=SqliteMappingStore(db_path, "doc_excerpt_map", "doc_id", "excerpt_id"),
+            doc_entity_map=SqliteMappingStore(db_path, "doc_entity_map", "doc_id", "entity_id"),
+            doc_relationship_map=SqliteMappingStore(db_path, "doc_relationship_map", "doc_id", "relationship_id"),
+            excerpt_kv=SqliteKvStore(db_path, "excerpts"),
+            graph_db=NetworkXGraphStore(os.path.join(temp_dir, "graph.graphml")),
         )
 
         with patch("app.smol_rag.get_docs", return_value=[doc_path]):
             await rag.import_documents()
 
-        doc_id = await rag.source_to_doc_kv.get_by_key(doc_path)
+        doc_id = await rag.source_doc_map.get_right_single(doc_path)
         assert doc_id is not None
-        excerpt_ids = await rag.doc_to_excerpt_kv.get_by_key(doc_id)
+        excerpt_ids = await rag.doc_excerpt_map.get_by_left(doc_id)
         assert excerpt_ids == []
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_query_empty_database(self, temp_dir, mock_openai_llm):
         """Test querying when no documents are imported."""
-        import os
         from app.graph_store import NetworkXGraphStore
         from app.vector_store import NanoVectorStore
-        from app.kv_store import JsonKvStore
+        from app.sqlite_store import SqliteKvStore
+        from app.sqlite_mapping_store import SqliteMappingStore
+
+        db_path = os.path.join(temp_dir, "test.db")
 
         rag = SmolRag(
             llm=mock_openai_llm,
             embeddings_db=NanoVectorStore(os.path.join(temp_dir, "embeddings"), dimensions=1536),
             entities_db=NanoVectorStore(os.path.join(temp_dir, "entities"), dimensions=1536),
             relationships_db=NanoVectorStore(os.path.join(temp_dir, "relationships"), dimensions=1536),
-            source_to_doc_kv=JsonKvStore(os.path.join(temp_dir, "source_to_doc.json")),
-            doc_to_source_kv=JsonKvStore(os.path.join(temp_dir, "doc_to_source.json")),
-            doc_to_excerpt_kv=JsonKvStore(os.path.join(temp_dir, "doc_to_excerpt.json")),
-            excerpt_kv=JsonKvStore(os.path.join(temp_dir, "excerpt.json")),
-            graph_db=NetworkXGraphStore(os.path.join(temp_dir, "graph.graphml"))
+            source_doc_map=SqliteMappingStore(db_path, "source_doc_map", "source", "doc_id"),
+            doc_excerpt_map=SqliteMappingStore(db_path, "doc_excerpt_map", "doc_id", "excerpt_id"),
+            doc_entity_map=SqliteMappingStore(db_path, "doc_entity_map", "doc_id", "entity_id"),
+            doc_relationship_map=SqliteMappingStore(db_path, "doc_relationship_map", "doc_id", "relationship_id"),
+            excerpt_kv=SqliteKvStore(db_path, "excerpts"),
+            graph_db=NetworkXGraphStore(os.path.join(temp_dir, "graph.graphml")),
         )
 
         result = await rag.query("What is Python?")

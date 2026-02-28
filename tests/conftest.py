@@ -10,6 +10,8 @@ import numpy as np
 
 from app.graph_store import NetworkXGraphStore
 from app.kv_store import JsonKvStore
+from app.sqlite_store import SqliteKvStore
+from app.sqlite_mapping_store import SqliteMappingStore
 from app.vector_store import NanoVectorStore
 
 
@@ -31,6 +33,12 @@ def temp_graph_path(temp_dir):
 def temp_kv_path(temp_dir):
     """Provide a temporary path for KV storage."""
     return os.path.join(temp_dir, "test_kv.json")
+
+
+@pytest.fixture
+def temp_sqlite_db_path(temp_dir):
+    """Provide a temporary path for SQLite DB."""
+    return os.path.join(temp_dir, "test.db")
 
 
 @pytest.fixture

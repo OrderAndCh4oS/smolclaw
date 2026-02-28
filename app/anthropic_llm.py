@@ -5,8 +5,8 @@ from typing import Any, Dict, List, Optional
 import anthropic
 from dotenv import load_dotenv
 
-from app.definitions import QUERY_CACHE_KV_PATH, COMPLETION_MODEL
-from app.kv_store import JsonKvStore
+from app.definitions import SQLITE_DB_PATH, COMPLETION_MODEL
+from app.sqlite_store import SqliteKvStore
 from app.logger import logger
 from app.utilities import make_hash
 
@@ -17,7 +17,7 @@ class AnthropicLlm:
     def __init__(self, completion_model=None, query_cache_kv=None) -> None:
         api_key = os.getenv("ANTHROPIC_API_KEY")
         self.client = anthropic.Anthropic(api_key=api_key)
-        self.query_cache_kv = query_cache_kv or JsonKvStore(QUERY_CACHE_KV_PATH)
+        self.query_cache_kv = query_cache_kv or SqliteKvStore(SQLITE_DB_PATH, "query_cache")
         self.completion_model = completion_model or COMPLETION_MODEL
 
     def _get_query_cache_key(self, query: str, model: str, context: str) -> str:

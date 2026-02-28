@@ -5,8 +5,9 @@ from unittest.mock import AsyncMock, patch
 import numpy as np
 import pytest
 
-from app.kv_store import JsonKvStore
 from app.openai_llm import OpenAiLlm
+from app.sqlite_store import SqliteKvStore
+from app.sqlite_mapping_store import SqliteMappingStore
 from app.vector_store import NanoVectorStore
 from app.graph_store import NetworkXGraphStore
 from app.utilities import make_hash
@@ -14,6 +15,7 @@ from app.definitions import KG_SEP
 
 
 class _InMemoryKv:
+    """In-memory KV store matching SqliteKvStore interface for LLM cache tests."""
     def __init__(self):
         self.store = {}
 
@@ -35,36 +37,6 @@ class _InMemoryKv:
 
     async def save(self):
         return None
-
-
-class _RaceyKv(_InMemoryKv):
-    """
-    Intentionally coordinates concurrent reads for selected keys so tests can
-    deterministically expose lost-update races when callers do read/modify/write
-    without higher-level serialization.
-    """
-    def __init__(self, barrier_keys=None, wait_timeout=0.2):
-        super().__init__()
-        self.barrier_keys = set(barrier_keys or [])
-        self.wait_timeout = wait_timeout
-        self._barrier_events = {k: asyncio.Event() for k in self.barrier_keys}
-        self._read_counts = {k: 0 for k in self.barrier_keys}
-
-    async def get_by_key(self, key):
-        if key in self.barrier_keys:
-            self._read_counts[key] += 1
-            if self._read_counts[key] >= 2:
-                self._barrier_events[key].set()
-            try:
-                await asyncio.wait_for(self._barrier_events[key].wait(), timeout=self.wait_timeout)
-            except asyncio.TimeoutError:
-                pass
-        value = self.store.get(key)
-        return list(value) if isinstance(value, list) else value
-
-    async def add(self, key, value):
-        await asyncio.sleep(0)
-        self.store[key] = list(value) if isinstance(value, list) else value
 
 
 class _FakeChoice:
@@ -111,20 +83,18 @@ def _build_rag(temp_dir, llm, excerpt_fn=None):
     pytest.importorskip("nltk")
     from app.smol_rag import SmolRag
 
+    db_path = os.path.join(temp_dir, "test.db")
     return SmolRag(
         llm=llm,
         excerpt_fn=excerpt_fn,
         embeddings_db=NanoVectorStore(os.path.join(temp_dir, "embeddings"), dimensions=1536),
         entities_db=NanoVectorStore(os.path.join(temp_dir, "entities"), dimensions=1536),
         relationships_db=NanoVectorStore(os.path.join(temp_dir, "relationships"), dimensions=1536),
-        source_to_doc_kv=JsonKvStore(os.path.join(temp_dir, "source_to_doc.json")),
-        doc_to_source_kv=JsonKvStore(os.path.join(temp_dir, "doc_to_source.json")),
-        doc_to_excerpt_kv=JsonKvStore(os.path.join(temp_dir, "doc_to_excerpt.json")),
-        doc_to_entity_kv=JsonKvStore(os.path.join(temp_dir, "doc_to_entity.json")),
-        doc_to_relationship_kv=JsonKvStore(os.path.join(temp_dir, "doc_to_relationship.json")),
-        entity_to_doc_kv=JsonKvStore(os.path.join(temp_dir, "entity_to_doc.json")),
-        relationship_to_doc_kv=JsonKvStore(os.path.join(temp_dir, "relationship_to_doc.json")),
-        excerpt_kv=JsonKvStore(os.path.join(temp_dir, "excerpt.json")),
+        source_doc_map=SqliteMappingStore(db_path, "source_doc_map", "source", "doc_id"),
+        doc_excerpt_map=SqliteMappingStore(db_path, "doc_excerpt_map", "doc_id", "excerpt_id"),
+        doc_entity_map=SqliteMappingStore(db_path, "doc_entity_map", "doc_id", "entity_id"),
+        doc_relationship_map=SqliteMappingStore(db_path, "doc_relationship_map", "doc_id", "relationship_id"),
+        excerpt_kv=SqliteKvStore(db_path, "excerpts"),
         graph_db=NetworkXGraphStore(os.path.join(temp_dir, "graph.graphml")),
     )
 
@@ -216,8 +186,8 @@ class TestRuntimeRegressions:
             with patch("app.smol_rag.get_docs", return_value=[doc_path]):
                 await rag.import_documents()
 
-        doc_id = await rag.source_to_doc_kv.get_by_key(doc_path)
-        excerpt_ids = await rag.doc_to_excerpt_kv.get_by_key(doc_id)
+        doc_id = await rag.source_doc_map.get_right_single(doc_path)
+        excerpt_ids = await rag.doc_excerpt_map.get_by_left(doc_id)
         shared_excerpt_id = make_hash("shared", "excerpt_id_")
 
         assert shared_excerpt_id in excerpt_ids
@@ -259,9 +229,8 @@ class TestRuntimeRegressions:
         entity_id = make_hash(entity_name, prefix="ent-")
         relationship_id = make_hash(f"{entity_name}_EntityPeer", prefix="rel-")
 
-        await rag.source_to_doc_kv.add(source, doc_id)
-        await rag.doc_to_source_kv.add(doc_id, source)
-        await rag.doc_to_excerpt_kv.add(doc_id, [excerpt_id])
+        await rag.source_doc_map.add(source, doc_id)
+        await rag.doc_excerpt_map.add_many(doc_id, [excerpt_id])
         await rag.excerpt_kv.add(excerpt_id, {"doc_id": doc_id, "excerpt": "text", "summary": "sum"})
         await rag.embeddings_db.upsert([{
             "__id__": excerpt_id,
@@ -288,10 +257,8 @@ class TestRuntimeRegressions:
             "__vector__": np.zeros(1536, dtype=np.float32),
             "__inserted_at__": 0,
         }])
-        await rag.doc_to_entity_kv.add(doc_id, [entity_id])
-        await rag.entity_to_doc_kv.add(entity_id, [doc_id])
-        await rag.doc_to_relationship_kv.add(doc_id, [relationship_id])
-        await rag.relationship_to_doc_kv.add(relationship_id, [doc_id])
+        await rag.doc_entity_map.add(doc_id, entity_id)
+        await rag.doc_relationship_map.add(doc_id, relationship_id)
 
         await rag.remove_document_by_id(doc_id, persist=False)
 
@@ -310,8 +277,8 @@ class TestRuntimeRegressions:
         entity_name = "EntityShared"
         entity_id = make_hash(entity_name, prefix="ent-")
 
-        await rag.doc_to_excerpt_kv.add(doc_a, [excerpt_a])
-        await rag.doc_to_excerpt_kv.add(doc_b, [excerpt_b])
+        await rag.doc_excerpt_map.add_many(doc_a, [excerpt_a])
+        await rag.doc_excerpt_map.add_many(doc_b, [excerpt_b])
         await rag.excerpt_kv.add(excerpt_a, {"doc_id": doc_a, "excerpt": "a", "summary": "a"})
         await rag.excerpt_kv.add(excerpt_b, {"doc_id": doc_b, "excerpt": "b", "summary": "b"})
         await rag.embeddings_db.upsert([{
@@ -332,16 +299,16 @@ class TestRuntimeRegressions:
             "__vector__": np.zeros(1536, dtype=np.float32),
             "__inserted_at__": 0,
         }])
-        await rag.doc_to_entity_kv.add(doc_a, [entity_id])
-        await rag.doc_to_entity_kv.add(doc_b, [entity_id])
-        await rag.entity_to_doc_kv.add(entity_id, [doc_a, doc_b])
+        await rag.doc_entity_map.add(doc_a, entity_id)
+        await rag.doc_entity_map.add(doc_b, entity_id)
 
         await rag.remove_document_by_id(doc_a, persist=False)
 
         node = rag.graph.get_node(entity_name)
         assert node is not None
         assert node["excerpt_id"] == excerpt_b
-        assert await rag.entity_to_doc_kv.get_by_key(entity_id) == [doc_b]
+        remaining_docs = await rag.doc_entity_map.get_by_right(entity_id)
+        assert remaining_docs == [doc_b]
         assert len(await rag.entities_db.get([entity_id])) == 1
 
     @pytest.mark.asyncio
@@ -353,8 +320,8 @@ class TestRuntimeRegressions:
         entity_name = "EntityOverlap"
         entity_id = make_hash(entity_name, prefix="ent-")
 
-        await rag.doc_to_entity_kv.add(doc_a, [entity_id])
-        await rag.entity_to_doc_kv.add(entity_id, [doc_a, doc_b])
+        await rag.doc_entity_map.add(doc_a, entity_id)
+        await rag.doc_entity_map.add(doc_b, entity_id)
         await rag.graph.async_add_node(
             entity_name,
             category="Type",
@@ -374,8 +341,10 @@ class TestRuntimeRegressions:
         node = rag.graph.get_node(entity_name)
         assert node is not None
         assert node["excerpt_id"] == shared_excerpt
-        assert await rag.doc_to_entity_kv.get_by_key(doc_a) is None
-        assert await rag.entity_to_doc_kv.get_by_key(entity_id) == [doc_b]
+        doc_a_entities = await rag.doc_entity_map.get_by_left(doc_a)
+        assert doc_a_entities == []
+        remaining_docs = await rag.doc_entity_map.get_by_right(entity_id)
+        assert remaining_docs == [doc_b]
         assert len(await rag.entities_db.get([entity_id])) == 1
 
     @pytest.mark.asyncio
@@ -388,8 +357,8 @@ class TestRuntimeRegressions:
         target = "EntityB"
         relationship_id = make_hash(f"{source}_{target}", prefix="rel-")
 
-        await rag.doc_to_relationship_kv.add(doc_a, [relationship_id])
-        await rag.relationship_to_doc_kv.add(relationship_id, [doc_a, doc_b])
+        await rag.doc_relationship_map.add(doc_a, relationship_id)
+        await rag.doc_relationship_map.add(doc_b, relationship_id)
         await rag.graph.async_add_edge(
             source,
             target,
@@ -412,8 +381,10 @@ class TestRuntimeRegressions:
         edge = rag.graph.get_edge((source, target))
         assert edge is not None
         assert edge["excerpt_id"] == shared_excerpt
-        assert await rag.doc_to_relationship_kv.get_by_key(doc_a) is None
-        assert await rag.relationship_to_doc_kv.get_by_key(relationship_id) == [doc_b]
+        doc_a_rels = await rag.doc_relationship_map.get_by_left(doc_a)
+        assert doc_a_rels == []
+        remaining_docs = await rag.doc_relationship_map.get_by_right(relationship_id)
+        assert remaining_docs == [doc_b]
         assert len(await rag.relationships_db.get([relationship_id])) == 1
 
     @pytest.mark.asyncio
@@ -422,22 +393,17 @@ class TestRuntimeRegressions:
         shared_entity_id = make_hash("SharedEntity", prefix="ent-")
         shared_relationship_id = make_hash("SharedEntity_OtherEntity", prefix="rel-")
 
-        rag.doc_to_entity_kv = _InMemoryKv()
-        rag.doc_to_relationship_kv = _InMemoryKv()
-        rag.entity_to_doc_kv = _RaceyKv(barrier_keys={shared_entity_id})
-        rag.relationship_to_doc_kv = _RaceyKv(barrier_keys={shared_relationship_id})
-
         await asyncio.gather(
             rag._track_kg_provenance("doc-a", {shared_entity_id}, {shared_relationship_id}),
             rag._track_kg_provenance("doc-b", {shared_entity_id}, {shared_relationship_id}),
         )
 
-        entity_docs = await rag.entity_to_doc_kv.get_by_key(shared_entity_id)
-        relationship_docs = await rag.relationship_to_doc_kv.get_by_key(shared_relationship_id)
-        doc_a_entities = await rag.doc_to_entity_kv.get_by_key("doc-a")
-        doc_b_entities = await rag.doc_to_entity_kv.get_by_key("doc-b")
-        doc_a_relationships = await rag.doc_to_relationship_kv.get_by_key("doc-a")
-        doc_b_relationships = await rag.doc_to_relationship_kv.get_by_key("doc-b")
+        entity_docs = await rag.doc_entity_map.get_by_right(shared_entity_id)
+        relationship_docs = await rag.doc_relationship_map.get_by_right(shared_relationship_id)
+        doc_a_entities = await rag.doc_entity_map.get_by_left("doc-a")
+        doc_b_entities = await rag.doc_entity_map.get_by_left("doc-b")
+        doc_a_relationships = await rag.doc_relationship_map.get_by_left("doc-a")
+        doc_b_relationships = await rag.doc_relationship_map.get_by_left("doc-b")
 
         assert set(entity_docs) == {"doc-a", "doc-b"}
         assert set(relationship_docs) == {"doc-a", "doc-b"}
@@ -454,14 +420,8 @@ class TestRuntimeRegressions:
         entity_name = "EntitySharedAtomic"
         entity_id = make_hash(entity_name, prefix="ent-")
 
-        rag.doc_to_entity_kv = _InMemoryKv()
-        rag.doc_to_relationship_kv = _InMemoryKv()
-        rag.entity_to_doc_kv = _RaceyKv(barrier_keys={entity_id})
-        rag.relationship_to_doc_kv = _InMemoryKv()
-
-        await rag.doc_to_entity_kv.add(doc_a, [entity_id])
-        await rag.doc_to_entity_kv.add(doc_b, [entity_id])
-        await rag.entity_to_doc_kv.add(entity_id, [doc_a, doc_b])
+        await rag.doc_entity_map.add(doc_a, entity_id)
+        await rag.doc_entity_map.add(doc_b, entity_id)
         await rag.graph.async_add_node(entity_name, category="Type", description="Desc", excerpt_id="shared-excerpt")
         await rag.entities_db.upsert([{
             "__id__": entity_id,
@@ -475,10 +435,8 @@ class TestRuntimeRegressions:
             rag.remove_document_by_id(doc_b, persist=False),
         )
 
-        assert await rag.doc_to_entity_kv.get_by_key(doc_a) is None
-        assert await rag.doc_to_entity_kv.get_by_key(doc_b) is None
-        assert await rag.entity_to_doc_kv.get_by_key(entity_id) is None
+        assert await rag.doc_entity_map.get_by_left(doc_a) == []
+        assert await rag.doc_entity_map.get_by_left(doc_b) == []
+        assert await rag.doc_entity_map.get_by_right(entity_id) == []
         assert await rag.entities_db.get([entity_id]) == []
         assert rag.graph.get_node(entity_name) is None
-
-

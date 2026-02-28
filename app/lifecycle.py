@@ -130,7 +130,7 @@ class MemoryLifecycleManager:
         doc_id = data.get("doc_id")
         source = None
         if doc_id:
-            source = await self.smol_rag.doc_to_source_kv.get_by_key(doc_id)
+            source = await self.smol_rag.source_doc_map.get_left_single(doc_id)
 
         return {
             "excerpt_id": excerpt_id,

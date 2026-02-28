@@ -7,7 +7,8 @@ import numpy as np
 from unittest.mock import AsyncMock, MagicMock
 
 from app.graph_store import NetworkXGraphStore
-from app.kv_store import JsonKvStore
+from app.sqlite_store import SqliteKvStore
+from app.sqlite_mapping_store import SqliteMappingStore
 from app.vector_store import NanoVectorStore
 from app.smol_rag import SmolRag
 
@@ -22,21 +23,19 @@ def rag_temp_dir():
 @pytest.fixture
 def test_rag(rag_temp_dir, mock_openai_llm):
     """Create a SmolRag instance with mock LLM and temp storage."""
+    db_path = os.path.join(rag_temp_dir, "test.db")
     return SmolRag(
         llm=mock_openai_llm,
         embeddings_db=NanoVectorStore(os.path.join(rag_temp_dir, "embeddings.json"), 1536),
         entities_db=NanoVectorStore(os.path.join(rag_temp_dir, "entities.json"), 1536),
         relationships_db=NanoVectorStore(os.path.join(rag_temp_dir, "relationships.json"), 1536),
-        source_to_doc_kv=JsonKvStore(os.path.join(rag_temp_dir, "s2d.json")),
-        doc_to_source_kv=JsonKvStore(os.path.join(rag_temp_dir, "d2s.json")),
-        doc_to_excerpt_kv=JsonKvStore(os.path.join(rag_temp_dir, "d2e.json")),
-        doc_to_entity_kv=JsonKvStore(os.path.join(rag_temp_dir, "d2ent.json")),
-        doc_to_relationship_kv=JsonKvStore(os.path.join(rag_temp_dir, "d2rel.json")),
-        entity_to_doc_kv=JsonKvStore(os.path.join(rag_temp_dir, "ent2d.json")),
-        relationship_to_doc_kv=JsonKvStore(os.path.join(rag_temp_dir, "rel2d.json")),
-        excerpt_kv=JsonKvStore(os.path.join(rag_temp_dir, "excerpts.json")),
-        query_cache_kv=JsonKvStore(os.path.join(rag_temp_dir, "qcache.json")),
-        embedding_cache_kv=JsonKvStore(os.path.join(rag_temp_dir, "ecache.json")),
+        source_doc_map=SqliteMappingStore(db_path, "source_doc_map", "source", "doc_id"),
+        doc_excerpt_map=SqliteMappingStore(db_path, "doc_excerpt_map", "doc_id", "excerpt_id"),
+        doc_entity_map=SqliteMappingStore(db_path, "doc_entity_map", "doc_id", "entity_id"),
+        doc_relationship_map=SqliteMappingStore(db_path, "doc_relationship_map", "doc_id", "relationship_id"),
+        excerpt_kv=SqliteKvStore(db_path, "excerpts"),
+        query_cache_kv=SqliteKvStore(db_path, "query_cache"),
+        embedding_cache_kv=SqliteKvStore(db_path, "embedding_cache"),
         graph_db=NetworkXGraphStore(os.path.join(rag_temp_dir, "kg.graphml")),
         dimensions=1536,
         excerpt_size=500,
@@ -84,18 +83,20 @@ class TestIngestText:
     async def test_ingest_text_with_source_id(self, test_rag):
         text = "Test content for source tracking."
         await test_rag.ingest_text(text, source_id="my-source")
-        has_source = await test_rag.source_to_doc_kv.has("my-source")
+        has_source = await test_rag.source_doc_map.has_left("my-source")
         assert has_source
 
     @pytest.mark.asyncio
     async def test_ingest_text_default_source_id(self, test_rag):
         text = "Test content without explicit source."
         await test_rag.ingest_text(text)
-        all_sources = await test_rag.source_to_doc_kv.get_all()
-        # Should have one entry with a hash-based key
-        assert len(all_sources) == 1
-        key = list(all_sources.keys())[0]
-        assert key.startswith("text-")
+        # The source_doc_map should have one entry with a hash-based source key
+        # We can't call get_all on a mapping store, but we can check the source was added
+        # by checking that the mapping store has at least one entry
+        from app.utilities import make_hash
+        expected_source = make_hash(text, "text-")
+        has_source = await test_rag.source_doc_map.has_left(expected_source)
+        assert has_source
 
     @pytest.mark.asyncio
     async def test_ingest_text_with_obsidian_links(self, test_rag):

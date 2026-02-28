@@ -26,8 +26,8 @@ def mock_lifecycle_rag():
     mock.excerpt_kv.add = AsyncMock(side_effect=add)
     mock.excerpt_kv.all_keys = AsyncMock(side_effect=all_keys)
 
-    mock.doc_to_source_kv = MagicMock()
-    mock.doc_to_source_kv.get_by_key = AsyncMock(return_value="/path/to/source.md")
+    mock.source_doc_map = MagicMock()
+    mock.source_doc_map.get_left_single = AsyncMock(return_value="/path/to/source.md")
 
     mock.rate_limited_get_embedding = AsyncMock(return_value=[0.1] * 1536)
     mock.embeddings_db = MagicMock()

@@ -17,8 +17,7 @@ RUN python -c "import nltk; nltk.download('punkt', quiet=True); nltk.download('p
 COPY app/ app/
 COPY cli/ cli/
 COPY agents/ agents/
-COPY vault/docs/ vault/docs/
-COPY vault/memory/ vault/memory/
+COPY memory/ memory/
 COPY agents.yaml .
 COPY AGENT.md .
 

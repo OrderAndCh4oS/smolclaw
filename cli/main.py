@@ -201,7 +201,7 @@ async def _ingest(path: str):
             content = f.read()
 
         doc_id = make_hash(content, "doc_")
-        if await smol_rag.source_to_doc_kv.has(file_path) and await smol_rag.source_to_doc_kv.equal(file_path, doc_id):
+        if await smol_rag.source_doc_map.has_left(file_path) and await smol_rag.source_doc_map.equal_right(file_path, doc_id):
             console.print(f"[dim]Skipped (unchanged):[/dim] {file_path}")
             skipped += 1
             continue

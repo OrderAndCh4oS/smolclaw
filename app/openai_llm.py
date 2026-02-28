@@ -6,8 +6,8 @@ import os
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from app.definitions import QUERY_CACHE_KV_PATH, EMBEDDING_CACHE_KV_PATH, COMPLETION_MODEL, EMBEDDING_MODEL
-from app.kv_store import JsonKvStore
+from app.definitions import SQLITE_DB_PATH, COMPLETION_MODEL, EMBEDDING_MODEL
+from app.sqlite_store import SqliteKvStore
 from app.logger import logger
 from app.utilities import make_hash
 
@@ -22,8 +22,8 @@ class OpenAiLlm:
         """
         api_key = openai_api_key or os.getenv('OPENAI_API_KEY')
         self.client = OpenAI(api_key=api_key)
-        self.query_cache_kv = query_cache_kv or JsonKvStore(QUERY_CACHE_KV_PATH)
-        self.embedding_cache_kv = embedding_cache_kv or JsonKvStore(EMBEDDING_CACHE_KV_PATH)
+        self.query_cache_kv = query_cache_kv or SqliteKvStore(SQLITE_DB_PATH, "query_cache")
+        self.embedding_cache_kv = embedding_cache_kv or SqliteKvStore(SQLITE_DB_PATH, "embedding_cache")
         self.completion_model = completion_model or COMPLETION_MODEL
         self.embedding_model = embedding_model or EMBEDDING_MODEL
 

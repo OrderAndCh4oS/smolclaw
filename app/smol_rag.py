@@ -8,12 +8,12 @@ from aiolimiter import AsyncLimiter
 
 from app.chunking import preserve_markdown_code_excerpts
 from app.obsidian import parse_wiki_links, parse_tags
-from app.definitions import INPUT_DOCS_DIR, SOURCE_TO_DOC_ID_KV_PATH, DOC_ID_TO_SOURCE_KV_PATH, EMBEDDINGS_DB, \
-    EXCERPT_KV_PATH, DOC_ID_TO_EXCERPT_KV_PATH, DOC_ID_TO_ENTITY_IDS_KV_PATH, DOC_ID_TO_RELATIONSHIP_IDS_KV_PATH, \
-    ENTITY_ID_TO_DOC_IDS_KV_PATH, RELATIONSHIP_ID_TO_DOC_IDS_KV_PATH, KG_DB, ENTITIES_DB, RELATIONSHIPS_DB, KG_SEP, \
+from app.definitions import INPUT_DOCS_DIR, SQLITE_DB_PATH, EMBEDDINGS_DB, \
+    KG_DB, ENTITIES_DB, RELATIONSHIPS_DB, KG_SEP, \
     TUPLE_SEP, REC_SEP, COMPLETE_TAG, LOG_DIR, COMPLETION_MODEL, EMBEDDING_MODEL
 from app.graph_store import NetworkXGraphStore
-from app.kv_store import JsonKvStore
+from app.sqlite_store import SqliteKvStore
+from app.sqlite_mapping_store import SqliteMappingStore
 from app.logger import logger, set_logger
 from app.llm import create_llm
 from app.prompts import get_query_system_prompt, excerpt_summary_prompt, get_extract_entities_prompt, \
@@ -32,17 +32,15 @@ class SmolRag:
             embeddings_db=None,
             entities_db=None,
             relationships_db=None,
-            source_to_doc_kv=None,
-            doc_to_source_kv=None,
-            doc_to_excerpt_kv=None,
-            doc_to_entity_kv=None,
-            doc_to_relationship_kv=None,
-            entity_to_doc_kv=None,
-            relationship_to_doc_kv=None,
+            source_doc_map=None,
+            doc_excerpt_map=None,
+            doc_entity_map=None,
+            doc_relationship_map=None,
             excerpt_kv=None,
             query_cache_kv=None,
             embedding_cache_kv=None,
             graph_db=None,
+            db_path=None,
             dimensions=None,
             excerpt_size=2000,
             overlap=200,
@@ -69,14 +67,12 @@ class SmolRag:
         self.entities_db = entities_db or NanoVectorStore(ENTITIES_DB, self.dimensions)
         self.relationships_db = relationships_db or NanoVectorStore(RELATIONSHIPS_DB, self.dimensions)
 
-        self.source_to_doc_kv = source_to_doc_kv or JsonKvStore(SOURCE_TO_DOC_ID_KV_PATH)
-        self.doc_to_source_kv = doc_to_source_kv or JsonKvStore(DOC_ID_TO_SOURCE_KV_PATH)
-        self.doc_to_excerpt_kv = doc_to_excerpt_kv or JsonKvStore(DOC_ID_TO_EXCERPT_KV_PATH)
-        self.doc_to_entity_kv = doc_to_entity_kv or JsonKvStore(DOC_ID_TO_ENTITY_IDS_KV_PATH)
-        self.doc_to_relationship_kv = doc_to_relationship_kv or JsonKvStore(DOC_ID_TO_RELATIONSHIP_IDS_KV_PATH)
-        self.entity_to_doc_kv = entity_to_doc_kv or JsonKvStore(ENTITY_ID_TO_DOC_IDS_KV_PATH)
-        self.relationship_to_doc_kv = relationship_to_doc_kv or JsonKvStore(RELATIONSHIP_ID_TO_DOC_IDS_KV_PATH)
-        self.excerpt_kv = excerpt_kv or JsonKvStore(EXCERPT_KV_PATH)
+        _db = db_path or SQLITE_DB_PATH
+        self.source_doc_map = source_doc_map or SqliteMappingStore(_db, "source_doc_map", "source", "doc_id")
+        self.doc_excerpt_map = doc_excerpt_map or SqliteMappingStore(_db, "doc_excerpt_map", "doc_id", "excerpt_id")
+        self.doc_entity_map = doc_entity_map or SqliteMappingStore(_db, "doc_entity_map", "doc_id", "entity_id")
+        self.doc_relationship_map = doc_relationship_map or SqliteMappingStore(_db, "doc_relationship_map", "doc_id", "relationship_id")
+        self.excerpt_kv = excerpt_kv or SqliteKvStore(_db, "excerpts")
 
         self.graph = graph_db or NetworkXGraphStore(KG_DB)
 
@@ -114,19 +110,16 @@ class SmolRag:
         return None, None
 
     async def _cleanup_entity_contributions(self, doc_id: str, doc_excerpt_ids: set[str]) -> bool:
-        entity_ids = await self.doc_to_entity_kv.get_by_key(doc_id)
-        if entity_ids is None:
-            return False
+        entity_ids = await self.doc_entity_map.get_by_left(doc_id)
         if not entity_ids:
-            await self.doc_to_entity_kv.remove(doc_id)
-            return True
+            return False
 
         rows = await self.entities_db.get(entity_ids)
         entity_rows_by_id = {row.get("__id__"): row for row in rows}
         ids_to_delete = []
 
         for entity_id in entity_ids:
-            docs = await self.entity_to_doc_kv.get_by_key(entity_id) or []
+            docs = await self.doc_entity_map.get_by_right(entity_id)
             remaining_docs = [item for item in docs if item != doc_id]
 
             entity_row = entity_rows_by_id.get(entity_id)
@@ -138,8 +131,6 @@ class SmolRag:
             if node and "excerpt_id" in node:
                 pruned_excerpt_ids = self._prune_kg_ids(node.get("excerpt_id"), doc_excerpt_ids)
                 if remaining_docs:
-                    # Excerpt IDs are content-hashed and can overlap across docs.
-                    # Keep node state when other docs still reference this entity.
                     effective_excerpt_ids = pruned_excerpt_ids or node.get("excerpt_id", "")
                     updated_node = {**node, "excerpt_id": effective_excerpt_ids}
                     await self.graph.async_add_node(entity_name, **updated_node)
@@ -151,31 +142,26 @@ class SmolRag:
                 else:
                     await self.graph.async_remove_node(entity_name)
 
-            if remaining_docs:
-                await self.entity_to_doc_kv.add(entity_id, remaining_docs)
-            else:
-                await self.entity_to_doc_kv.remove(entity_id)
+            if not remaining_docs:
+                await self.doc_entity_map.remove_by_right(entity_id)
                 ids_to_delete.append(entity_id)
 
-        await self.doc_to_entity_kv.remove(doc_id)
+        await self.doc_entity_map.remove_by_left(doc_id)
         if ids_to_delete:
             await self.entities_db.delete(ids_to_delete)
         return True
 
     async def _cleanup_relationship_contributions(self, doc_id: str, doc_excerpt_ids: set[str]) -> bool:
-        relationship_ids = await self.doc_to_relationship_kv.get_by_key(doc_id)
-        if relationship_ids is None:
-            return False
+        relationship_ids = await self.doc_relationship_map.get_by_left(doc_id)
         if not relationship_ids:
-            await self.doc_to_relationship_kv.remove(doc_id)
-            return True
+            return False
 
         rows = await self.relationships_db.get(relationship_ids)
         relationship_rows_by_id = {row.get("__id__"): row for row in rows}
         ids_to_delete = []
 
         for relationship_id in relationship_ids:
-            docs = await self.relationship_to_doc_kv.get_by_key(relationship_id) or []
+            docs = await self.doc_relationship_map.get_by_right(relationship_id)
             remaining_docs = [item for item in docs if item != doc_id]
 
             relationship_row = relationship_rows_by_id.get(relationship_id)
@@ -188,8 +174,6 @@ class SmolRag:
             if edge and "excerpt_id" in edge:
                 pruned_excerpt_ids = self._prune_kg_ids(edge.get("excerpt_id"), doc_excerpt_ids)
                 if remaining_docs:
-                    # Excerpt IDs are content-hashed and can overlap across docs.
-                    # Keep edge state when other docs still reference this relationship.
                     effective_excerpt_ids = pruned_excerpt_ids or edge.get("excerpt_id", "")
                     updated_edge = {**edge, "excerpt_id": effective_excerpt_ids}
                     await self.graph.async_add_edge(source, target, **updated_edge)
@@ -202,33 +186,22 @@ class SmolRag:
                 else:
                     await self.graph.async_remove_edge(source, target)
 
-            if remaining_docs:
-                await self.relationship_to_doc_kv.add(relationship_id, remaining_docs)
-            else:
-                await self.relationship_to_doc_kv.remove(relationship_id)
+            if not remaining_docs:
+                await self.doc_relationship_map.remove_by_right(relationship_id)
                 ids_to_delete.append(relationship_id)
 
-        await self.doc_to_relationship_kv.remove(doc_id)
+        await self.doc_relationship_map.remove_by_left(doc_id)
         if ids_to_delete:
             await self.relationships_db.delete(ids_to_delete)
         return True
 
     async def _track_kg_provenance(self, doc_id: str, entity_ids: set[str], relationship_ids: set[str]):
         async with self._provenance_lock:
-            await self.doc_to_entity_kv.add(doc_id, sorted(entity_ids))
-            await self.doc_to_relationship_kv.add(doc_id, sorted(relationship_ids))
-
             for entity_id in entity_ids:
-                docs = await self.entity_to_doc_kv.get_by_key(entity_id) or []
-                if doc_id not in docs:
-                    docs.append(doc_id)
-                    await self.entity_to_doc_kv.add(entity_id, docs)
+                await self.doc_entity_map.add(doc_id, entity_id)
 
             for relationship_id in relationship_ids:
-                docs = await self.relationship_to_doc_kv.get_by_key(relationship_id) or []
-                if doc_id not in docs:
-                    docs.append(doc_id)
-                    await self.relationship_to_doc_kv.add(relationship_id, docs)
+                await self.doc_relationship_map.add(doc_id, relationship_id)
 
     async def remove_document_by_id(self, doc_id, persist=True):
         removed_source_map = False
@@ -236,16 +209,16 @@ class SmolRag:
         removed_kg_data = False
         excerpt_ids = []
 
-        if await self.doc_to_source_kv.has(doc_id):
-            source = await self.doc_to_source_kv.get_by_key(doc_id)
-            await asyncio.gather(self.doc_to_source_kv.remove(doc_id), self.source_to_doc_kv.remove(source))
+        if await self.source_doc_map.has_right(doc_id):
+            source = await self.source_doc_map.get_left_single(doc_id)
+            await self.source_doc_map.remove_by_right(doc_id)
             removed_source_map = True
 
-        if await self.doc_to_excerpt_kv.has(doc_id):
-            excerpt_ids = await self.doc_to_excerpt_kv.get_by_key(doc_id) or []
+        excerpt_ids = await self.doc_excerpt_map.get_by_left(doc_id)
+        if excerpt_ids:
             excerpts_to_remove = [self.excerpt_kv.remove(excerpt_id) for excerpt_id in excerpt_ids]
             await asyncio.gather(self.embeddings_db.delete(excerpt_ids), *excerpts_to_remove)
-            await self.doc_to_excerpt_kv.remove(doc_id)
+            await self.doc_excerpt_map.remove_by_left(doc_id)
             removed_excerpt_data = True
 
         excerpt_ids_set = set(excerpt_ids)
@@ -258,16 +231,10 @@ class SmolRag:
             return
 
         save_tasks = []
-        if removed_source_map:
-            save_tasks.extend([self.doc_to_source_kv.save(), self.source_to_doc_kv.save()])
         if removed_excerpt_data:
-            save_tasks.extend([self.excerpt_kv.save(), self.doc_to_excerpt_kv.save(), self.embeddings_db.save()])
+            save_tasks.append(self.embeddings_db.save())
         if removed_kg_data:
             save_tasks.extend([
-                self.doc_to_entity_kv.save(),
-                self.doc_to_relationship_kv.save(),
-                self.entity_to_doc_kv.save(),
-                self.relationship_to_doc_kv.save(),
                 self.entities_db.save(),
                 self.relationships_db.save(),
             ])
@@ -277,8 +244,8 @@ class SmolRag:
 
     async def remove_document_by_source(self, source_id: str):
         """Remove a document by its source ID (file path)."""
-        if await self.source_to_doc_kv.has(source_id):
-            doc_id = await self.source_to_doc_kv.get_by_key(source_id)
+        doc_id = await self.source_doc_map.get_right_single(source_id)
+        if doc_id:
             await self.remove_document_by_id(doc_id)
 
     async def ingest_text(self, content: str, source_id: str = None, save: bool = True):
@@ -288,8 +255,7 @@ class SmolRag:
         source_key = source_id or make_hash(content, "text-")
         doc_id = make_hash(content, "doc_")
 
-        await self.source_to_doc_kv.add(source_key, doc_id)
-        await self.doc_to_source_kv.add(doc_id, source_key)
+        await self.source_doc_map.add(source_key, doc_id)
 
         await self._embed_document(content, doc_id)
         await self._extract_entities(content, doc_id)
@@ -321,14 +287,6 @@ class SmolRag:
 
     async def _save_stores(self):
         await asyncio.gather(
-            self.source_to_doc_kv.save(),
-            self.doc_to_source_kv.save(),
-            self.excerpt_kv.save(),
-            self.doc_to_excerpt_kv.save(),
-            self.doc_to_entity_kv.save(),
-            self.doc_to_relationship_kv.save(),
-            self.entity_to_doc_kv.save(),
-            self.relationship_to_doc_kv.save(),
             self.embeddings_db.save(),
             self.entities_db.save(),
             self.relationships_db.save()
@@ -339,16 +297,16 @@ class SmolRag:
         async with semaphore:
             content = read_file(source)
             doc_id = make_hash(content, "doc_")
-            if not await self.source_to_doc_kv.has(source):
+            if not await self.source_doc_map.has_left(source):
                 logger.info(f"Importing new document: {source} (ID: {doc_id})")
                 await self._add_document_maps(source, content)
                 await self._embed_document(content, doc_id)
                 await self._extract_entities(content, doc_id)
                 return
 
-            if not await self.source_to_doc_kv.equal(source, doc_id):
+            if not await self.source_doc_map.equal_right(source, doc_id):
                 logger.info(f"Updating document: {source} (New ID: {doc_id})")
-                old_doc_id = await self.source_to_doc_kv.get_by_key(source)
+                old_doc_id = await self.source_doc_map.get_right_single(source)
                 await self.remove_document_by_id(old_doc_id, persist=False)
                 await self._add_document_maps(source, content)
                 await self._embed_document(content, doc_id)
@@ -359,9 +317,7 @@ class SmolRag:
 
     async def _add_document_maps(self, source, content):
         doc_id = make_hash(content, "doc_")
-        await self.source_to_doc_kv.add(source, doc_id)
-        await self.doc_to_source_kv.add(doc_id, source)
-        # Saves are batched in import_documents()
+        await self.source_doc_map.add(source, doc_id)
 
     @staticmethod
     def _extract_frontmatter(content: str) -> dict:
@@ -421,8 +377,7 @@ class SmolRag:
             logger.info(f"Created embedding for excerpt {excerpt_id} associated with document {doc_id}")
         await asyncio.gather(*storage_tasks)
 
-        await self.doc_to_excerpt_kv.add(doc_id, excerpt_ids)
-        # Saves are batched in import_documents()
+        await self.doc_excerpt_map.add_many(doc_id, excerpt_ids)
         elapsed = time.time() - start_time
         logger.info(f"Document {doc_id} processed with {len(excerpts)} excerpts in {elapsed:.2f} seconds.")
 
