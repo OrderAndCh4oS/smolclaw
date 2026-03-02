@@ -18,13 +18,13 @@ def mock_lifecycle_rag():
     async def add(key, value):
         excerpt_store[key] = value
 
-    async def all_keys():
-        return list(excerpt_store.keys())
+    async def get_all():
+        return {k: v for k, v in excerpt_store.items()}
 
     mock.excerpt_kv = MagicMock()
     mock.excerpt_kv.get_by_key = AsyncMock(side_effect=get_by_key)
     mock.excerpt_kv.add = AsyncMock(side_effect=add)
-    mock.excerpt_kv.all_keys = AsyncMock(side_effect=all_keys)
+    mock.excerpt_kv.get_all = AsyncMock(side_effect=get_all)
 
     mock.source_doc_map = MagicMock()
     mock.source_doc_map.get_left_single = AsyncMock(return_value="/path/to/source.md")

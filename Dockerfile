@@ -17,12 +17,11 @@ RUN python -c "import nltk; nltk.download('punkt', quiet=True); nltk.download('p
 COPY app/ app/
 COPY cli/ cli/
 COPY agents/ agents/
-COPY memory/ memory/
 COPY agents.yaml .
 COPY AGENT.md .
 
 # Create runtime directories (overridable via volume mounts)
-RUN mkdir -p store cache logs sessions
+RUN mkdir -p store cache logs sessions memory
 
 # Non-root user
 RUN useradd --create-home --shell /bin/bash smolclaw \

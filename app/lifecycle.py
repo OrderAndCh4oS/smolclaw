@@ -29,8 +29,8 @@ class MemoryLifecycleManager:
         cutoff = time.time() - (threshold_days * 86400)
         decayed_count = 0
 
-        all_keys = await self.smol_rag.excerpt_kv.all_keys()
-        for key in all_keys:
+        all_data = await self.smol_rag.excerpt_kv.get_all()
+        for key in all_data:
             data = await self.smol_rag.excerpt_kv.get_by_key(key)
             if not data:
                 continue

@@ -2,9 +2,8 @@
 .venv
 .idea
 __pycache__/
-app/logs/*
-!app/logs/.gitkeep
-app/cache/*
-!app/cache/.gitkeep
 cache/
 store/
+logs/
+sessions/
+memory/

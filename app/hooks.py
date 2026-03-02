@@ -44,21 +44,6 @@ ON_COMPACTION_FLUSH = "on_compaction_flush"
 ON_FILE_CHANGE = "on_file_change"
 
 
-class PromotionHook:
-    """Built-in hook that promotes accessed memories on_after_turn."""
-
-    def __init__(self, lifecycle_manager):
-        self.lifecycle_manager = lifecycle_manager
-
-    async def __call__(self, context: Dict[str, Any]):
-        tool_calls = context.get("tool_calls", [])
-        for tc in tool_calls:
-            if tc in ("memory_search", "memory_graph_query"):
-                # The actual excerpt promotion happens through the lifecycle manager
-                # when specific excerpt IDs are known — this hook serves as the trigger point
-                pass
-
-
 class DecayHook:
     """Built-in hook that decays stale memories on_session_start."""
 

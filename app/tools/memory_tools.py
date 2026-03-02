@@ -229,37 +229,3 @@ class MemoryStoreTool(Tool):
         return f"Stored memory: {file_id}"
 
 
-class MemoryGetTool(Tool):
-    @property
-    def name(self) -> str:
-        return "memory_get"
-
-    @property
-    def description(self) -> str:
-        return "Read a memory file by its path or identifier from the memory directory."
-
-    @property
-    def parameters(self) -> dict:
-        return {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "File name or path within the memory directory (e.g. 'mem-abc123.md')",
-                },
-            },
-            "required": ["path"],
-        }
-
-    def __init__(self, memory_docs_dir: str):
-        self.memory_docs_dir = memory_docs_dir
-
-    async def execute(self, **kwargs) -> str:
-        path = kwargs["path"]
-        # If it's just a filename, resolve relative to memory dir
-        if not os.path.isabs(path):
-            path = os.path.join(self.memory_docs_dir, path)
-        if not os.path.exists(path):
-            return f"Not found: {path}"
-        with open(path) as f:
-            return f.read()

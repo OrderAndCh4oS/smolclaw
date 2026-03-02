@@ -1,4 +1,5 @@
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -61,7 +62,6 @@ class ContextAssembler(ContextBuilder):
         if not indexed_at:
             return 0.5
         age_days = (time.time() - indexed_at) / 86400.0
-        import math
         return math.exp(-0.693 * age_days / self.decay_half_life_days)
 
     def _score_excerpt(self, excerpt_data: dict) -> float:

@@ -87,7 +87,7 @@ class OpenAiLlm:
 
     # Todo: add caching for chat completion
     def get_chat_completion(self, query: str, model: Optional[str] = None, context: str = "",
-                            chat_history: List[Dict[str, str]] = []) -> List[Dict[str, str]]:
+                            chat_history: List[Dict[str, str]] = None) -> List[Dict[str, str]]:
         """
         Gets a chat completion by providing the chat history and query.
 
@@ -97,6 +97,7 @@ class OpenAiLlm:
         :param chat_history: List of previous chat messages.
         :return: Updated chat history including the assistant's response.
         """
+        chat_history = chat_history or []
         model = model or self.completion_model
         system_message = [{"role": "system", "content": context}] if context else []
         messages = chat_history + [{"role": "user", "content": query}]

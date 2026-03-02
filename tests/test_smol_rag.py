@@ -21,12 +21,15 @@ class TestSmolRagBaseline:
     @pytest.mark.integration
     async def test_initialization(self, temp_dir, mock_openai_llm):
         """Test SmolRag initialization."""
+        from app.vector_store import NanoVectorStore
+        from app.graph_store import NetworkXGraphStore
+
         rag = SmolRag(
             llm=mock_openai_llm,
-            embeddings_db=os.path.join(temp_dir, "embeddings"),
-            entities_db=os.path.join(temp_dir, "entities"),
-            relationships_db=os.path.join(temp_dir, "relationships"),
-            graph_db=os.path.join(temp_dir, "graph.graphml"),
+            embeddings_db=NanoVectorStore(os.path.join(temp_dir, "embeddings"), dimensions=1536),
+            entities_db=NanoVectorStore(os.path.join(temp_dir, "entities"), dimensions=1536),
+            relationships_db=NanoVectorStore(os.path.join(temp_dir, "relationships"), dimensions=1536),
+            graph_db=NetworkXGraphStore(os.path.join(temp_dir, "graph.graphml")),
             db_path=os.path.join(temp_dir, "test.db"),
         )
 
@@ -106,12 +109,15 @@ class TestSmolRagEmbeddingBottlenecks:
         mock_llm.get_embeddings = AsyncMock(side_effect=mock_get_embeddings)
         mock_llm.get_completion = AsyncMock(return_value="Summary")
 
+        from app.vector_store import NanoVectorStore
+        from app.graph_store import NetworkXGraphStore
+
         rag = SmolRag(
             llm=mock_llm,
-            embeddings_db=os.path.join(temp_dir, "embeddings"),
-            entities_db=os.path.join(temp_dir, "entities"),
-            relationships_db=os.path.join(temp_dir, "relationships"),
-            graph_db=os.path.join(temp_dir, "graph.graphml"),
+            embeddings_db=NanoVectorStore(os.path.join(temp_dir, "embeddings"), dimensions=1536),
+            entities_db=NanoVectorStore(os.path.join(temp_dir, "entities"), dimensions=1536),
+            relationships_db=NanoVectorStore(os.path.join(temp_dir, "relationships"), dimensions=1536),
+            graph_db=NetworkXGraphStore(os.path.join(temp_dir, "graph.graphml")),
             db_path=os.path.join(temp_dir, "test.db"),
         )
 

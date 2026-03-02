@@ -210,7 +210,6 @@ class SmolRag:
         excerpt_ids = []
 
         if await self.source_doc_map.has_right(doc_id):
-            source = await self.source_doc_map.get_left_single(doc_id)
             await self.source_doc_map.remove_by_right(doc_id)
             removed_source_map = True
 
