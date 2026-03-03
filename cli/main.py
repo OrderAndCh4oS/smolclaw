@@ -25,7 +25,7 @@ from app.llm import create_llm
 from app.session import SessionManager
 from app.smol_rag import SmolRag
 from app.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
-from app.tools.memory_tools import MemorySearchTool, MemoryGraphQueryTool, MemoryStoreTool, MemoryRelateTool
+from app.tools.memory_tools import MemorySearchTool, MemoryGraphQueryTool, MemoryStoreTool, MemoryRelateTool, MemoryRecallTool
 from app.tools.registry import ToolRegistry
 from app.tools.shell import ExecTool
 from app.tools.web import WebSearchTool, WebFetchTool
@@ -48,6 +48,7 @@ def _build_tool_registry(smol_rag: SmolRag, workspace: str) -> ToolRegistry:
     registry.register(MemoryGraphQueryTool(smol_rag))
     registry.register(MemoryStoreTool(smol_rag, ensure_dir(MEMORY_DOCS_DIR)))
     registry.register(MemoryRelateTool(smol_rag))
+    registry.register(MemoryRecallTool(smol_rag))
     registry.register(WebSearchTool())
     registry.register(WebFetchTool())
     return registry
@@ -99,9 +100,10 @@ def chat(
     model: str = typer.Option(AGENT_MODEL, "--model", "-m", help="LLM model to use"),
     agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Agent name from agents.yaml"),
     agents_config: str = typer.Option(DEFAULT_AGENTS_CONFIG, "--agents-config", help="Path to agents YAML config"),
+    auto_export: bool = typer.Option(True, "--auto-export/--no-auto-export", help="Auto-export session on close"),
 ):
     """Start an interactive chat session."""
-    asyncio.run(_chat_loop(session_key, workspace, model, agent, agents_config))
+    asyncio.run(_chat_loop(session_key, workspace, model, agent, agents_config, auto_export))
 
 
 async def _chat_loop(
@@ -110,6 +112,7 @@ async def _chat_loop(
     model: str,
     agent_name: Optional[str] = None,
     agents_config: str = DEFAULT_AGENTS_CONFIG,
+    auto_export: bool = True,
 ):
     ensure_dir(SESSIONS_DIR)
 
@@ -130,6 +133,17 @@ async def _chat_loop(
 
         session = session_manager.get_or_create(session_key)
 
+        from app.hooks import HookRunner, ON_SESSION_END
+        from app.session_export_hook import SessionExportHook
+        hook_runner = HookRunner()
+        if auto_export:
+            export_hook = SessionExportHook(
+                smol_rag=smol_rag,
+                llm=llm,
+                memory_dir=ensure_dir(MEMORY_DOCS_DIR),
+            )
+            hook_runner.on(ON_SESSION_END, export_hook)
+
         agent = AgentLoop(
             llm=llm,
             tool_registry=registry,
@@ -139,6 +153,7 @@ async def _chat_loop(
             max_iterations=MAX_ITERATIONS,
             memory_window=MEMORY_WINDOW,
             smol_rag=smol_rag,
+            hook_runner=hook_runner,
         )
         label = "SmolClaw"
 
@@ -172,6 +187,11 @@ async def _chat_loop(
         console.print()
         console.print(Markdown(response))
         console.print()
+
+    # Fire session end hooks (auto-export journal + index)
+    with console.status("[bold cyan]exporting session...[/bold cyan]"):
+        await agent.close()
+    console.print("[dim]Session exported.[/dim]")
 
 
 @app.command()
@@ -256,6 +276,41 @@ async def _serve(port: int, token_issuer: str, gateway_url: str):
     from app.gateway import Gateway
     gw = Gateway(port=port, token_issuer_url=token_issuer, gateway_url=gateway_url)
     await gw.start()
+
+
+@app.command()
+def recall(
+    query: str = typer.Argument(..., help="Search query for past sessions"),
+    mode: str = typer.Option("topic", "--mode", "-m", help="Search mode: topic or temporal"),
+    days: float = typer.Option(7, "--days", "-d", help="For temporal mode: how many days back"),
+):
+    """Search past sessions using BM25 + semantic search."""
+    asyncio.run(_recall(query, mode, days))
+
+
+async def _recall(query: str, mode: str, days: float):
+    smol_rag = SmolRag()
+    tool = MemoryRecallTool(smol_rag)
+    result = await tool.execute(query=query, mode=mode, days=days)
+    console.print(Markdown(result))
+
+
+@app.command(name="index-sessions")
+def index_sessions(
+    sessions_dir: str = typer.Option(SESSIONS_DIR, "--sessions-dir", help="Sessions directory"),
+    memory_dir: str = typer.Option(MEMORY_DOCS_DIR, "--memory-dir", help="Memory docs directory"),
+):
+    """Index all past sessions into SmolRAG for recall."""
+    asyncio.run(_index_sessions(sessions_dir, memory_dir))
+
+
+async def _index_sessions(sessions_dir: str, memory_dir: str):
+    from app.session_indexer import index_all_sessions
+    smol_rag = SmolRag()
+    results = await index_all_sessions(sessions_dir, smol_rag, memory_dir=memory_dir)
+    for key, source_id in results.items():
+        console.print(f"[green]Indexed:[/green] {key} -> {source_id}")
+    console.print(f"\n[bold]Done:[/bold] {len(results)} sessions indexed")
 
 
 if __name__ == "__main__":

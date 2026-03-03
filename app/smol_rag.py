@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 from aiolimiter import AsyncLimiter
 
+from app.bm25_store import BM25Store
 from app.chunking import preserve_markdown_code_excerpts
 from app.obsidian import parse_wiki_links, parse_tags
 from app.definitions import INPUT_DOCS_DIR, SQLITE_DB_PATH, EMBEDDINGS_DB, \
@@ -37,6 +38,7 @@ class SmolRag:
             doc_entity_map=None,
             doc_relationship_map=None,
             excerpt_kv=None,
+            bm25_store=None,
             query_cache_kv=None,
             embedding_cache_kv=None,
             graph_db=None,
@@ -73,6 +75,7 @@ class SmolRag:
         self.doc_entity_map = doc_entity_map or SqliteMappingStore(_db, "doc_entity_map", "doc_id", "entity_id")
         self.doc_relationship_map = doc_relationship_map or SqliteMappingStore(_db, "doc_relationship_map", "doc_id", "relationship_id")
         self.excerpt_kv = excerpt_kv or SqliteKvStore(_db, "excerpts")
+        self.bm25_store = bm25_store or BM25Store(_db, "bm25_index")
 
         self.graph = graph_db or NetworkXGraphStore(KG_DB)
 
@@ -216,7 +219,8 @@ class SmolRag:
         excerpt_ids = await self.doc_excerpt_map.get_by_left(doc_id)
         if excerpt_ids:
             excerpts_to_remove = [self.excerpt_kv.remove(excerpt_id) for excerpt_id in excerpt_ids]
-            await asyncio.gather(self.embeddings_db.delete(excerpt_ids), *excerpts_to_remove)
+            bm25_removes = [self.bm25_store.remove(excerpt_id) for excerpt_id in excerpt_ids]
+            await asyncio.gather(self.embeddings_db.delete(excerpt_ids), *excerpts_to_remove, *bm25_removes)
             await self.doc_excerpt_map.remove_by_left(doc_id)
             removed_excerpt_data = True
 
@@ -288,7 +292,8 @@ class SmolRag:
         await asyncio.gather(
             self.embeddings_db.save(),
             self.entities_db.save(),
-            self.relationships_db.save()
+            self.relationships_db.save(),
+            self.bm25_store.save(),
         )
         self.graph.save()
 
@@ -373,6 +378,7 @@ class SmolRag:
                 if key in doc_metadata:
                     excerpt_data[key] = doc_metadata[key]
             storage_tasks.append(self.excerpt_kv.add(excerpt_id, excerpt_data))
+            storage_tasks.append(self.bm25_store.add(excerpt_id, excerpt))
             logger.info(f"Created embedding for excerpt {excerpt_id} associated with document {doc_id}")
         await asyncio.gather(*storage_tasks)
 
@@ -586,12 +592,22 @@ class SmolRag:
         system_prompt = get_kg_query_system_prompt(context)
         return await self.rate_limited_get_completion(text, context=system_prompt.strip(), use_cache=True)
 
+    async def bm25_query(self, text: str, top_k: int = 10) -> list[dict]:
+        """Pure BM25 keyword search over excerpts."""
+        results = await self.bm25_store.query(text, top_k=top_k)
+        excerpts = []
+        for r in results:
+            data = await self.excerpt_kv.get_by_key(r["doc_id"])
+            if data and "excerpt" in data:
+                excerpts.append(data)
+        return excerpts
+
     @staticmethod
     def _filter_excerpts_by_type(excerpts: list[dict], memory_type: str) -> list[dict]:
         tag = f"#{memory_type}"
         return [e for e in excerpts if tag in e.get("excerpt", "")]
 
-    async def mix_query(self, text, memory_type: str | None = None):
+    async def mix_query(self, text, memory_type: str | None = None, include_bm25: bool = False):
         prompt = get_high_low_level_keywords_prompt(text)
         result = await self.rate_limited_get_completion(prompt)
         keyword_data = extract_json_from_text(result) or {}
@@ -604,6 +620,15 @@ class SmolRag:
         kg_relations = ll_relations + hl_dataset
         kg_excerpts = ll_entity_excerpts + hl_entity_excerpts
         query_excerpts = await self._get_query_excerpts(text)
+
+        # Merge BM25 results when requested
+        if include_bm25:
+            bm25_excerpts = await self.bm25_query(text, top_k=10)
+            seen_ids = {e.get("doc_id") for e in query_excerpts if "doc_id" in e}
+            for e in bm25_excerpts:
+                if e.get("doc_id") not in seen_ids:
+                    query_excerpts.append(e)
+                    seen_ids.add(e.get("doc_id"))
 
         if memory_type:
             kg_excerpts = self._filter_excerpts_by_type(kg_excerpts, memory_type)

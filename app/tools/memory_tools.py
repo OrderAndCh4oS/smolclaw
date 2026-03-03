@@ -1,10 +1,12 @@
 import os
+import time
 from datetime import datetime, timezone
 
 from app.tools.base import Tool
 from app.utilities import make_hash
 
 MEMORY_TYPES = ["fact", "decision", "preference", "episode", "task", "journal", "reference"]
+RECALL_MODES = ["topic", "temporal"]
 
 
 def format_memory_content(
@@ -227,5 +229,78 @@ class MemoryStoreTool(Tool):
 
         await self.smol_rag.ingest_text(formatted, source_id=source_id)
         return f"Stored memory: {file_id}"
+
+
+class MemoryRecallTool(Tool):
+    @property
+    def name(self) -> str:
+        return "memory_recall"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Recall past session content and memories. "
+            "Use 'topic' mode for keyword+semantic search over past sessions. "
+            "Use 'temporal' mode to find recent session memories by time."
+        )
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query text"},
+                "mode": {
+                    "type": "string",
+                    "enum": RECALL_MODES,
+                    "description": "topic: hybrid BM25+vector+KG search; temporal: recent memories by time",
+                },
+                "days": {
+                    "type": "number",
+                    "description": "For temporal mode: how many days back to search (default 7)",
+                },
+            },
+            "required": ["query", "mode"],
+        }
+
+    def __init__(self, smol_rag):
+        self.smol_rag = smol_rag
+
+    async def execute(self, **kwargs) -> str:
+        query = kwargs["query"]
+        mode = kwargs.get("mode", "topic")
+        days = kwargs.get("days", 7)
+
+        if mode == "topic":
+            return await self.smol_rag.mix_query(
+                query, memory_type="episode", include_bm25=True,
+            )
+        elif mode == "temporal":
+            return await self._temporal_query(days)
+        return "Unknown recall mode."
+
+    async def _temporal_query(self, days: float) -> str:
+        cutoff = time.time() - (days * 86400)
+        all_excerpts = await self.smol_rag.excerpt_kv.get_all()
+        matches = []
+        for excerpt_id, data in all_excerpts.items():
+            if not isinstance(data, dict):
+                continue
+            if data.get("memory_type") != "episode":
+                continue
+            indexed_at = data.get("indexed_at", 0)
+            if indexed_at >= cutoff:
+                matches.append((indexed_at, data))
+
+        if not matches:
+            return "No recent session memories found."
+
+        matches.sort(key=lambda x: x[0], reverse=True)
+        parts = []
+        for _, data in matches[:20]:
+            excerpt = data.get("excerpt", "")
+            summary = data.get("summary", "")
+            parts.append(f"## Excerpt\n{excerpt}\n\n## Summary\n{summary}")
+        return "\n\n---\n\n".join(parts)
 
 

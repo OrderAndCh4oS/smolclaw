@@ -3,7 +3,7 @@ from typing import Awaitable, Callable, Optional
 
 from app.context_builder import ContextBuilder
 from app.definitions import MAX_ITERATIONS, MEMORY_WINDOW
-from app.hooks import HookRunner, ON_BEFORE_TURN, ON_AFTER_TURN, ON_COMPACTION_FLUSH
+from app.hooks import HookRunner, ON_BEFORE_TURN, ON_AFTER_TURN, ON_COMPACTION_FLUSH, ON_SESSION_END
 from app.logger import logger
 from app.session import Session, SessionManager
 from app.tools.registry import ToolRegistry
@@ -130,6 +130,13 @@ class AgentLoop:
     def request_stop(self):
         """Signal the loop to stop after the current iteration completes."""
         self._stop_after_current = True
+
+    async def close(self):
+        """Fire session end hooks. Call this when the session is ending."""
+        await self.hook_runner.fire(ON_SESSION_END, {
+            "session_key": self.session.key,
+            "session": self.session,
+        })
 
     async def _maybe_consolidate(self):
         if not self.smol_rag:
