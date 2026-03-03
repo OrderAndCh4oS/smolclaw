@@ -1,5 +1,0 @@
-{"key": "tool-usage-test", "last_consolidated": 0}
-{"role": "user", "content": "Use memory_search to search for 'test'. Tell me what you find."}
-{"role": "assistant", "content": "I searched memory for the term \"test\" but did not find any relevant stored memories or facts that match this query. If you want me to search in a specific context or for a related term, please let me know!"}
-{"role": "user", "content": "Use memory_search to search for 'test'. Tell me what you find."}
-{"role": "assistant", "content": "I found a memory related to \"test\" that specifically pertains to persistence test code in integration testing. The key elements are unique persistence test codes tagged as #integration_testPERSIST_691000d8 and #integration_testPERSIST_b3d78b08. These codes are important identifiers used within the integration test framework to validate persistence functionality in the system or application. Would you like more details or help with something related to these tests?"}

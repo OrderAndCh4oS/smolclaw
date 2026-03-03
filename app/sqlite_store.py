@@ -6,11 +6,7 @@ import aiosqlite
 
 
 class SqliteKvStore:
-    """Drop-in async KV store backed by a SQLite table.
-
-    Matches the JsonKvStore interface so callers need no changes.
-    Writes are immediate (no separate save() step required).
-    """
+    """Async KV store backed by a SQLite table."""
 
     def __init__(self, db_path: str, table: str):
         self.db_path = db_path
@@ -75,10 +71,6 @@ class SqliteKvStore:
     async def equal(self, key, value) -> bool:
         existing = await self.get_by_key(key)
         return existing == value
-
-    async def save(self):
-        """No-op — writes are immediate. Preserved for API compatibility."""
-        pass
 
     async def close(self):
         if self._db is not None:

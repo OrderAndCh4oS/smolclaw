@@ -19,10 +19,9 @@ def _make_mock_response(content="Hello", tool_calls=None):
 class TestGetToolCompletion:
     @pytest.mark.asyncio
     async def test_get_tool_completion_no_tools(self):
-        with patch("app.openai_llm.OpenAI") as MockClient:
-            mock_client = MagicMock()
-            mock_client.chat.completions.create.return_value = _make_mock_response("answer")
-            MockClient.return_value = mock_client
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = MagicMock(return_value=_make_mock_response("answer"))
+        with patch("app.openai_llm.OpenAI", return_value=mock_client):
 
             llm = OpenAiLlm(openai_api_key="test-key")
             result = await llm.get_tool_completion(
@@ -38,12 +37,11 @@ class TestGetToolCompletion:
         tool_call.function.name = "read_file"
         tool_call.function.arguments = '{"path": "/tmp/test"}'
 
-        with patch("app.openai_llm.OpenAI") as MockClient:
-            mock_client = MagicMock()
-            mock_client.chat.completions.create.return_value = _make_mock_response(
-                content=None, tool_calls=[tool_call]
-            )
-            MockClient.return_value = mock_client
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = MagicMock(return_value=_make_mock_response(
+            content=None, tool_calls=[tool_call]
+        ))
+        with patch("app.openai_llm.OpenAI", return_value=mock_client):
 
             llm = OpenAiLlm(openai_api_key="test-key")
             result = await llm.get_tool_completion(
@@ -60,10 +58,9 @@ class TestGetToolCompletion:
 
     @pytest.mark.asyncio
     async def test_get_tool_completion_no_tool_calls(self):
-        with patch("app.openai_llm.OpenAI") as MockClient:
-            mock_client = MagicMock()
-            mock_client.chat.completions.create.return_value = _make_mock_response("just text")
-            MockClient.return_value = mock_client
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = MagicMock(return_value=_make_mock_response("just text"))
+        with patch("app.openai_llm.OpenAI", return_value=mock_client):
 
             llm = OpenAiLlm(openai_api_key="test-key")
             result = await llm.get_tool_completion(
@@ -76,10 +73,9 @@ class TestGetToolCompletion:
 
     @pytest.mark.asyncio
     async def test_get_tool_completion_uses_model(self):
-        with patch("app.openai_llm.OpenAI") as MockClient:
-            mock_client = MagicMock()
-            mock_client.chat.completions.create.return_value = _make_mock_response("ok")
-            MockClient.return_value = mock_client
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = MagicMock(return_value=_make_mock_response("ok"))
+        with patch("app.openai_llm.OpenAI", return_value=mock_client):
 
             llm = OpenAiLlm(openai_api_key="test-key")
             await llm.get_tool_completion(
@@ -91,10 +87,9 @@ class TestGetToolCompletion:
 
     @pytest.mark.asyncio
     async def test_get_tool_completion_error_handling(self):
-        with patch("app.openai_llm.OpenAI") as MockClient:
-            mock_client = MagicMock()
-            mock_client.chat.completions.create.side_effect = RuntimeError("API error")
-            MockClient.return_value = mock_client
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = MagicMock(side_effect=RuntimeError("API error"))
+        with patch("app.openai_llm.OpenAI", return_value=mock_client):
 
             llm = OpenAiLlm(openai_api_key="test-key")
             with pytest.raises(RuntimeError, match="API error"):
@@ -114,12 +109,11 @@ class TestGetToolCompletion:
         tc2.function.name = "write_file"
         tc2.function.arguments = '{"path": "/b", "content": "hello"}'
 
-        with patch("app.openai_llm.OpenAI") as MockClient:
-            mock_client = MagicMock()
-            mock_client.chat.completions.create.return_value = _make_mock_response(
-                content=None, tool_calls=[tc1, tc2]
-            )
-            MockClient.return_value = mock_client
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = MagicMock(return_value=_make_mock_response(
+            content=None, tool_calls=[tc1, tc2]
+        ))
+        with patch("app.openai_llm.OpenAI", return_value=mock_client):
 
             llm = OpenAiLlm(openai_api_key="test-key")
             result = await llm.get_tool_completion(

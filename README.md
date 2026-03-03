@@ -31,7 +31,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 ## CLI Usage
 
-SmolClaw's CLI has four commands: `chat`, `ingest`, `watch`, and `serve`.
+SmolClaw's CLI has six commands: `chat`, `ingest`, `watch`, `serve`, `recall`, and `reset`.
 
 ### Interactive Chat
 
@@ -74,6 +74,22 @@ Start the WebSocket gateway for programmatic access:
 ```bash
 python -m cli.main serve
 ```
+
+### Reset
+
+Wipe all persistent data — memories, sessions, indexes, and caches — for a full reset. The `input_docs/` directory (your source material) is preserved.
+
+```bash
+python -m cli.main reset
+```
+
+You'll be prompted for confirmation. Pass `--force` to skip it (useful for scripts):
+
+```bash
+python -m cli.main reset --force
+```
+
+This deletes the SQLite database, vector and entity JSON files, the knowledge graph, and all files in `sessions/`, `memory/`, `logs/`, and `cache/`. After a reset, stores are recreated automatically the next time you run any command.
 
 ## Tools
 
@@ -142,9 +158,20 @@ app/
     web.py             # web_search, web_fetch
     shell.py           # exec
     spawn.py           # spawn_agent, get_result, await_result
+  reset.py             # Full store wipe (reset command)
 cli/
-  main.py              # Typer CLI (chat, ingest, watch, serve)
-memory/                # Memory documents directory
+  main.py              # Typer CLI (chat, ingest, watch, serve, recall, reset)
+store/                 # All persistent data (gitignored)
+  smolclaw.db          # SQLite (excerpts, mappings, caches, BM25)
+  embeddings_db.json   # NanoVectorDB embeddings
+  entities_db.json     # Entity data
+  relationships_db.json # Relationship data
+  kg_db.graphml        # NetworkX knowledge graph
+  sessions/            # JSONL session files
+  memory/              # Journal and session markdown docs
+  logs/                # Log files
+  cache/               # Cache files
+  input_docs/          # User source material (preserved by reset)
 agents.yaml            # Named agent configurations
 AGENT.md               # Shared bootstrap (loaded by all agents)
 ```

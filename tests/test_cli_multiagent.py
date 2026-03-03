@@ -56,10 +56,9 @@ class TestCliMultiagent:
 
     def test_chat_with_agent_flag_loads_config(self, agents_yaml, mock_smol_rag, sessions_dir):
         sm = SessionManager(sessions_dir)
-        with patch("cli.main._build_tool_registry") as mock_registry:
-            from app.tools.registry import ToolRegistry
-            registry = ToolRegistry()
-            mock_registry.return_value = registry
+        from app.tools.registry import ToolRegistry
+        registry = ToolRegistry()
+        with patch("cli.main._build_tool_registry", return_value=registry):
 
             agent = _build_multiagent(
                 agent_name="researcher",
@@ -78,10 +77,9 @@ class TestCliMultiagent:
         self, agents_yaml, mock_smol_rag, sessions_dir
     ):
         sm = SessionManager(sessions_dir)
-        with patch("cli.main._build_tool_registry") as mock_registry:
-            from app.tools.registry import ToolRegistry
-            registry = ToolRegistry()
-            mock_registry.return_value = registry
+        from app.tools.registry import ToolRegistry
+        registry = ToolRegistry()
+        with patch("cli.main._build_tool_registry", return_value=registry):
 
             agent = _build_default_chat_agent(
                 agents_config_path=agents_yaml,
@@ -136,10 +134,9 @@ class TestCliMultiagent:
 
     def test_multiagent_registers_spawn_tools(self, agents_yaml, mock_smol_rag, sessions_dir):
         sm = SessionManager(sessions_dir)
-        with patch("cli.main._build_tool_registry") as mock_registry:
-            from app.tools.registry import ToolRegistry
-            registry = ToolRegistry()
-            mock_registry.return_value = registry
+        from app.tools.registry import ToolRegistry
+        registry = ToolRegistry()
+        with patch("cli.main._build_tool_registry", return_value=registry):
 
             agent = _build_multiagent(
                 agent_name="researcher",
@@ -160,14 +157,12 @@ class TestCliMultiagent:
         fake_agent = MagicMock()
         fake_agent.llm = MagicMock()
         fake_agent.hook_runner = HookRunner()
+        from app.tools.registry import ToolRegistry
+        registry = ToolRegistry()
 
-        with patch("cli.main._build_tool_registry") as mock_registry, \
+        with patch("cli.main._build_tool_registry", return_value=registry), \
             patch("app.subagent.SubagentManager") as mock_subagent_manager, \
             patch("app.agent_factory.build_agent_loop", return_value=fake_agent):
-            from app.tools.registry import ToolRegistry
-            registry = ToolRegistry()
-            mock_registry.return_value = registry
-
             agent = _build_multiagent(
                 agent_name="researcher",
                 agents_config_path=agents_yaml,
@@ -191,14 +186,12 @@ class TestCliMultiagent:
     def test_build_multiagent_skips_registrar_when_disabled(self, agents_yaml, mock_smol_rag, sessions_dir):
         sm = SessionManager(sessions_dir)
         fake_agent = MagicMock()
+        from app.tools.registry import ToolRegistry
+        registry = ToolRegistry()
 
-        with patch("cli.main._build_tool_registry") as mock_registry, \
+        with patch("cli.main._build_tool_registry", return_value=registry), \
             patch("app.subagent.SubagentManager") as mock_subagent_manager, \
             patch("app.agent_factory.build_agent_loop", return_value=fake_agent):
-            from app.tools.registry import ToolRegistry
-            registry = ToolRegistry()
-            mock_registry.return_value = registry
-
             agent = _build_multiagent(
                 agent_name="researcher",
                 agents_config_path=agents_yaml,
@@ -223,14 +216,18 @@ class TestCliMultiagent:
             def prompt(self, _prompt):
                 raise EOFError
 
+        class FakeConsole:
+            def status(self, *args, **kwargs):
+                return nullcontext()
+
+            def print(self, *args, **kwargs):
+                return None
+
         fake_agent = MagicMock()
         fake_agent.llm = MagicMock()
         fake_agent.hook_runner = HookRunner()
         fake_agent.close = AsyncMock()
         fake_agent.session = MagicMock()
-
-        fake_console = MagicMock()
-        fake_console.status.return_value = nullcontext()
 
         smol_rag = MagicMock()
         session_manager = MagicMock()
@@ -239,7 +236,7 @@ class TestCliMultiagent:
             patch("cli.main.SessionManager", return_value=session_manager), \
             patch("cli.main.PromptSession", FakePromptSession), \
             patch("cli.main._build_multiagent", return_value=fake_agent) as mock_build_multiagent, \
-            patch("cli.main.console", fake_console):
+            patch("cli.main.console", FakeConsole()):
             await _chat_loop("default", "/tmp", "model", agent_name="researcher", auto_export=True)
 
         mock_build_multiagent.assert_called_once_with(
@@ -265,14 +262,18 @@ class TestCliMultiagent:
             def prompt(self, _prompt):
                 raise EOFError
 
+        class FakeConsole:
+            def status(self, *args, **kwargs):
+                return nullcontext()
+
+            def print(self, *args, **kwargs):
+                return None
+
         fake_agent = MagicMock()
         fake_agent.llm = MagicMock()
         fake_agent.hook_runner = HookRunner()
         fake_agent.close = AsyncMock()
         fake_agent.session = MagicMock()
-
-        fake_console = MagicMock()
-        fake_console.status.return_value = nullcontext()
 
         smol_rag = MagicMock()
         session_manager = MagicMock()
@@ -281,7 +282,7 @@ class TestCliMultiagent:
             patch("cli.main.SessionManager", return_value=session_manager), \
             patch("cli.main.PromptSession", FakePromptSession), \
             patch("cli.main._build_multiagent", return_value=fake_agent) as mock_build_multiagent, \
-            patch("cli.main.console", fake_console):
+            patch("cli.main.console", FakeConsole()):
             await _chat_loop("default", "/tmp", "model", agent_name="researcher", auto_export=False)
 
         mock_build_multiagent.assert_called_once_with(
@@ -307,14 +308,18 @@ class TestCliMultiagent:
             def prompt(self, _prompt):
                 raise EOFError
 
+        class FakeConsole:
+            def status(self, *args, **kwargs):
+                return nullcontext()
+
+            def print(self, *args, **kwargs):
+                return None
+
         fake_agent = MagicMock()
         fake_agent.llm = MagicMock()
         fake_agent.hook_runner = HookRunner()
         fake_agent.close = AsyncMock()
         fake_agent.session = MagicMock()
-
-        fake_console = MagicMock()
-        fake_console.status.return_value = nullcontext()
 
         smol_rag = MagicMock()
         session_manager = MagicMock()
@@ -323,7 +328,7 @@ class TestCliMultiagent:
             patch("cli.main.SessionManager", return_value=session_manager), \
             patch("cli.main.PromptSession", FakePromptSession), \
             patch("cli.main._build_default_chat_agent", return_value=fake_agent) as mock_default_builder, \
-            patch("cli.main.console", fake_console):
+            patch("cli.main.console", FakeConsole()):
             await _chat_loop("plain-session", "/tmp", "gpt-5.2-pro", agent_name=None, auto_export=True)
 
         mock_default_builder.assert_called_once_with(

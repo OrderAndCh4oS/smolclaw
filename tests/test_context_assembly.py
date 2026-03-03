@@ -149,11 +149,11 @@ class TestAssemblyManifest:
             total_budget=1000,
             used_tokens=500,
             included=[
-                InclusionRecord("a", True, "fits", 0.9, 250),
-                InclusionRecord("b", True, "fits", 0.8, 250),
+                InclusionRecord("a", True, 0.9),
+                InclusionRecord("b", True, 0.8),
             ],
             excluded=[
-                InclusionRecord("c", False, "over budget", 0.5, 300),
+                InclusionRecord("c", False, 0.5),
             ],
         )
         summary = manifest.summary()

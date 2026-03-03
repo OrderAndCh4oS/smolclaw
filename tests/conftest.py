@@ -29,12 +29,6 @@ def temp_graph_path(temp_dir):
 
 
 @pytest.fixture
-def temp_sqlite_db_path(temp_dir):
-    """Provide a temporary path for SQLite DB."""
-    return os.path.join(temp_dir, "test.db")
-
-
-@pytest.fixture
 def temp_vector_db_path(temp_dir):
     """Provide a temporary path for vector DB storage."""
     return os.path.join(temp_dir, "test_vectors")
@@ -176,29 +170,6 @@ def large_entity_set():
 
 
 @pytest.fixture
-def performance_timer():
-    """Helper fixture to measure execution time."""
-    class Timer:
-        def __init__(self):
-            self.start_time = None
-            self.end_time = None
-
-        def start(self):
-            self.start_time = asyncio.get_event_loop().time()
-
-        def stop(self):
-            self.end_time = asyncio.get_event_loop().time()
-
-        @property
-        def elapsed(self):
-            if self.start_time and self.end_time:
-                return self.end_time - self.start_time
-            return None
-
-    return Timer()
-
-
-@pytest.fixture
 def mock_smol_rag():
     """Mock SmolRag for testing memory tools and agent loop."""
     mock = MagicMock()
@@ -246,6 +217,7 @@ class FakeWebSocket:
         return await self._inbox.get()
 
     async def close(self, code=None, reason=None):
+        _ = code, reason
         self._closed = True
 
     def __aiter__(self):

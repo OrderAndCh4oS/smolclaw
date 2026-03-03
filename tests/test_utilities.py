@@ -100,7 +100,7 @@ class TestTokenCountingPerformance:
         # Simulate being called 6 times per query (as in smol_rag.py)
         times = []
 
-        for call_num in range(6):
+        for _ in range(6):
             start_time = time.perf_counter()
             result = truncate_list_by_token_size(text_chunks, get_text, max_token_size=1000)
             elapsed = time.perf_counter() - start_time
@@ -178,7 +178,7 @@ class TestStringSplittingPerformance:
             as_set = set(list(existing) + [f"New description {i}"])
 
             # Join back
-            updated = SEP.join(as_set)
+            SEP.join(as_set)
 
             elapsed = time.perf_counter() - start_time
             times.append(elapsed)

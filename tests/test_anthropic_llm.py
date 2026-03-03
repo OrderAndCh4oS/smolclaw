@@ -31,10 +31,9 @@ def _make_response(content_blocks):
 class TestAnthropicGetCompletion:
     @pytest.mark.asyncio
     async def test_get_completion_basic(self):
-        with patch("app.anthropic_llm.anthropic") as mock_module:
-            mock_client = MagicMock()
-            mock_client.messages.create.return_value = _make_response([_make_text_block("Hello there")])
-            mock_module.Anthropic.return_value = mock_client
+        mock_client = MagicMock()
+        mock_client.messages.create = MagicMock(return_value=_make_response([_make_text_block("Hello there")]))
+        with patch("app.anthropic_llm.anthropic.Anthropic", return_value=mock_client):
 
             llm = AnthropicLlm(completion_model="claude-sonnet-4-20250514")
             result = await llm.get_completion("Hi", use_cache=False)
@@ -43,10 +42,9 @@ class TestAnthropicGetCompletion:
 
     @pytest.mark.asyncio
     async def test_get_completion_with_context(self):
-        with patch("app.anthropic_llm.anthropic") as mock_module:
-            mock_client = MagicMock()
-            mock_client.messages.create.return_value = _make_response([_make_text_block("response")])
-            mock_module.Anthropic.return_value = mock_client
+        mock_client = MagicMock()
+        mock_client.messages.create = MagicMock(return_value=_make_response([_make_text_block("response")]))
+        with patch("app.anthropic_llm.anthropic.Anthropic", return_value=mock_client):
 
             llm = AnthropicLlm(completion_model="claude-sonnet-4-20250514")
             await llm.get_completion("query", context="You are helpful", use_cache=False)
@@ -55,10 +53,9 @@ class TestAnthropicGetCompletion:
 
     @pytest.mark.asyncio
     async def test_get_completion_error(self):
-        with patch("app.anthropic_llm.anthropic") as mock_module:
-            mock_client = MagicMock()
-            mock_client.messages.create.side_effect = RuntimeError("API error")
-            mock_module.Anthropic.return_value = mock_client
+        mock_client = MagicMock()
+        mock_client.messages.create = MagicMock(side_effect=RuntimeError("API error"))
+        with patch("app.anthropic_llm.anthropic.Anthropic", return_value=mock_client):
 
             llm = AnthropicLlm(completion_model="claude-sonnet-4-20250514")
             with pytest.raises(RuntimeError, match="API error"):
@@ -68,13 +65,12 @@ class TestAnthropicGetCompletion:
 class TestAnthropicGetToolCompletion:
     @pytest.mark.asyncio
     async def test_tool_completion_with_tool_calls(self):
-        with patch("app.anthropic_llm.anthropic") as mock_module:
-            mock_client = MagicMock()
-            mock_client.messages.create.return_value = _make_response([
-                _make_text_block("Let me read that"),
-                _make_tool_use_block("tu_1", "read_file", {"path": "/tmp/test"}),
-            ])
-            mock_module.Anthropic.return_value = mock_client
+        mock_client = MagicMock()
+        mock_client.messages.create = MagicMock(return_value=_make_response([
+            _make_text_block("Let me read that"),
+            _make_tool_use_block("tu_1", "read_file", {"path": "/tmp/test"}),
+        ]))
+        with patch("app.anthropic_llm.anthropic.Anthropic", return_value=mock_client):
 
             llm = AnthropicLlm(completion_model="claude-sonnet-4-20250514")
             result = await llm.get_tool_completion(
@@ -93,12 +89,11 @@ class TestAnthropicGetToolCompletion:
 
     @pytest.mark.asyncio
     async def test_tool_completion_without_tools(self):
-        with patch("app.anthropic_llm.anthropic") as mock_module:
-            mock_client = MagicMock()
-            mock_client.messages.create.return_value = _make_response([
-                _make_text_block("Just a response"),
-            ])
-            mock_module.Anthropic.return_value = mock_client
+        mock_client = MagicMock()
+        mock_client.messages.create = MagicMock(return_value=_make_response([
+            _make_text_block("Just a response"),
+        ]))
+        with patch("app.anthropic_llm.anthropic.Anthropic", return_value=mock_client):
 
             llm = AnthropicLlm(completion_model="claude-sonnet-4-20250514")
             result = await llm.get_tool_completion(
@@ -110,10 +105,9 @@ class TestAnthropicGetToolCompletion:
 
     @pytest.mark.asyncio
     async def test_tool_completion_error(self):
-        with patch("app.anthropic_llm.anthropic") as mock_module:
-            mock_client = MagicMock()
-            mock_client.messages.create.side_effect = RuntimeError("API fail")
-            mock_module.Anthropic.return_value = mock_client
+        mock_client = MagicMock()
+        mock_client.messages.create = MagicMock(side_effect=RuntimeError("API fail"))
+        with patch("app.anthropic_llm.anthropic.Anthropic", return_value=mock_client):
 
             llm = AnthropicLlm(completion_model="claude-sonnet-4-20250514")
             with pytest.raises(RuntimeError, match="API fail"):
@@ -225,16 +219,14 @@ class TestToolSchemaTranslation:
 class TestEmbeddingNotImplemented:
     @pytest.mark.asyncio
     async def test_get_embedding_raises(self):
-        with patch("app.anthropic_llm.anthropic") as mock_module:
-            mock_module.Anthropic.return_value = MagicMock()
+        with patch("app.anthropic_llm.anthropic.Anthropic", return_value=MagicMock()):
             llm = AnthropicLlm(completion_model="claude-sonnet-4-20250514")
             with pytest.raises(NotImplementedError):
                 await llm.get_embedding("test")
 
     @pytest.mark.asyncio
     async def test_get_embeddings_raises(self):
-        with patch("app.anthropic_llm.anthropic") as mock_module:
-            mock_module.Anthropic.return_value = MagicMock()
+        with patch("app.anthropic_llm.anthropic.Anthropic", return_value=MagicMock()):
             llm = AnthropicLlm(completion_model="claude-sonnet-4-20250514")
             with pytest.raises(NotImplementedError):
                 await llm.get_embeddings(["test"])

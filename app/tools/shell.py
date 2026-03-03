@@ -55,6 +55,7 @@ class ExecTool(Tool):
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
         except asyncio.TimeoutError:
             proc.kill()
+            await proc.wait()
             return "Error: command timed out"
         except Exception as e:
             return f"Error: {e}"

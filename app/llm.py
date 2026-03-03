@@ -1,23 +1,7 @@
-from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
+from typing import Any, Dict, List, Optional
 
 from app.anthropic_llm import AnthropicLlm
 from app.openai_llm import OpenAiLlm
-
-
-@runtime_checkable
-class LlmProvider(Protocol):
-    completion_model: str
-
-    async def get_completion(self, query: str, model: Optional[str] = None, context: str = "",
-                             use_cache: bool = True) -> str: ...
-
-    async def get_tool_completion(self, messages: List[Dict[str, str]], tools: Optional[List[dict]] = None,
-                                  model: Optional[str] = None) -> Dict[str, Any]: ...
-
-    async def get_embedding(self, content: Any, model: Optional[str] = None) -> List[float]: ...
-
-    async def get_embeddings(self, contents: List[Any], model: Optional[str] = None) -> List[List[float]]: ...
-
 
 class CompositeLlm:
     def __init__(self, completion_provider, embedding_provider):

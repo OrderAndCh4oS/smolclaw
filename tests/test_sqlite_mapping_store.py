@@ -140,12 +140,6 @@ class TestMappingStorePersistence:
         await store2.close()
         assert result == ["doc1"]
 
-    @pytest.mark.asyncio
-    async def test_save_is_noop(self, mapping_store):
-        await mapping_store.add("doc1", "excerpt1")
-        await mapping_store.save()  # Should not raise
-        assert await mapping_store.get_by_left("doc1") == ["excerpt1"]
-
 
 class TestMappingStoreConcurrency:
     @pytest.mark.asyncio

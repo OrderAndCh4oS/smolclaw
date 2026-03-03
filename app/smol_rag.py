@@ -11,7 +11,7 @@ from app.chunking import preserve_markdown_code_excerpts
 from app.obsidian import parse_wiki_links, parse_tags
 from app.definitions import INPUT_DOCS_DIR, SQLITE_DB_PATH, EMBEDDINGS_DB, \
     KG_DB, ENTITIES_DB, RELATIONSHIPS_DB, KG_SEP, \
-    TUPLE_SEP, REC_SEP, COMPLETE_TAG, LOG_DIR, COMPLETION_MODEL, EMBEDDING_MODEL
+    TUPLE_SEP, REC_SEP, COMPLETE_TAG, COMPLETION_MODEL, EMBEDDING_MODEL
 from app.graph_store import NetworkXGraphStore
 from app.sqlite_store import SqliteKvStore
 from app.sqlite_mapping_store import SqliteMappingStore
@@ -21,7 +21,7 @@ from app.prompts import get_query_system_prompt, excerpt_summary_prompt, get_ext
     get_high_low_level_keywords_prompt, get_kg_query_system_prompt, get_mix_system_prompt
 from app.utilities import read_file, get_docs, make_hash, split_string_by_multi_markers, clean_str, \
     extract_json_from_text, truncate_list_by_token_size, \
-    list_of_list_to_csv, delete_all_files
+    list_of_list_to_csv
 from app.vector_store import NanoVectorStore
 
 
@@ -207,14 +207,12 @@ class SmolRag:
                 await self.doc_relationship_map.add(doc_id, relationship_id)
 
     async def remove_document_by_id(self, doc_id, persist=True):
-        removed_source_map = False
         removed_excerpt_data = False
         removed_kg_data = False
         excerpt_ids = []
 
         if await self.source_doc_map.has_right(doc_id):
             await self.source_doc_map.remove_by_right(doc_id)
-            removed_source_map = True
 
         excerpt_ids = await self.doc_excerpt_map.get_by_left(doc_id)
         if excerpt_ids:
@@ -293,7 +291,6 @@ class SmolRag:
             self.embeddings_db.save(),
             self.entities_db.save(),
             self.relationships_db.save(),
-            self.bm25_store.save(),
         )
         self.graph.save()
 
@@ -604,15 +601,10 @@ class SmolRag:
 
     @staticmethod
     def _filter_excerpts_by_memory_type(excerpts: list[dict], memory_type: str) -> list[dict]:
-        tag = f"#{memory_type}"
         filtered = []
         for excerpt in excerpts:
             excerpt_type = excerpt.get("memory_type")
-            if excerpt_type is not None:
-                if excerpt_type == memory_type:
-                    filtered.append(excerpt)
-                continue
-            if tag in excerpt.get("excerpt", ""):
+            if excerpt_type == memory_type:
                 filtered.append(excerpt)
         return filtered
 
@@ -919,49 +911,3 @@ class SmolRag:
         if not isinstance(keywords, list):
             return []
         return [str(k) for k in keywords if str(k).strip()]
-
-
-if __name__ == '__main__':
-    async def main():
-        # delete_all_files(DATA_DIR)
-        delete_all_files(LOG_DIR)
-
-        smol_rag = SmolRag()
-
-        await smol_rag.import_documents()
-
-        print(await smol_rag.query("what is SmolRag?"))  # Should answer
-        print("=+=+=+=+=+=+=+=+=+=+=+=+=+=")
-        print(await smol_rag.query("what do cats eat?"))  # Should reject
-        print("=+=+=+=+=+=+=+=+=+=+=+=+=+=")
-        print(await smol_rag.query("What subjects we can discuss?"))  # Should answer
-
-        print(await smol_rag.hybrid_kg_query("what is SmolRag?"))  # Should answer
-        print("=+=+=+=+=+=+=+=+=+=+=+=+=+=")
-        print(await smol_rag.hybrid_kg_query("what do cows eat?"))  # Should reject
-        print("=+=+=+=+=+=+=+=+=+=+=+=+=+=")
-        print(await smol_rag.hybrid_kg_query("What subjects we can discuss?"))
-
-        print(await smol_rag.local_kg_query("what is SmolRag?"))  # Should answer
-        print("=+=+=+=+=+=+=+=+=+=+=+=+=+=")
-        print(await smol_rag.local_kg_query("what do ducks eat?"))  # Should reject
-        print("=+=+=+=+=+=+=+=+=+=+=+=+=+=")
-        print(await smol_rag.local_kg_query("What subjects we can discuss?"))
-
-        print(await smol_rag.global_kg_query("what is SmolRag?"))  # Should answer
-        print("=+=+=+=+=+=+=+=+=+=+=+=+=+=")
-        print(await smol_rag.global_kg_query("what do frogs eat?"))  # Should reject
-        print("=+=+=+=+=+=+=+=+=+=+=+=+=+=")
-        print(await smol_rag.global_kg_query("What subjects we can discuss?"))
-
-        print(await smol_rag.mix_query("what is SmolRag?"))  # Should answer
-        print("=+=+=+=+=+=+=+=+=+=+=+=+=+=")
-        print(await smol_rag.mix_query("what do jellyfish eat?"))  # Should reject
-        print("=+=+=+=+=+=+=+=+=+=+=+=+=+=")
-        print(await smol_rag.mix_query("What subjects we can discuss?"))
-
-        # await smol_rag.remove_document_by_id("doc_68ee570c562a4cdfb5c37cf96be2898d")
-
-
-
-    asyncio.run(main())

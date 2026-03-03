@@ -134,7 +134,7 @@ The `conftest.py` file provides shared fixtures:
 
 - `temp_dir` - Temporary directory for test files
 - `graph_store` - Initialized NetworkXGraphStore
-- `kv_store` - Initialized JsonKvStore
+- `kv_store` - Initialized SqliteKvStore
 - `vector_store` - Initialized NanoVectorStore
 - `mock_openai_llm` - Mocked LLM (no API calls)
 - `sample_entities/relationships/excerpts` - Test data

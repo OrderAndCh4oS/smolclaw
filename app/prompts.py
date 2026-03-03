@@ -276,17 +276,6 @@ def get_mix_system_prompt(query_context, kg_context):
     """)
 
     return system_prompt
-
-
-def get_consolidation_prompt():
-    return inspect.cleandoc("""
-        Summarise the following conversation into a concise document suitable for long-term memory storage.
-        Focus on key facts, decisions, preferences, and actionable items.
-        Omit greetings, filler, and repetitive exchanges.
-        Format as bullet points grouped by topic.
-    """)
-
-
 def get_journal_prompt(conversation: str) -> str:
     return inspect.cleandoc(f"""
         You are reflecting on a conversation session. Write a first-person journal entry

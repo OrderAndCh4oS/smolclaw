@@ -81,40 +81,8 @@ class OpenAiLlm:
             "context": context,
             "result": result
         })
-        await self.query_cache_kv.save()
 
         return result
-
-    # Todo: add caching for chat completion
-    def get_chat_completion(self, query: str, model: Optional[str] = None, context: str = "",
-                            chat_history: List[Dict[str, str]] = None) -> List[Dict[str, str]]:
-        """
-        Gets a chat completion by providing the chat history and query.
-
-        :param query: New query to send.
-        :param model: The model to use; if None, use self.completion_model.
-        :param context: Optional system context instructions.
-        :param chat_history: List of previous chat messages.
-        :return: Updated chat history including the assistant's response.
-        """
-        chat_history = chat_history or []
-        model = model or self.completion_model
-        system_message = [{"role": "system", "content": context}] if context else []
-        messages = chat_history + [{"role": "user", "content": query}]
-
-        try:
-            response = self.client.chat.completions.create(
-                model=model,
-                store=True,
-                messages=system_message + messages
-            )
-            assistant_reply = response.choices[0].message.content
-        except Exception as e:
-            logger.error(f"Error in chat completion: {e}")
-            raise
-
-        messages.append({"role": "assistant", "content": assistant_reply})
-        return messages
 
     async def get_tool_completion(
         self,
@@ -181,7 +149,6 @@ class OpenAiLlm:
                 logger.error(f"Error getting embedding: {e}")
                 raise
             await self.embedding_cache_kv.add(content_hash, embedding)
-            await self.embedding_cache_kv.save()
 
         return embedding
 
@@ -226,9 +193,6 @@ class OpenAiLlm:
                     embedding = embedding_data.embedding
                     embeddings[idx] = embedding
                     await self.embedding_cache_kv.add(content_hash, embedding)
-
-                # Save cache once after batch
-                await self.embedding_cache_kv.save()
 
             except Exception as e:
                 logger.error(f"Error getting batch embeddings: {e}")

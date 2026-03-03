@@ -25,7 +25,7 @@ class TestCreateLlm:
     @patch("app.llm.OpenAiLlm")
     def test_returns_openai_for_gpt(self, MockOpenAi):
         mock_instance = MagicMock()
-        MockOpenAi.return_value = mock_instance
+        MockOpenAi.side_effect = lambda **kwargs: mock_instance
 
         result = create_llm(completion_model="gpt-4o", embedding_model="text-embedding-3-small")
         assert result is mock_instance
@@ -42,8 +42,8 @@ class TestCreateLlm:
     def test_returns_composite_for_claude_with_embedding(self, MockAnthropic, MockOpenAi):
         mock_anthropic = MagicMock()
         mock_openai = MagicMock()
-        MockAnthropic.return_value = mock_anthropic
-        MockOpenAi.return_value = mock_openai
+        MockAnthropic.side_effect = lambda **kwargs: mock_anthropic
+        MockOpenAi.side_effect = lambda **kwargs: mock_openai
 
         result = create_llm(completion_model="claude-sonnet-4-20250514", embedding_model="text-embedding-3-small")
         assert isinstance(result, CompositeLlm)
@@ -53,7 +53,7 @@ class TestCreateLlm:
     @patch("app.llm.AnthropicLlm")
     def test_returns_bare_anthropic_without_embedding(self, MockAnthropic):
         mock_anthropic = MagicMock()
-        MockAnthropic.return_value = mock_anthropic
+        MockAnthropic.side_effect = lambda **kwargs: mock_anthropic
 
         result = create_llm(completion_model="claude-sonnet-4-20250514")
         assert result is mock_anthropic
@@ -61,7 +61,7 @@ class TestCreateLlm:
     @patch("app.llm.OpenAiLlm")
     def test_returns_openai_for_none_model(self, MockOpenAi):
         mock_instance = MagicMock()
-        MockOpenAi.return_value = mock_instance
+        MockOpenAi.side_effect = lambda **kwargs: mock_instance
 
         result = create_llm()
         assert result is mock_instance

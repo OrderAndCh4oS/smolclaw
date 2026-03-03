@@ -7,7 +7,6 @@ import aiosqlite
 class SqliteMappingStore:
     """Relational many-to-many (or 1:1) mapping store backed by SQLite.
 
-    Replaces paired forward/reverse JsonKvStore instances.
     For a 1:1 map (source↔doc), each left key maps to exactly one right key.
     For 1:many maps (doc→excerpts), one left key maps to many right keys.
     """
@@ -155,10 +154,6 @@ class SqliteMappingStore:
         """For 1:1 maps — check if left_key maps to exactly right_key."""
         result = await self.get_right_single(left_key)
         return result == right_key
-
-    async def save(self):
-        """No-op — writes are immediate. Preserved for API compatibility."""
-        pass
 
     async def close(self):
         if self._db is not None:

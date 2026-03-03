@@ -1,4 +1,4 @@
-"""Tests for SqliteKvStore — drop-in replacement for JsonKvStore."""
+"""Tests for SqliteKvStore."""
 import asyncio
 import os
 import pytest
@@ -77,12 +77,6 @@ class TestSqliteKvStoreBaseline:
         await sqlite_kv.add("key", "old")
         await sqlite_kv.add("key", "new")
         assert await sqlite_kv.get_by_key("key") == "new"
-
-    @pytest.mark.asyncio
-    async def test_save_is_noop(self, sqlite_kv):
-        await sqlite_kv.add("key", "value")
-        await sqlite_kv.save()  # Should not raise
-        assert await sqlite_kv.get_by_key("key") == "value"
 
     @pytest.mark.asyncio
     async def test_persistence_across_instances(self, temp_dir):

@@ -15,7 +15,7 @@ def mock_mcp_execute():
         mock_instance.execute = AsyncMock(return_value={
             "content": [{"type": "text", "text": "mock result"}]
         })
-        MockClient.return_value = mock_instance
+        MockClient.side_effect = lambda *args, **kwargs: mock_instance
         yield mock_instance
 
 

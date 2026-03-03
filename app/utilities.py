@@ -3,7 +3,6 @@ import html
 import io
 import json
 import os
-import pathlib
 import re
 from hashlib import md5
 from typing import List
@@ -15,40 +14,9 @@ from app.definitions import COMPLETION_MODEL
 tiktoken_encoders = {}
 
 
-def create_file_if_not_exists(file_path, default_content=""):
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
-    if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
-        write_file(file_path, default_content)
-
-
-def write_file(file_path, content):
-    with open(file_path, "w") as f:
-        f.write(content)
-
-
 def read_file(file_path):
     with open(file_path, "r") as f:
         return f.read()
-
-
-def delete_all_files(directory):
-    p = pathlib.Path(directory)
-    if not p.exists():
-        print(f"Directory '{directory}' does not exist.")
-        return
-    for item in p.iterdir():
-        if item.is_file() and not item.is_symlink():
-            item.unlink()
-
-
-def get_json(file_path):
-    with open(file_path, "r") as f:
-        return json.load(f)
-
-
-def write_json(file_path, data):
-    with open(file_path, "w") as f:
-        return json.dump(data, f, indent=4)
 
 
 def get_docs(root_dir):
@@ -62,26 +30,6 @@ def get_docs(root_dir):
 
 def make_hash(text, prefix=""):
     return prefix + md5(text.encode()).hexdigest()
-
-
-def add_to_json(file_path, key, value):
-    with open(file_path, "r+") as f:
-        data = json.load(f)
-        data[key] = value
-        f.seek(0)
-        json.dump(data, f, indent=4)
-        f.truncate()
-
-
-def remove_from_json(file_path, key):
-    with open(file_path, "r+") as f:
-        data = json.load(f)
-        if key not in data:
-            return
-        del data[key]
-        f.seek(0)
-        json.dump(data, f, indent=4)
-        f.truncate()
 
 
 # Refer the utils functions of the official GraphRAG implementation:

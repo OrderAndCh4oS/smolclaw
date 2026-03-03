@@ -59,7 +59,6 @@ class AnthropicLlm:
             "context": context,
             "result": result,
         })
-        await self.query_cache_kv.save()
 
         return result
 

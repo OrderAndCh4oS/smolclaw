@@ -89,12 +89,3 @@ def get_lifecycle_phases(events):
         for e in events
         if e.get("event") == "agent"
     ]
-
-
-def get_tool_calls(events):
-    """Extract tool call events from the stream."""
-    return [
-        e["payload"]
-        for e in events
-        if e.get("event") == "agent.tool_call"
-    ]

@@ -44,9 +44,9 @@ def _make_tool_call(name, arguments, call_id="call_1"):
 def mock_tool_registry():
     """A registry that resolves any tool execute to a canned string."""
     registry = MagicMock()
-    registry.get_definitions.return_value = [
+    registry.get_definitions = MagicMock(return_value=[
         {"type": "function", "function": {"name": "echo", "parameters": {}}},
-    ]
+    ])
     registry.execute = AsyncMock(return_value="tool-output-123")
     return registry
 

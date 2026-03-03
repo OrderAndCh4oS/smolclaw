@@ -10,7 +10,7 @@ import websockets
 
 from app.agent_loop import AgentLoop
 from app.context_builder import ContextBuilder
-from app.definitions import SESSIONS_DIR, MEMORY_DOCS_DIR, WORKSPACE_DIR, AGENT_MODEL, MAX_ITERATIONS, MEMORY_WINDOW
+from app.definitions import PROJECT_ROOT, SESSIONS_DIR, MEMORY_DOCS_DIR, WORKSPACE_DIR, AGENT_MODEL, MAX_ITERATIONS, MEMORY_WINDOW
 from app.llm import create_llm
 from app.session import SessionManager
 from app.smol_rag import SmolRag
@@ -20,7 +20,6 @@ from app.utilities import ensure_dir
 
 logger = logging.getLogger("smolclaw.gateway")
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
 BOOTSTRAP_PATH = os.path.join(PROJECT_ROOT, "AGENT.md")
 
 

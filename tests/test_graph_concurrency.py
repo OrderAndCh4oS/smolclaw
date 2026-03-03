@@ -274,7 +274,7 @@ class TestGraphStoreConcurrency:
 
     @pytest.mark.asyncio
     async def test_mixed_sync_and_async_methods(self, graph_store):
-        """Test that mixing sync and async methods works (for backward compatibility)."""
+        """Test that mixing sync and async methods works together."""
         # Sync method
         graph_store.add_node("SyncNode", node_type="Test", description="Sync", source_id="doc1")
 

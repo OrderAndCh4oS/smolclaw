@@ -46,9 +46,9 @@ class TestMemoryRecallTool:
 class TestMemoryGraphQueryTool:
     @pytest.mark.asyncio
     async def test_memory_graph_query_returns_subgraph(self, mock_smol_rag):
-        mock_smol_rag.graph.get_node.return_value = {"category": "language", "description": "A programming language"}
-        mock_smol_rag.graph.get_node_edges.return_value = [("Python", "FastAPI")]
-        mock_smol_rag.graph.get_edge.return_value = {"description": "used by"}
+        mock_smol_rag.graph.get_node = MagicMock(return_value={"category": "language", "description": "A programming language"})
+        mock_smol_rag.graph.get_node_edges = MagicMock(return_value=[("Python", "FastAPI")])
+        mock_smol_rag.graph.get_edge = MagicMock(return_value={"description": "used by"})
         tool = MemoryGraphQueryTool(mock_smol_rag)
         result = await tool.execute(entity="Python")
         assert "Python" in result
@@ -57,7 +57,7 @@ class TestMemoryGraphQueryTool:
 
     @pytest.mark.asyncio
     async def test_memory_graph_query_unknown_entity(self, mock_smol_rag):
-        mock_smol_rag.graph.get_node.return_value = None
+        mock_smol_rag.graph.get_node = MagicMock(return_value=None)
         tool = MemoryGraphQueryTool(mock_smol_rag)
         result = await tool.execute(entity="Unknown")
         assert "No entity found" in result
@@ -200,7 +200,7 @@ class TestMemoryStoreToolExecuteTaxonomy:
 class TestMemoryRelateTool:
     @pytest.mark.asyncio
     async def test_relate_creates_edge(self, mock_smol_rag):
-        mock_smol_rag.graph.get_node.return_value = {"category": "entity"}
+        mock_smol_rag.graph.get_node = MagicMock(return_value={"category": "entity"})
         mock_smol_rag.graph.async_add_edge = AsyncMock()
         tool = MemoryRelateTool(mock_smol_rag)
         result = await tool.execute(
@@ -215,7 +215,7 @@ class TestMemoryRelateTool:
 
     @pytest.mark.asyncio
     async def test_relate_creates_missing_nodes(self, mock_smol_rag):
-        mock_smol_rag.graph.get_node.return_value = None
+        mock_smol_rag.graph.get_node = MagicMock(return_value=None)
         mock_smol_rag.graph.async_add_node = AsyncMock()
         mock_smol_rag.graph.async_add_edge = AsyncMock()
         tool = MemoryRelateTool(mock_smol_rag)
@@ -227,7 +227,7 @@ class TestMemoryRelateTool:
 
     @pytest.mark.asyncio
     async def test_relate_with_description(self, mock_smol_rag):
-        mock_smol_rag.graph.get_node.return_value = {"category": "entity"}
+        mock_smol_rag.graph.get_node = MagicMock(return_value={"category": "entity"})
         mock_smol_rag.graph.async_add_edge = AsyncMock()
         tool = MemoryRelateTool(mock_smol_rag)
         await tool.execute(

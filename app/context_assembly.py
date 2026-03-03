@@ -14,9 +14,7 @@ logger = logging.getLogger("smolclaw.context_assembly")
 class InclusionRecord:
     excerpt_id: str
     included: bool
-    reason: str
     score: float
-    token_count: int
 
 
 @dataclass
@@ -115,22 +113,19 @@ class ContextAssembler(ContextBuilder):
                 tokens_used += excerpt_tokens
                 manifest.included.append(InclusionRecord(
                     excerpt_id=excerpt_id, included=True,
-                    reason="full excerpt fits budget", score=score,
-                    token_count=excerpt_tokens,
+                    score=score,
                 ))
             elif tokens_used + summary_tokens <= self.token_budget and summary:
                 context_parts.append(f"[Summary] {summary}")
                 tokens_used += summary_tokens
                 manifest.included.append(InclusionRecord(
                     excerpt_id=excerpt_id, included=True,
-                    reason="summary fits budget", score=score,
-                    token_count=summary_tokens,
+                    score=score,
                 ))
             else:
                 manifest.excluded.append(InclusionRecord(
                     excerpt_id=excerpt_id, included=False,
-                    reason="exceeds budget", score=score,
-                    token_count=excerpt_tokens,
+                    score=score,
                 ))
 
         manifest.used_tokens = tokens_used

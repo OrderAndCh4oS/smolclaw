@@ -68,14 +68,14 @@ class TestSmolRagBaseline:
         )
 
         # Mock entity extraction response
-        mock_openai_llm.get_completion.return_value = """
+        mock_openai_llm.get_completion = AsyncMock(return_value="""
         {
             "entities": [
                 {"entity_name": "Python", "entity_type": "Programming Language", "description": "A programming language"}
             ],
             "relationships": []
         }
-        """
+        """)
 
         # Mock get_docs to return our test document
         with patch("app.smol_rag.get_docs", return_value=[doc_path]):
@@ -88,10 +88,10 @@ class TestSmolRagBaseline:
 
 
 class TestSmolRagMemoryTypeFiltering:
-    def test_filter_excerpts_prefers_metadata_with_legacy_fallback(self):
+    def test_filter_excerpts_uses_metadata_only(self):
         excerpts = [
             {"excerpt": "user: shipped the feature", "memory_type": "episode"},
-            {"excerpt": "#episode legacy tagged excerpt"},
+            {"excerpt": "#episode tagged but missing metadata"},
             {"excerpt": "plain fact", "memory_type": "fact"},
         ]
 
@@ -99,7 +99,6 @@ class TestSmolRagMemoryTypeFiltering:
 
         assert filtered == [
             {"excerpt": "user: shipped the feature", "memory_type": "episode"},
-            {"excerpt": "#episode legacy tagged excerpt"},
         ]
 
 
@@ -219,13 +218,6 @@ class TestSmolRagStringConcatenationBottleneck:
         )
 
         # Simulate adding the same entity multiple times with different descriptions
-        entity_data = {
-            "entity_name": "Python",
-            "entity_type": "Language",
-            "description": "Description ",
-            "source_id": "doc1"
-        }
-
         # Add same entity 10 times with growing descriptions
         description_lengths = []
 
@@ -273,7 +265,7 @@ class TestSmolRagStringConcatenationBottleneck:
             # Operation from smol_rag.py:211-217
             existing_descriptions = split_string_by_multi_markers(large_description, [KG_SEP])
             new_description = f"New description {i}"
-            updated = KG_SEP.join(set(list(existing_descriptions) + [new_description]))
+            KG_SEP.join(set(list(existing_descriptions) + [new_description]))
 
             elapsed = time.perf_counter() - start_time
             times.append(elapsed)
@@ -515,26 +507,26 @@ class TestSmolRagEdgeCases:
 class TestFilterExcerptsByMemoryType:
     def test_filters_matching_type(self):
         excerpts = [
-            {"excerpt": "#fact some factual content"},
-            {"excerpt": "#reference a reference document"},
-            {"excerpt": "#fact another fact"},
+            {"excerpt": "some factual content", "memory_type": "fact"},
+            {"excerpt": "a reference document", "memory_type": "reference"},
+            {"excerpt": "another fact", "memory_type": "fact"},
         ]
         result = SmolRag._filter_excerpts_by_memory_type(excerpts, "fact")
         assert len(result) == 2
-        assert all("#fact" in e["excerpt"] for e in result)
+        assert all(e["memory_type"] == "fact" for e in result)
 
     def test_returns_empty_when_no_match(self):
         excerpts = [
-            {"excerpt": "#fact some content"},
-            {"excerpt": "#reference a reference"},
+            {"excerpt": "some content", "memory_type": "fact"},
+            {"excerpt": "a reference", "memory_type": "reference"},
         ]
         result = SmolRag._filter_excerpts_by_memory_type(excerpts, "decision")
         assert result == []
 
     def test_returns_all_when_all_match(self):
         excerpts = [
-            {"excerpt": "#fact content A"},
-            {"excerpt": "#fact content B"},
+            {"excerpt": "content A", "memory_type": "fact"},
+            {"excerpt": "content B", "memory_type": "fact"},
         ]
         result = SmolRag._filter_excerpts_by_memory_type(excerpts, "fact")
         assert len(result) == 2
@@ -543,7 +535,7 @@ class TestFilterExcerptsByMemoryType:
         result = SmolRag._filter_excerpts_by_memory_type([], "fact")
         assert result == []
 
-    def test_handles_missing_excerpt_key(self):
-        excerpts = [{"summary": "no excerpt key"}]
+    def test_handles_missing_memory_type(self):
+        excerpts = [{"excerpt": "no memory type"}]
         result = SmolRag._filter_excerpts_by_memory_type(excerpts, "fact")
         assert result == []

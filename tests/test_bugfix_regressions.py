@@ -99,6 +99,10 @@ def _build_rag(temp_dir, llm, excerpt_fn=None):
     )
 
 
+def _test_vector():
+    return np.ones(1536, dtype=np.float32)
+
+
 class TestRuntimeRegressions:
     def test_openai_client_initializes_with_explicit_api_key(self):
         llm = OpenAiLlm(openai_api_key="sk-test")
@@ -253,7 +257,7 @@ class TestRuntimeRegressions:
         await rag.excerpt_kv.add(excerpt_id, {"doc_id": doc_id, "excerpt": "text", "summary": "sum"})
         await rag.embeddings_db.upsert([{
             "__id__": excerpt_id,
-            "__vector__": np.zeros(1536, dtype=np.float32),
+            "__vector__": _test_vector(),
             "__doc_id__": doc_id,
         }])
 
@@ -266,14 +270,14 @@ class TestRuntimeRegressions:
         await rag.entities_db.upsert([{
             "__id__": entity_id,
             "__entity_name__": entity_name,
-            "__vector__": np.zeros(1536, dtype=np.float32),
+            "__vector__": _test_vector(),
             "__inserted_at__": 0,
         }])
         await rag.relationships_db.upsert([{
             "__id__": relationship_id,
             "__source__": entity_name,
             "__target__": "EntityPeer",
-            "__vector__": np.zeros(1536, dtype=np.float32),
+            "__vector__": _test_vector(),
             "__inserted_at__": 0,
         }])
         await rag.doc_entity_map.add(doc_id, entity_id)
@@ -302,7 +306,7 @@ class TestRuntimeRegressions:
         await rag.excerpt_kv.add(excerpt_b, {"doc_id": doc_b, "excerpt": "b", "summary": "b"})
         await rag.embeddings_db.upsert([{
             "__id__": excerpt_a,
-            "__vector__": np.zeros(1536, dtype=np.float32),
+            "__vector__": _test_vector(),
             "__doc_id__": doc_a,
         }])
 
@@ -315,7 +319,7 @@ class TestRuntimeRegressions:
         await rag.entities_db.upsert([{
             "__id__": entity_id,
             "__entity_name__": entity_name,
-            "__vector__": np.zeros(1536, dtype=np.float32),
+            "__vector__": _test_vector(),
             "__inserted_at__": 0,
         }])
         await rag.doc_entity_map.add(doc_a, entity_id)
@@ -350,7 +354,7 @@ class TestRuntimeRegressions:
         await rag.entities_db.upsert([{
             "__id__": entity_id,
             "__entity_name__": entity_name,
-            "__vector__": np.zeros(1536, dtype=np.float32),
+            "__vector__": _test_vector(),
             "__inserted_at__": 0,
         }])
 
@@ -390,7 +394,7 @@ class TestRuntimeRegressions:
             "__id__": relationship_id,
             "__source__": source,
             "__target__": target,
-            "__vector__": np.zeros(1536, dtype=np.float32),
+            "__vector__": _test_vector(),
             "__inserted_at__": 0,
         }])
 
@@ -445,7 +449,7 @@ class TestRuntimeRegressions:
         await rag.entities_db.upsert([{
             "__id__": entity_id,
             "__entity_name__": entity_name,
-            "__vector__": np.zeros(1536, dtype=np.float32),
+            "__vector__": _test_vector(),
             "__inserted_at__": 0,
         }])
 

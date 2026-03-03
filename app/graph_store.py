@@ -59,11 +59,6 @@ class NetworkXGraphStore:
             return 0
         return self.graph.degree(name)
 
-    def set_field(self, key, value):
-        # Synchronous wrapper for metadata updates
-        self.graph.graph[key] = value
-        logger.info(f"Graph metadata '{key}' updated to: {value}")
-
     async def async_add_node(self, name, **kwargs):
         """Async version with lock protection for concurrent writes."""
         async with self._lock:

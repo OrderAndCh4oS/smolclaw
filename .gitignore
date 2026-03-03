@@ -2,8 +2,4 @@
 .venv
 .idea
 __pycache__/
-cache/
 store/
-logs/
-sessions/
-memory/

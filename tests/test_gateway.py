@@ -130,9 +130,8 @@ class TestGatewayProtocol:
     @pytest.mark.asyncio
     async def test_auth_timeout(self, wired_gateway, fake_ws):
         """Gateway closes with 1008 if no connect request within timeout."""
-        # Patch the timeout to be very short
-        with patch("app.gateway.asyncio.wait_for", side_effect=asyncio.TimeoutError):
-            await wired_gateway._handle_connection(fake_ws)
+        fake_ws.recv = AsyncMock(side_effect=asyncio.TimeoutError)
+        await wired_gateway._handle_connection(fake_ws)
 
         assert fake_ws._closed is True
 

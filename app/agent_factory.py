@@ -4,12 +4,12 @@ from typing import Optional
 from app.agent_config import AgentConfig
 from app.agent_loop import AgentLoop
 from app.context_builder import ContextBuilder
+from app.definitions import PROJECT_ROOT
 from app.llm import create_llm
 from app.session import SessionManager
 from app.tools.registry import ToolRegistry
 
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
-_SHARED_BOOTSTRAP_PATH = os.path.join(_PROJECT_ROOT, "AGENT.md")
+_SHARED_BOOTSTRAP_PATH = os.path.join(PROJECT_ROOT, "AGENT.md")
 
 
 def build_agent_loop(

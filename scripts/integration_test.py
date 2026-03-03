@@ -23,7 +23,7 @@ import uuid
 
 import websockets
 
-from ws_helpers import ok, fail, info, summary, connect, chat, get_agent_text, get_lifecycle_phases, get_tool_calls
+from ws_helpers import ok, fail, info, summary, connect, chat, get_agent_text, get_lifecycle_phases
 
 
 # ---------------------------------------------------------------------------

@@ -140,10 +140,6 @@ class BM25Store:
         ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
         return [{"doc_id": doc_id, "score": score} for doc_id, score in ranked]
 
-    async def save(self):
-        """No-op — writes are immediate. Preserved for API compatibility."""
-        pass
-
     async def close(self):
         async with self._lock:
             if self._db is not None:

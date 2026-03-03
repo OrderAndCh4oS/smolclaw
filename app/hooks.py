@@ -43,18 +43,3 @@ ON_AFTER_TURN = "on_after_turn"
 ON_COMPACTION_FLUSH = "on_compaction_flush"
 ON_FILE_CHANGE = "on_file_change"
 ON_SESSION_END = "on_session_end"
-
-
-class DecayHook:
-    """Built-in hook that decays stale memories on_session_start."""
-
-    def __init__(self, lifecycle_manager, threshold_days: float = 30.0, factor: float = 0.95):
-        self.lifecycle_manager = lifecycle_manager
-        self.threshold_days = threshold_days
-        self.factor = factor
-
-    async def __call__(self, context: Dict[str, Any]):
-        await self.lifecycle_manager.decay(
-            threshold_days=self.threshold_days,
-            factor=self.factor,
-        )

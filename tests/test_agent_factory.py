@@ -102,7 +102,7 @@ def _mock_create_llm(completion_model=None, **kwargs):
 class TestAgentFactory:
     @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     def test_build_agent_loop_returns_agent_loop(
-        self, mock_create, researcher_config, master_registry, mock_smol_rag, sessions_dir
+        self, _mock_create, researcher_config, master_registry, mock_smol_rag, sessions_dir
     ):
         sm = SessionManager(sessions_dir)
         loop = build_agent_loop(researcher_config, master_registry, mock_smol_rag, sm)
@@ -110,7 +110,7 @@ class TestAgentFactory:
 
     @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     def test_build_agent_loop_uses_config_model(
-        self, mock_create, researcher_config, master_registry, mock_smol_rag, sessions_dir
+        self, _mock_create, researcher_config, master_registry, mock_smol_rag, sessions_dir
     ):
         sm = SessionManager(sessions_dir)
         loop = build_agent_loop(researcher_config, master_registry, mock_smol_rag, sm)
@@ -118,7 +118,7 @@ class TestAgentFactory:
 
     @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     def test_build_agent_loop_filters_tools(
-        self, mock_create, researcher_config, master_registry, mock_smol_rag, sessions_dir
+        self, _mock_create, researcher_config, master_registry, mock_smol_rag, sessions_dir
     ):
         sm = SessionManager(sessions_dir)
         loop = build_agent_loop(researcher_config, master_registry, mock_smol_rag, sm)
@@ -128,7 +128,7 @@ class TestAgentFactory:
 
     @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     def test_build_agent_loop_uses_persona(
-        self, mock_create, researcher_config, master_registry, mock_smol_rag, sessions_dir
+        self, _mock_create, researcher_config, master_registry, mock_smol_rag, sessions_dir
     ):
         sm = SessionManager(sessions_dir)
         loop = build_agent_loop(researcher_config, master_registry, mock_smol_rag, sm)
@@ -136,7 +136,7 @@ class TestAgentFactory:
 
     @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     def test_build_agent_loop_session_key_isolation(
-        self, mock_create, researcher_config, writer_config, master_registry, mock_smol_rag, sessions_dir
+        self, _mock_create, researcher_config, writer_config, master_registry, mock_smol_rag, sessions_dir
     ):
         sm = SessionManager(sessions_dir)
         loop_r = build_agent_loop(researcher_config, master_registry, mock_smol_rag, sm)
@@ -147,7 +147,7 @@ class TestAgentFactory:
 
     @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     def test_build_agent_loop_shared_smol_rag(
-        self, mock_create, researcher_config, writer_config, master_registry, mock_smol_rag, sessions_dir
+        self, _mock_create, researcher_config, writer_config, master_registry, mock_smol_rag, sessions_dir
     ):
         sm = SessionManager(sessions_dir)
         loop_r = build_agent_loop(researcher_config, master_registry, mock_smol_rag, sm)
@@ -156,7 +156,7 @@ class TestAgentFactory:
 
     @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     def test_build_agent_loop_uses_exact_session_key_when_provided(
-        self, mock_create, researcher_config, master_registry, mock_smol_rag, sessions_dir
+        self, _mock_create, researcher_config, master_registry, mock_smol_rag, sessions_dir
     ):
         sm = SessionManager(sessions_dir)
         loop = build_agent_loop(

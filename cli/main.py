@@ -17,7 +17,7 @@ from prompt_toolkit.history import FileHistory
 
 from app.agent_loop import AgentLoop
 from app.definitions import (
-    SESSIONS_DIR, MEMORY_DOCS_DIR, WORKSPACE_DIR, AGENT_MODEL,
+    DATA_DIR, SESSIONS_DIR, MEMORY_DOCS_DIR, WORKSPACE_DIR, AGENT_MODEL,
 )
 from app.session import SessionManager
 from app.smol_rag import SmolRag
@@ -347,6 +347,31 @@ async def _index_sessions(sessions_dir: str, memory_dir: str):
     for key, source_id in results.items():
         console.print(f"[green]Indexed:[/green] {key} -> {source_id}")
     console.print(f"\n[bold]Done:[/bold] {len(results)} sessions indexed")
+
+
+@app.command()
+def reset(
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
+):
+    """Wipe all persistent data (memories, sessions, indexes) for a full reset."""
+    if not force:
+        confirm = typer.confirm(
+            "This will delete all memories, sessions, and indexes. Continue?"
+        )
+        if not confirm:
+            raise typer.Abort()
+    asyncio.run(_reset())
+
+
+async def _reset():
+    from app.reset import reset_all_stores
+    deleted = await reset_all_stores(DATA_DIR)
+    if deleted:
+        for line in deleted:
+            console.print(f"  [red]{line}[/red]")
+        console.print(f"\n[bold]Reset complete.[/bold] {len(deleted)} action(s).")
+    else:
+        console.print("[dim]Nothing to reset — stores already clean.[/dim]")
 
 
 if __name__ == "__main__":
