@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 
 from app.agent_config import AgentConfig
 from app.agent_loop import AgentLoop
@@ -17,6 +18,7 @@ def build_agent_loop(
     smol_rag,
     session_manager: SessionManager,
     session_key_prefix: str = "default",
+    session_key: Optional[str] = None,
 ) -> AgentLoop:
     llm = create_llm(completion_model=config.model)
     filtered_registry = master_registry.filter_by_names(config.tools)
@@ -36,8 +38,8 @@ def build_agent_loop(
             shared_bootstrap_path=_SHARED_BOOTSTRAP_PATH,
         )
 
-    session_key = f"{config.name}-{session_key_prefix}"
-    session = session_manager.get_or_create(session_key)
+    resolved_session_key = session_key or f"{config.name}-{session_key_prefix}"
+    session = session_manager.get_or_create(resolved_session_key)
     return AgentLoop(
         llm=llm,
         tool_registry=filtered_registry,

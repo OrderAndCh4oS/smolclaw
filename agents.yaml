@@ -14,6 +14,7 @@ agents:
       - memory_graph_query
       - memory_store
       - memory_relate
+      - memory_recall
       - read_file
       - write_file
       - edit_file

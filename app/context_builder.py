@@ -51,3 +51,10 @@ class ContextBuilder:
         messages.extend(history)
         messages.append({"role": "user", "content": user_content})
         return messages
+
+    async def build_messages_async(
+        self,
+        history: List[Dict],
+        user_content: str,
+    ) -> List[Dict]:
+        return self.build_messages(history=history, user_content=user_content)

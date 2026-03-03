@@ -220,6 +220,25 @@ class TestRuntimeRegressions:
         assert hl_excerpts == []
 
     @pytest.mark.asyncio
+    async def test_mix_query_keeps_metadata_only_session_content_for_episode_recall(self, temp_dir, mock_openai_llm):
+        rag = _build_rag(temp_dir=temp_dir, llm=mock_openai_llm)
+        rag.rate_limited_get_completion = AsyncMock(side_effect=["{}", "final response"])
+        rag._get_low_level_dataset = AsyncMock(return_value=([], [], []))
+        rag._get_high_level_dataset = AsyncMock(return_value=([], [], []))
+        rag._get_query_excerpts = AsyncMock(return_value=[
+            {"excerpt": "#episode #session", "summary": "header"},
+            {"excerpt": "user: shipped the feature", "summary": "body", "memory_type": "episode"},
+            {"excerpt": "pricing decision", "summary": "decision", "memory_type": "decision"},
+        ])
+
+        result = await rag.mix_query("what did we do?", memory_type="episode")
+
+        assert result == "final response"
+        context = rag.rate_limited_get_completion.await_args_list[1].kwargs["context"]
+        assert "user: shipped the feature" in context
+        assert "pricing decision" not in context
+
+    @pytest.mark.asyncio
     async def test_remove_document_removes_orphaned_kg_entries(self, temp_dir, mock_openai_llm):
         rag = _build_rag(temp_dir=temp_dir, llm=mock_openai_llm)
         doc_id = "doc-orphan"

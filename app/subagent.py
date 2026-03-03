@@ -1,7 +1,8 @@
 import asyncio
-from typing import Dict
+from typing import Callable, Dict, Optional
 
 from app.agent_config import AgentConfig
+from app.agent_loop import AgentLoop
 from app.agent_factory import build_agent_loop
 from app.session import SessionManager
 from app.tools.registry import ToolRegistry
@@ -14,12 +15,14 @@ class SubagentManager:
         master_registry: ToolRegistry,
         smol_rag,
         session_manager: SessionManager,
+        session_end_hook_registrar: Optional[Callable[[AgentLoop], None]] = None,
         max_concurrent: int = 5,
     ):
         self.configs = configs
         self.master_registry = master_registry
         self.smol_rag = smol_rag
         self.session_manager = session_manager
+        self.session_end_hook_registrar = session_end_hook_registrar
         self.max_concurrent = max_concurrent
         self._tasks: Dict[str, asyncio.Task] = {}
         self._results: Dict[str, str] = {}
@@ -39,6 +42,8 @@ class SubagentManager:
             config, self.master_registry, self.smol_rag,
             self.session_manager, session_key_prefix=task_id,
         )
+        if self.session_end_hook_registrar:
+            self.session_end_hook_registrar(loop)
         task = asyncio.create_task(self._run(task_id, loop, goal))
         self._tasks[task_id] = task
         return task_id
@@ -49,6 +54,8 @@ class SubagentManager:
             self._results[task_id] = result
         except Exception as e:
             self._results[task_id] = f"Error: agent failed — {e}"
+        finally:
+            await loop.close()
 
     def get_result(self, task_id: str) -> str:
         if task_id not in self._tasks:

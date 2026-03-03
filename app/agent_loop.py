@@ -47,7 +47,7 @@ class AgentLoop:
         if history and history[-1]["role"] == "user" and history[-1]["content"] == user_content:
             history = history[:-1]
 
-        messages = self.context_builder.build_messages(
+        messages = await self.context_builder.build_messages_async(
             history=history,
             user_content=user_content,
         )

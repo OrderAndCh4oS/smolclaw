@@ -603,9 +603,18 @@ class SmolRag:
         return excerpts
 
     @staticmethod
-    def _filter_excerpts_by_type(excerpts: list[dict], memory_type: str) -> list[dict]:
+    def _filter_excerpts_by_memory_type(excerpts: list[dict], memory_type: str) -> list[dict]:
         tag = f"#{memory_type}"
-        return [e for e in excerpts if tag in e.get("excerpt", "")]
+        filtered = []
+        for excerpt in excerpts:
+            excerpt_type = excerpt.get("memory_type")
+            if excerpt_type is not None:
+                if excerpt_type == memory_type:
+                    filtered.append(excerpt)
+                continue
+            if tag in excerpt.get("excerpt", ""):
+                filtered.append(excerpt)
+        return filtered
 
     async def mix_query(self, text, memory_type: str | None = None, include_bm25: bool = False):
         prompt = get_high_low_level_keywords_prompt(text)
@@ -631,8 +640,8 @@ class SmolRag:
                     seen_ids.add(e.get("doc_id"))
 
         if memory_type:
-            kg_excerpts = self._filter_excerpts_by_type(kg_excerpts, memory_type)
-            query_excerpts = self._filter_excerpts_by_type(query_excerpts, memory_type)
+            kg_excerpts = self._filter_excerpts_by_memory_type(kg_excerpts, memory_type)
+            query_excerpts = self._filter_excerpts_by_memory_type(query_excerpts, memory_type)
 
         kg_context = self._get_kg_query_context(kg_entities, kg_excerpts, kg_relations)
         excerpt_context = self._get_excerpt_context(query_excerpts)

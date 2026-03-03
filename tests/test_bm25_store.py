@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 import pytest
@@ -64,6 +65,32 @@ class TestBM25StoreBaseline:
         await bm25.add("doc1", "hello world")
         results = await bm25.query("hello")
         assert all(r["score"] > 0 for r in results)
+
+    @pytest.mark.asyncio
+    async def test_concurrent_first_adds_do_not_drop_docs(self, bm25):
+        await asyncio.gather(
+            bm25.add("doc1", "alpha unique_one"),
+            bm25.add("doc2", "beta unique_two"),
+            bm25.add("doc3", "gamma unique_three"),
+        )
+
+        assert set(bm25._docs) == {"doc1", "doc2", "doc3"}
+
+    @pytest.mark.asyncio
+    async def test_concurrent_first_adds_are_immediately_queryable(self, bm25):
+        await asyncio.gather(
+            bm25.add("doc1", "alpha unique_one"),
+            bm25.add("doc2", "beta unique_two"),
+            bm25.add("doc3", "gamma unique_three"),
+        )
+
+        one = await bm25.query("unique_one", top_k=5)
+        two = await bm25.query("unique_two", top_k=5)
+        three = await bm25.query("unique_three", top_k=5)
+
+        assert one[0]["doc_id"] == "doc1"
+        assert two[0]["doc_id"] == "doc2"
+        assert three[0]["doc_id"] == "doc3"
 
 
 class TestBM25StoreTokenization:

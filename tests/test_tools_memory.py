@@ -8,6 +8,7 @@ from app.obsidian import parse_frontmatter, parse_tags
 from app.tools.memory_tools import (
     MEMORY_TYPES,
     MemoryRelateTool,
+    MemoryRecallTool,
     MemorySearchTool,
     MemoryGraphQueryTool,
     MemoryStoreTool,
@@ -28,6 +29,18 @@ class TestMemorySearchTool:
         tool = MemorySearchTool(mock_smol_rag)
         result = await tool.execute(query="test")
         assert result == "found X"
+
+
+class TestMemoryRecallTool:
+    @pytest.mark.asyncio
+    async def test_topic_mode_calls_mix_query_with_episode_filter_and_bm25(self, mock_smol_rag):
+        tool = MemoryRecallTool(mock_smol_rag)
+        await tool.execute(query="session summary", mode="topic")
+        mock_smol_rag.mix_query.assert_called_once_with(
+            "session summary",
+            memory_type="episode",
+            include_bm25=True,
+        )
 
 
 class TestMemoryGraphQueryTool:

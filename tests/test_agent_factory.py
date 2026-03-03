@@ -153,3 +153,17 @@ class TestAgentFactory:
         loop_r = build_agent_loop(researcher_config, master_registry, mock_smol_rag, sm)
         loop_w = build_agent_loop(writer_config, master_registry, mock_smol_rag, sm)
         assert loop_r.smol_rag is loop_w.smol_rag
+
+    @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
+    def test_build_agent_loop_uses_exact_session_key_when_provided(
+        self, mock_create, researcher_config, master_registry, mock_smol_rag, sessions_dir
+    ):
+        sm = SessionManager(sessions_dir)
+        loop = build_agent_loop(
+            researcher_config,
+            master_registry,
+            mock_smol_rag,
+            sm,
+            session_key="plain-session",
+        )
+        assert loop.session.key == "plain-session"

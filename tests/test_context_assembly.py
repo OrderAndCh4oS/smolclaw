@@ -111,6 +111,20 @@ class TestContextAssembler:
         assert "Relevant Memories" in messages[0]["content"]
         assert messages[-1]["content"] == "What is Python?"
 
+    @pytest.mark.asyncio
+    async def test_build_messages_async_includes_context(self, mock_smol_rag_for_assembly):
+        assembler = ContextAssembler(
+            smol_rag=mock_smol_rag_for_assembly,
+            token_budget=4000,
+        )
+        messages = await assembler.build_messages_async(
+            history=[{"role": "user", "content": "hi"}],
+            user_content="What is Python?",
+        )
+        assert messages[0]["role"] == "system"
+        assert "Relevant Memories" in messages[0]["content"]
+        assert messages[-1]["content"] == "What is Python?"
+
     def test_recency_decay(self, mock_smol_rag_for_assembly):
         assembler = ContextAssembler(smol_rag=mock_smol_rag_for_assembly)
         # Recent item should have higher decay

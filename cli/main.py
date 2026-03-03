@@ -1,7 +1,7 @@
 import asyncio
+from dataclasses import replace
 import logging
 import os
-import sys
 from typing import Optional
 
 import typer
@@ -16,12 +16,9 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 
 from app.agent_loop import AgentLoop
-from app.context_builder import ContextBuilder
 from app.definitions import (
     SESSIONS_DIR, MEMORY_DOCS_DIR, WORKSPACE_DIR, AGENT_MODEL,
-    MAX_ITERATIONS, MEMORY_WINDOW,
 )
-from app.llm import create_llm
 from app.session import SessionManager
 from app.smol_rag import SmolRag
 from app.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
@@ -61,11 +58,14 @@ def _build_multiagent(
     smol_rag: SmolRag,
     workspace: str,
     session_manager: SessionManager,
+    auto_export: bool,
 ) -> AgentLoop:
     from app.agent_config import AgentConfigLoader
     from app.agent_factory import build_agent_loop
     from app.subagent import SubagentManager
     from app.tools.spawn import SpawnTool, GetResultTool, AwaitResultTool
+    from app.hooks import ON_SESSION_END
+    from app.session_export_hook import SessionExportHook
 
     configs = AgentConfigLoader.load(agents_config_path)
     if agent_name not in configs:
@@ -74,11 +74,26 @@ def _build_multiagent(
 
     master_registry = _build_tool_registry(smol_rag, workspace)
 
+    memory_dir = ensure_dir(MEMORY_DOCS_DIR) if auto_export else None
+
+    def register_session_export(loop: AgentLoop):
+        if not auto_export or memory_dir is None:
+            return
+        loop.hook_runner.on(
+            ON_SESSION_END,
+            SessionExportHook(
+                smol_rag=smol_rag,
+                llm=loop.llm,
+                memory_dir=memory_dir,
+            ),
+        )
+
     subagent_manager = SubagentManager(
         configs=configs,
         master_registry=master_registry,
         smol_rag=smol_rag,
         session_manager=session_manager,
+        session_end_hook_registrar=register_session_export if auto_export else None,
     )
     master_registry.register(SpawnTool(subagent_manager))
     master_registry.register(GetResultTool(subagent_manager))
@@ -90,6 +105,34 @@ def _build_multiagent(
         smol_rag=smol_rag,
         session_manager=session_manager,
         session_key_prefix=session_key,
+    )
+
+
+def _build_default_chat_agent(
+    agents_config_path: str,
+    session_key: str,
+    model: str,
+    smol_rag: SmolRag,
+    workspace: str,
+    session_manager: SessionManager,
+) -> AgentLoop:
+    from app.agent_config import AgentConfigLoader
+    from app.agent_factory import build_agent_loop
+
+    configs = AgentConfigLoader.load(agents_config_path)
+    if "default" not in configs:
+        raise typer.BadParameter(
+            f"Agents config '{agents_config_path}' must define a 'default' agent for chat."
+        )
+
+    config = replace(configs["default"], model=model)
+    registry = _build_tool_registry(smol_rag, workspace)
+    return build_agent_loop(
+        config=config,
+        master_registry=registry,
+        smol_rag=smol_rag,
+        session_manager=session_manager,
+        session_key=session_key,
     )
 
 
@@ -121,41 +164,32 @@ async def _chat_loop(
 
     if agent_name:
         agent = _build_multiagent(
-            agent_name, agents_config, session_key, smol_rag, workspace, session_manager,
+            agent_name, agents_config, session_key, smol_rag, workspace, session_manager, auto_export,
         )
         label = agent_name.capitalize()
     else:
-        llm = create_llm(completion_model=model)
-        registry = _build_tool_registry(smol_rag, workspace)
-
-        bootstrap_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "AGENT.md")
-        context_builder = ContextBuilder(shared_bootstrap_path=bootstrap_path)
-
-        session = session_manager.get_or_create(session_key)
-
-        from app.hooks import HookRunner, ON_SESSION_END
-        from app.session_export_hook import SessionExportHook
-        hook_runner = HookRunner()
-        if auto_export:
-            export_hook = SessionExportHook(
-                smol_rag=smol_rag,
-                llm=llm,
-                memory_dir=ensure_dir(MEMORY_DOCS_DIR),
-            )
-            hook_runner.on(ON_SESSION_END, export_hook)
-
-        agent = AgentLoop(
-            llm=llm,
-            tool_registry=registry,
-            context_builder=context_builder,
-            session=session,
-            session_manager=session_manager,
-            max_iterations=MAX_ITERATIONS,
-            memory_window=MEMORY_WINDOW,
+        agent = _build_default_chat_agent(
+            agents_config_path=agents_config,
+            session_key=session_key,
+            model=model,
             smol_rag=smol_rag,
-            hook_runner=hook_runner,
+            workspace=workspace,
+            session_manager=session_manager,
         )
         label = "SmolClaw"
+
+    if auto_export:
+        from app.hooks import ON_SESSION_END
+        from app.session_export_hook import SessionExportHook
+
+        agent.hook_runner.on(
+            ON_SESSION_END,
+            SessionExportHook(
+                smol_rag=smol_rag,
+                llm=agent.llm,
+                memory_dir=ensure_dir(MEMORY_DOCS_DIR),
+            ),
+        )
 
     history_file = os.path.join(SESSIONS_DIR, "prompt_history.txt")
     prompt_session = PromptSession(history=FileHistory(history_file))
@@ -188,10 +222,12 @@ async def _chat_loop(
         console.print(Markdown(response))
         console.print()
 
-    # Fire session end hooks (auto-export journal + index)
-    with console.status("[bold cyan]exporting session...[/bold cyan]"):
+    if auto_export:
+        with console.status("[bold cyan]exporting session...[/bold cyan]"):
+            await agent.close()
+        console.print("[dim]Session exported.[/dim]")
+    else:
         await agent.close()
-    console.print("[dim]Session exported.[/dim]")
 
 
 @app.command()

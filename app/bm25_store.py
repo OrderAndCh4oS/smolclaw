@@ -1,3 +1,4 @@
+import asyncio
 import json
 import math
 import os
@@ -24,6 +25,7 @@ class BM25Store:
         self._idf_cache: dict[str, float] = {}
         self._db = None
         self._loaded = False
+        self._lock = asyncio.Lock()
 
     @staticmethod
     def _tokenize(text: str) -> list[str]:
@@ -61,67 +63,77 @@ class BM25Store:
             await self._db.commit()
         return self._db
 
-    async def _load(self):
+    async def _ensure_loaded_unlocked(self):
         if self._loaded:
             return
         db = await self._get_db()
         cursor = await db.execute(f"SELECT doc_id, tokens FROM [{self.table}]")
         rows = await cursor.fetchall()
+        docs = {}
+        doc_lengths = {}
         for doc_id, tokens_json in rows:
             tf = Counter(json.loads(tokens_json))
-            self._docs[doc_id] = tf
-            self._doc_lengths[doc_id] = sum(tf.values())
+            docs[doc_id] = tf
+            doc_lengths[doc_id] = sum(tf.values())
+        self._docs = docs
+        self._doc_lengths = doc_lengths
         self._recompute_stats()
         self._loaded = True
 
     async def add(self, doc_id: str, text: str):
-        await self._load()
-        tokens = self._tokenize(text)
-        tf = Counter(tokens)
-        self._docs[doc_id] = tf
-        self._doc_lengths[doc_id] = len(tokens)
-        self._recompute_stats()
-        # Persist
-        db = await self._get_db()
-        await db.execute(
-            f"INSERT OR REPLACE INTO [{self.table}] (doc_id, tokens) VALUES (?, ?)",
-            (doc_id, json.dumps(dict(tf))),
-        )
-        await db.commit()
+        async with self._lock:
+            await self._ensure_loaded_unlocked()
+            tokens = self._tokenize(text)
+            tf = Counter(tokens)
+            self._docs[doc_id] = tf
+            self._doc_lengths[doc_id] = len(tokens)
+            self._recompute_stats()
+            db = await self._get_db()
+            await db.execute(
+                f"INSERT OR REPLACE INTO [{self.table}] (doc_id, tokens) VALUES (?, ?)",
+                (doc_id, json.dumps(dict(tf))),
+            )
+            await db.commit()
 
     async def remove(self, doc_id: str):
-        await self._load()
-        if doc_id not in self._docs:
-            return
-        del self._docs[doc_id]
-        del self._doc_lengths[doc_id]
-        self._recompute_stats()
-        db = await self._get_db()
-        await db.execute(
-            f"DELETE FROM [{self.table}] WHERE doc_id = ?", (doc_id,)
-        )
-        await db.commit()
+        async with self._lock:
+            await self._ensure_loaded_unlocked()
+            if doc_id not in self._docs:
+                return
+            del self._docs[doc_id]
+            del self._doc_lengths[doc_id]
+            self._recompute_stats()
+            db = await self._get_db()
+            await db.execute(
+                f"DELETE FROM [{self.table}] WHERE doc_id = ?", (doc_id,)
+            )
+            await db.commit()
 
     async def query(self, text: str, top_k: int = 10) -> list[dict]:
-        await self._load()
-        if not self._docs:
-            return []
+        async with self._lock:
+            await self._ensure_loaded_unlocked()
+            if not self._docs:
+                return []
+            docs = dict(self._docs)
+            doc_lengths = dict(self._doc_lengths)
+            avg_dl = self._avg_dl
+            idf_cache = dict(self._idf_cache)
         query_tokens = self._tokenize(text)
         if not query_tokens:
             return []
 
         scores: dict[str, float] = {}
         for token in query_tokens:
-            idf = self._idf_cache.get(token, 0.0)
+            idf = idf_cache.get(token, 0.0)
             if idf <= 0:
                 continue
-            for doc_id, tf in self._docs.items():
+            for doc_id, tf in docs.items():
                 if token not in tf:
                     continue
                 freq = tf[token]
-                dl = self._doc_lengths[doc_id]
+                dl = doc_lengths[doc_id]
                 numerator = freq * (self.k1 + 1)
-                denominator = freq + self.k1 * (1 - self.b + self.b * dl / self._avg_dl)
+                denominator = freq + self.k1 * (1 - self.b + self.b * dl / avg_dl)
                 score = idf * (numerator / denominator)
                 scores[doc_id] = scores.get(doc_id, 0.0) + score
 
@@ -133,6 +145,7 @@ class BM25Store:
         pass
 
     async def close(self):
-        if self._db is not None:
-            await self._db.close()
-            self._db = None
+        async with self._lock:
+            if self._db is not None:
+                await self._db.close()
+                self._db = None

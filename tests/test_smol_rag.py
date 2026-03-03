@@ -87,6 +87,22 @@ class TestSmolRagBaseline:
         assert doc_id is not None
 
 
+class TestSmolRagMemoryTypeFiltering:
+    def test_filter_excerpts_prefers_metadata_with_legacy_fallback(self):
+        excerpts = [
+            {"excerpt": "user: shipped the feature", "memory_type": "episode"},
+            {"excerpt": "#episode legacy tagged excerpt"},
+            {"excerpt": "plain fact", "memory_type": "fact"},
+        ]
+
+        filtered = SmolRag._filter_excerpts_by_memory_type(excerpts, "episode")
+
+        assert filtered == [
+            {"excerpt": "user: shipped the feature", "memory_type": "episode"},
+            {"excerpt": "#episode legacy tagged excerpt"},
+        ]
+
+
 class TestSmolRagEmbeddingBottlenecks:
     """Tests for embedding generation bottlenecks (#5)."""
 
@@ -496,14 +512,14 @@ class TestSmolRagEdgeCases:
         assert result is not None
 
 
-class TestFilterExcerptsByType:
+class TestFilterExcerptsByMemoryType:
     def test_filters_matching_type(self):
         excerpts = [
             {"excerpt": "#fact some factual content"},
             {"excerpt": "#reference a reference document"},
             {"excerpt": "#fact another fact"},
         ]
-        result = SmolRag._filter_excerpts_by_type(excerpts, "fact")
+        result = SmolRag._filter_excerpts_by_memory_type(excerpts, "fact")
         assert len(result) == 2
         assert all("#fact" in e["excerpt"] for e in result)
 
@@ -512,7 +528,7 @@ class TestFilterExcerptsByType:
             {"excerpt": "#fact some content"},
             {"excerpt": "#reference a reference"},
         ]
-        result = SmolRag._filter_excerpts_by_type(excerpts, "decision")
+        result = SmolRag._filter_excerpts_by_memory_type(excerpts, "decision")
         assert result == []
 
     def test_returns_all_when_all_match(self):
@@ -520,14 +536,14 @@ class TestFilterExcerptsByType:
             {"excerpt": "#fact content A"},
             {"excerpt": "#fact content B"},
         ]
-        result = SmolRag._filter_excerpts_by_type(excerpts, "fact")
+        result = SmolRag._filter_excerpts_by_memory_type(excerpts, "fact")
         assert len(result) == 2
 
     def test_handles_empty_list(self):
-        result = SmolRag._filter_excerpts_by_type([], "fact")
+        result = SmolRag._filter_excerpts_by_memory_type([], "fact")
         assert result == []
 
     def test_handles_missing_excerpt_key(self):
         excerpts = [{"summary": "no excerpt key"}]
-        result = SmolRag._filter_excerpts_by_type(excerpts, "fact")
+        result = SmolRag._filter_excerpts_by_memory_type(excerpts, "fact")
         assert result == []

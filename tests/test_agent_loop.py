@@ -42,6 +42,38 @@ def _make_tool_call(name, arguments):
 
 class TestAgentLoop:
     @pytest.mark.asyncio
+    async def test_process_uses_build_messages_async(self, temp_dir):
+        llm = MagicMock()
+        llm.get_tool_completion = AsyncMock(return_value={
+            "content": "ok",
+            "tool_calls": None,
+            "has_tool_calls": False,
+        })
+
+        registry = ToolRegistry()
+        builder = MagicMock()
+        builder.build_messages_async = AsyncMock(return_value=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hello"},
+        ])
+        session = Session(key="async-builder-test")
+        sm = SessionManager(temp_dir)
+
+        loop = AgentLoop(
+            llm=llm,
+            tool_registry=registry,
+            context_builder=builder,
+            session=session,
+            session_manager=sm,
+        )
+        await loop.process("hello")
+
+        builder.build_messages_async.assert_awaited_once_with(
+            history=[],
+            user_content="hello",
+        )
+
+    @pytest.mark.asyncio
     async def test_process_returns_response(self, mock_tool_llm, temp_dir):
         registry = ToolRegistry()
         builder = ContextBuilder()
