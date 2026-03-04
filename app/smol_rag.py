@@ -551,8 +551,12 @@ class SmolRag:
         keyword_data = extract_json_from_text(result) or {}
         logger.info("Processed high/low level keywords for hybrid KG query.")
 
-        ll_dataset, ll_entity_excerpts, ll_relations = await self._get_low_level_dataset(keyword_data)
-        hl_dataset, hl_entities, hl_entity_excerpts = await self._get_high_level_dataset(keyword_data)
+        (ll_dataset, ll_entity_excerpts, ll_relations), (hl_dataset, hl_entities, hl_entity_excerpts) = (
+            await asyncio.gather(
+                self._get_low_level_dataset(keyword_data),
+                self._get_high_level_dataset(keyword_data),
+            )
+        )
 
         entities = ll_dataset + hl_entities
         relations = ll_relations + hl_dataset
@@ -592,12 +596,8 @@ class SmolRag:
     async def bm25_query(self, text: str, top_k: int = 10) -> list[dict]:
         """Pure BM25 keyword search over excerpts."""
         results = await self.bm25_store.query(text, top_k=top_k)
-        excerpts = []
-        for r in results:
-            data = await self.excerpt_kv.get_by_key(r["doc_id"])
-            if data and "excerpt" in data:
-                excerpts.append(data)
-        return excerpts
+        fetched = await asyncio.gather(*[self.excerpt_kv.get_by_key(r["doc_id"]) for r in results])
+        return [data for data in fetched if data and "excerpt" in data]
 
     @staticmethod
     def _filter_excerpts_by_memory_type(excerpts: list[dict], memory_type: str) -> list[dict]:
@@ -614,17 +614,26 @@ class SmolRag:
         keyword_data = extract_json_from_text(result) or {}
         logger.info("Processed high/low level keywords for mixed KG query.")
 
-        ll_dataset, ll_entity_excerpts, ll_relations = await self._get_low_level_dataset(keyword_data)
-        hl_dataset, hl_entities, hl_entity_excerpts = await self._get_high_level_dataset(keyword_data)
+        tasks = [
+            self._get_low_level_dataset(keyword_data),
+            self._get_high_level_dataset(keyword_data),
+            self._get_query_excerpts(text),
+        ]
+        if include_bm25:
+            tasks.append(self.bm25_query(text, top_k=10))
+
+        results = await asyncio.gather(*tasks)
+        ll_dataset, ll_entity_excerpts, ll_relations = results[0]
+        hl_dataset, hl_entities, hl_entity_excerpts = results[1]
+        query_excerpts = list(results[2])
 
         kg_entities = ll_dataset + hl_entities
         kg_relations = ll_relations + hl_dataset
         kg_excerpts = ll_entity_excerpts + hl_entity_excerpts
-        query_excerpts = await self._get_query_excerpts(text)
 
         # Merge BM25 results when requested
         if include_bm25:
-            bm25_excerpts = await self.bm25_query(text, top_k=10)
+            bm25_excerpts = results[3]
             seen_ids = {e.get("doc_id") for e in query_excerpts if "doc_id" in e}
             for e in bm25_excerpts:
                 if e.get("doc_id") not in seen_ids:

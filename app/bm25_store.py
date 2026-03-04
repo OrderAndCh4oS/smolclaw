@@ -6,12 +6,17 @@ import re
 from collections import Counter
 
 import aiosqlite
+from nltk.corpus import stopwords
+from nltk.stem import SnowballStemmer
+
+_STOP_WORDS = set(stopwords.words("english"))
+_STEMMER = SnowballStemmer("english")
 
 
 class BM25Store:
     """In-memory BM25 index backed by SQLite for durability.
 
-    Okapi BM25 with k1=1.5, b=0.75. Tokenizer is simple word splitting.
+    Okapi BM25 with k1=1.5, b=0.75. Tokenizer uses stop word removal and stemming.
     """
 
     def __init__(self, db_path: str, table: str = "bm25_index", k1: float = 1.5, b: float = 0.75):
@@ -29,7 +34,8 @@ class BM25Store:
 
     @staticmethod
     def _tokenize(text: str) -> list[str]:
-        return re.findall(r"\w+", text.lower())
+        words = re.findall(r"\w+", text.lower())
+        return [_STEMMER.stem(w) for w in words if w not in _STOP_WORDS and len(w) > 1]
 
     def _recompute_stats(self):
         if self._docs:
@@ -58,8 +64,15 @@ class BM25Store:
             await self._db.execute("PRAGMA journal_mode=WAL")
             await self._db.execute(
                 f"CREATE TABLE IF NOT EXISTS [{self.table}] "
-                f"(doc_id TEXT PRIMARY KEY, tokens TEXT)"
+                f"(doc_id TEXT PRIMARY KEY, tokens TEXT, raw_text TEXT)"
             )
+            # Migrate old tables missing raw_text column
+            cursor = await self._db.execute(f"PRAGMA table_info([{self.table}])")
+            columns = {row[1] for row in await cursor.fetchall()}
+            if "raw_text" not in columns:
+                await self._db.execute(
+                    f"ALTER TABLE [{self.table}] ADD COLUMN raw_text TEXT"
+                )
             await self._db.commit()
         return self._db
 
@@ -90,8 +103,8 @@ class BM25Store:
             self._recompute_stats()
             db = await self._get_db()
             await db.execute(
-                f"INSERT OR REPLACE INTO [{self.table}] (doc_id, tokens) VALUES (?, ?)",
-                (doc_id, json.dumps(dict(tf))),
+                f"INSERT OR REPLACE INTO [{self.table}] (doc_id, tokens, raw_text) VALUES (?, ?, ?)",
+                (doc_id, json.dumps(dict(tf)), text),
             )
             await db.commit()
 
@@ -139,6 +152,29 @@ class BM25Store:
 
         ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
         return [{"doc_id": doc_id, "score": score} for doc_id, score in ranked]
+
+    async def reindex(self):
+        """Re-tokenize all documents from stored raw text. Use after tokenizer changes."""
+        async with self._lock:
+            await self._ensure_loaded_unlocked()
+            db = await self._get_db()
+            cursor = await db.execute(f"SELECT doc_id, raw_text FROM [{self.table}]")
+            rows = await cursor.fetchall()
+            self._docs.clear()
+            self._doc_lengths.clear()
+            for doc_id, raw_text in rows:
+                if not raw_text:
+                    continue
+                tokens = self._tokenize(raw_text)
+                tf = Counter(tokens)
+                self._docs[doc_id] = tf
+                self._doc_lengths[doc_id] = len(tokens)
+                await db.execute(
+                    f"UPDATE [{self.table}] SET tokens = ? WHERE doc_id = ?",
+                    (json.dumps(dict(tf)), doc_id),
+                )
+            await db.commit()
+            self._recompute_stats()
 
     async def close(self):
         async with self._lock:

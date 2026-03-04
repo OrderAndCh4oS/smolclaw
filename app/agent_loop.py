@@ -3,7 +3,7 @@ from typing import Awaitable, Callable, Optional
 
 from app.context_builder import ContextBuilder
 from app.definitions import MAX_ITERATIONS, MEMORY_WINDOW
-from app.hooks import HookRunner, ON_BEFORE_TURN, ON_AFTER_TURN, ON_COMPACTION_FLUSH, ON_SESSION_END
+from app.hooks import HookRunner, ON_SESSION_START, ON_BEFORE_TURN, ON_AFTER_TURN, ON_COMPACTION_FLUSH, ON_SESSION_END
 from app.logger import logger
 from app.session import Session, SessionManager
 from app.tools.registry import ToolRegistry
@@ -32,12 +32,19 @@ class AgentLoop:
         self.smol_rag = smol_rag
         self.hook_runner = hook_runner or HookRunner()
         self._stop_after_current = False
+        self._session_started = False
 
     async def process(
         self,
         user_content: str,
         on_output: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> str:
+        if not self._session_started:
+            self._session_started = True
+            await self.hook_runner.fire(ON_SESSION_START, {
+                "session_key": self.session.key,
+            })
+
         self.session.add_message({"role": "user", "content": user_content})
 
         await self._maybe_consolidate()

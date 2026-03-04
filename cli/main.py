@@ -22,7 +22,7 @@ from app.definitions import (
 from app.session import SessionManager
 from app.smol_rag import SmolRag
 from app.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
-from app.tools.memory_tools import MemorySearchTool, MemoryGraphQueryTool, MemoryStoreTool, MemoryRelateTool, MemoryRecallTool
+from app.tools.memory_tools import MemorySearchTool, MemoryGraphQueryTool, MemoryStoreTool, MemoryRelateTool, MemoryRecallTool, MemoryGetTool
 from app.tools.registry import ToolRegistry
 from app.tools.shell import ExecTool
 from app.tools.web import WebSearchTool, WebFetchTool
@@ -34,7 +34,7 @@ console = Console()
 DEFAULT_AGENTS_CONFIG = os.path.join(os.path.dirname(os.path.dirname(__file__)), "agents.yaml")
 
 
-def _build_tool_registry(smol_rag: SmolRag, workspace: str) -> ToolRegistry:
+def _build_tool_registry(smol_rag: SmolRag, workspace: str, llm=None) -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(ReadFileTool(allowed_dir=workspace))
     registry.register(WriteFileTool(allowed_dir=workspace))
@@ -43,9 +43,10 @@ def _build_tool_registry(smol_rag: SmolRag, workspace: str) -> ToolRegistry:
     registry.register(ExecTool())
     registry.register(MemorySearchTool(smol_rag))
     registry.register(MemoryGraphQueryTool(smol_rag))
-    registry.register(MemoryStoreTool(smol_rag, ensure_dir(MEMORY_DOCS_DIR)))
+    registry.register(MemoryStoreTool(smol_rag, ensure_dir(MEMORY_DOCS_DIR), llm=llm))
     registry.register(MemoryRelateTool(smol_rag))
     registry.register(MemoryRecallTool(smol_rag))
+    registry.register(MemoryGetTool(smol_rag))
     registry.register(WebSearchTool())
     registry.register(WebFetchTool())
     return registry
@@ -181,6 +182,7 @@ async def _chat_loop(
     if auto_export:
         from app.hooks import ON_SESSION_END
         from app.session_export_hook import SessionExportHook
+        from app.lifecycle_hooks import MemoryDecayHook
 
         agent.hook_runner.on(
             ON_SESSION_END,
@@ -190,6 +192,7 @@ async def _chat_loop(
                 memory_dir=ensure_dir(MEMORY_DOCS_DIR),
             ),
         )
+        agent.hook_runner.on(ON_SESSION_END, MemoryDecayHook(smol_rag))
 
     history_file = os.path.join(SESSIONS_DIR, "prompt_history.txt")
     prompt_session = PromptSession(history=FileHistory(history_file))

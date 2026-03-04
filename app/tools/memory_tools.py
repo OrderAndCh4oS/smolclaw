@@ -231,6 +231,44 @@ class MemoryStoreTool(Tool):
         return f"Stored memory: {file_id}"
 
 
+class MemoryGetTool(Tool):
+    @property
+    def name(self) -> str:
+        return "memory_get"
+
+    @property
+    def description(self) -> str:
+        return "Retrieve a specific memory by its excerpt ID."
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "excerpt_id": {"type": "string", "description": "The excerpt ID to retrieve"},
+            },
+            "required": ["excerpt_id"],
+        }
+
+    def __init__(self, smol_rag):
+        self.smol_rag = smol_rag
+
+    async def execute(self, **kwargs) -> str:
+        excerpt_id = kwargs["excerpt_id"]
+        data = await self.smol_rag.excerpt_kv.get_by_key(excerpt_id)
+        if not data:
+            return f"No memory found with ID: {excerpt_id}"
+        lines = [f"## Memory: {excerpt_id}"]
+        if data.get("excerpt"):
+            lines.append(f"\n{data['excerpt']}")
+        if data.get("summary"):
+            lines.append(f"\n**Summary**: {data['summary']}")
+        for field in ["memory_type", "importance", "confidence", "indexed_at"]:
+            if field in data:
+                lines.append(f"- {field}: {data[field]}")
+        return "\n".join(lines)
+
+
 class MemoryRecallTool(Tool):
     @property
     def name(self) -> str:
