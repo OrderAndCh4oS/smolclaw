@@ -312,18 +312,8 @@ class TestAgentLoop:
         assert fired_events[1]["had_tool_calls"] is False
 
     @pytest.mark.asyncio
-    async def test_hooks_fire_on_compaction(self, temp_dir):
-        """ON_COMPACTION_FLUSH fires when session exceeds memory_window."""
-        from app.hooks import HookRunner, ON_COMPACTION_FLUSH
-
-        compaction_events = []
-
-        async def capture_compaction(context):
-            compaction_events.append(context)
-
-        hook_runner = HookRunner()
-        hook_runner.on(ON_COMPACTION_FLUSH, capture_compaction)
-
+    async def test_compaction_ingests_into_rag(self, temp_dir):
+        """Consolidation ingests text into SmolRAG when session exceeds memory_window."""
         mock_rag = MagicMock()
         mock_rag.ingest_text = AsyncMock()
 
@@ -336,7 +326,7 @@ class TestAgentLoop:
 
         registry = ToolRegistry()
         builder = ContextBuilder()
-        session = Session(key="compact-hooks-test")
+        session = Session(key="compact-test")
         for i in range(25):
             session.add_message({"role": "user", "content": f"msg {i}"})
             session.add_message({"role": "assistant", "content": f"reply {i}"})
@@ -346,10 +336,8 @@ class TestAgentLoop:
             llm=llm, tool_registry=registry,
             context_builder=builder, session=session, session_manager=sm,
             memory_window=20, smol_rag=mock_rag,
-            hook_runner=hook_runner,
         )
         await loop.process("trigger compaction")
 
-        assert len(compaction_events) == 1
-        assert compaction_events[0]["session_key"] == "compact-hooks-test"
-        assert compaction_events[0]["message_count"] > 0
+        mock_rag.ingest_text.assert_called_once()
+        assert session.last_consolidated > 0

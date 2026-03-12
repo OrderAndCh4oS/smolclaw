@@ -58,7 +58,7 @@ class TestCliMultiagent:
         sm = SessionManager(sessions_dir)
         from app.tools.registry import ToolRegistry
         registry = ToolRegistry()
-        with patch("cli.main._build_tool_registry", return_value=registry):
+        with patch("cli.main._build_cli_tool_registry", return_value=registry):
 
             agent = _build_multiagent(
                 agent_name="researcher",
@@ -79,7 +79,7 @@ class TestCliMultiagent:
         sm = SessionManager(sessions_dir)
         from app.tools.registry import ToolRegistry
         registry = ToolRegistry()
-        with patch("cli.main._build_tool_registry", return_value=registry):
+        with patch("cli.main._build_cli_tool_registry", return_value=registry):
 
             agent = _build_default_chat_agent(
                 agents_config_path=agents_yaml,
@@ -136,7 +136,7 @@ class TestCliMultiagent:
         sm = SessionManager(sessions_dir)
         from app.tools.registry import ToolRegistry
         registry = ToolRegistry()
-        with patch("cli.main._build_tool_registry", return_value=registry):
+        with patch("cli.main._build_cli_tool_registry", return_value=registry):
 
             agent = _build_multiagent(
                 agent_name="researcher",
@@ -160,7 +160,7 @@ class TestCliMultiagent:
         from app.tools.registry import ToolRegistry
         registry = ToolRegistry()
 
-        with patch("cli.main._build_tool_registry", return_value=registry), \
+        with patch("cli.main._build_cli_tool_registry", return_value=registry), \
             patch("app.subagent.SubagentManager") as mock_subagent_manager, \
             patch("app.agent_factory.build_agent_loop", return_value=fake_agent):
             agent = _build_multiagent(
@@ -189,7 +189,7 @@ class TestCliMultiagent:
         from app.tools.registry import ToolRegistry
         registry = ToolRegistry()
 
-        with patch("cli.main._build_tool_registry", return_value=registry), \
+        with patch("cli.main._build_cli_tool_registry", return_value=registry), \
             patch("app.subagent.SubagentManager") as mock_subagent_manager, \
             patch("app.agent_factory.build_agent_loop", return_value=fake_agent):
             agent = _build_multiagent(

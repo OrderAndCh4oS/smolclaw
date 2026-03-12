@@ -21,11 +21,8 @@ from app.definitions import (
 )
 from app.session import SessionManager
 from app.smol_rag import SmolRag
-from app.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
-from app.tools.memory_tools import MemorySearchTool, MemoryGraphQueryTool, MemoryStoreTool, MemoryRelateTool, MemoryRecallTool, MemoryGetTool
-from app.tools.registry import ToolRegistry
-from app.tools.shell import ExecTool
-from app.tools.web import WebSearchTool, WebFetchTool
+from app.tools.factory import build_tool_registry
+from app.tools.memory_tools import MemoryRecallTool
 from app.utilities import ensure_dir
 
 app = typer.Typer(help="SmolClaw — agentic assistant with persistent memory")
@@ -34,22 +31,14 @@ console = Console()
 DEFAULT_AGENTS_CONFIG = os.path.join(os.path.dirname(os.path.dirname(__file__)), "agents.yaml")
 
 
-def _build_tool_registry(smol_rag: SmolRag, workspace: str, llm=None) -> ToolRegistry:
-    registry = ToolRegistry()
-    registry.register(ReadFileTool(allowed_dir=workspace))
-    registry.register(WriteFileTool(allowed_dir=workspace))
-    registry.register(EditFileTool(allowed_dir=workspace))
-    registry.register(ListDirTool(allowed_dir=workspace))
-    registry.register(ExecTool())
-    registry.register(MemorySearchTool(smol_rag))
-    registry.register(MemoryGraphQueryTool(smol_rag))
-    registry.register(MemoryStoreTool(smol_rag, ensure_dir(MEMORY_DOCS_DIR), llm=llm))
-    registry.register(MemoryRelateTool(smol_rag))
-    registry.register(MemoryRecallTool(smol_rag))
-    registry.register(MemoryGetTool(smol_rag))
-    registry.register(WebSearchTool())
-    registry.register(WebFetchTool())
-    return registry
+def _build_cli_tool_registry(smol_rag: SmolRag, workspace: str, llm=None):
+    return build_tool_registry(
+        smol_rag=smol_rag,
+        memory_docs_dir=MEMORY_DOCS_DIR,
+        workspace=workspace,
+        llm=llm,
+        mode="direct",
+    )
 
 
 def _build_multiagent(
@@ -73,7 +62,7 @@ def _build_multiagent(
         available = ", ".join(sorted(configs.keys()))
         raise typer.BadParameter(f"Unknown agent '{agent_name}'. Available: {available}")
 
-    master_registry = _build_tool_registry(smol_rag, workspace)
+    master_registry = _build_cli_tool_registry(smol_rag, workspace)
 
     memory_dir = ensure_dir(MEMORY_DOCS_DIR) if auto_export else None
 
@@ -127,7 +116,7 @@ def _build_default_chat_agent(
         )
 
     config = replace(configs["default"], model=model)
-    registry = _build_tool_registry(smol_rag, workspace)
+    registry = _build_cli_tool_registry(smol_rag, workspace)
     return build_agent_loop(
         config=config,
         master_registry=registry,

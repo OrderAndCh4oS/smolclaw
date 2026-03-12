@@ -296,6 +296,37 @@ def get_journal_prompt(conversation: str) -> str:
     """)
 
 
+def get_consolidation_prompt(conversation: str) -> str:
+    return inspect.cleandoc(f"""
+        Summarize the following conversation chunk into structured memory content.
+        Extract and organize:
+
+        1. **Key facts** learned (definitions, data points, stable truths)
+        2. **Decisions** made and their rationale
+        3. **Questions** raised or left open
+
+        Format as markdown with YAML frontmatter:
+
+        ---
+        memory_type: episode
+        tags:
+          - <topic tags extracted from content>
+        ---
+
+        ## Key Facts
+        - ...
+
+        ## Decisions
+        - ...
+
+        ## Open Questions
+        - ...
+
+        Conversation:
+        {conversation}
+    """)
+
+
 def get_classify_memory_prompt(content: str) -> str:
     return inspect.cleandoc(f"""
         Classify the following content into exactly one memory type and provide a confidence score.

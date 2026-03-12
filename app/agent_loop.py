@@ -3,7 +3,7 @@ from typing import Awaitable, Callable, Optional
 
 from app.context_builder import ContextBuilder
 from app.definitions import MAX_ITERATIONS, MEMORY_WINDOW
-from app.hooks import HookRunner, ON_SESSION_START, ON_BEFORE_TURN, ON_AFTER_TURN, ON_COMPACTION_FLUSH, ON_SESSION_END
+from app.hooks import HookRunner, ON_SESSION_START, ON_BEFORE_TURN, ON_AFTER_TURN, ON_SESSION_END
 from app.logger import logger
 from app.session import Session, SessionManager
 from app.tools.registry import ToolRegistry
@@ -165,12 +165,18 @@ class AgentLoop:
                 text_parts.append(f"{role}: {content}")
 
         if text_parts:
-            text = "\n".join(text_parts)
-            await self.smol_rag.ingest_text(text, source_id=f"session-{self.session.key}")
-
-            await self.hook_runner.fire(ON_COMPACTION_FLUSH, {
-                "session_key": self.session.key,
-                "message_count": len(to_consolidate),
-            })
+            raw_text = "\n".join(text_parts)
+            summary = await self._summarize_for_consolidation(raw_text)
+            await self.smol_rag.ingest_text(summary, source_id=f"session-{self.session.key}")
 
         self.session.last_consolidated = end
+
+    async def _summarize_for_consolidation(self, raw_text: str) -> str:
+        """Summarize conversation chunk into structured markdown for memory ingestion."""
+        from app.prompts import get_consolidation_prompt
+        try:
+            summary = await self.llm.get_completion(get_consolidation_prompt(raw_text))
+            return summary.strip()
+        except Exception:
+            # Fallback to raw text if LLM fails
+            return raw_text

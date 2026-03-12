@@ -32,9 +32,20 @@ class AssemblyManifest:
         )
 
 
+DEFAULT_TYPE_WEIGHTS = {
+    "fact": 1.2,
+    "decision": 1.2,
+    "reference": 1.1,
+    "preference": 1.0,
+    "task": 1.0,
+    "episode": 0.8,
+    "journal": 0.8,
+}
+
+
 class ContextAssembler(ContextBuilder):
     """Budget-aware context builder that retrieves memories from SmolRAG
-    and prioritizes by importance * confidence * recency decay."""
+    and prioritizes by importance * confidence * recency decay * type weight."""
 
     def __init__(
         self,
@@ -44,6 +55,7 @@ class ContextAssembler(ContextBuilder):
         persona: str = None,
         shared_bootstrap_path: str = None,
         decay_half_life_days: float = 30.0,
+        type_weights: Optional[Dict[str, float]] = None,
     ):
         super().__init__(
             bootstrap_path=bootstrap_path,
@@ -53,6 +65,7 @@ class ContextAssembler(ContextBuilder):
         self.smol_rag = smol_rag
         self.token_budget = token_budget
         self.decay_half_life_days = decay_half_life_days
+        self.type_weights = type_weights or DEFAULT_TYPE_WEIGHTS
         self.last_manifest: Optional[AssemblyManifest] = None
 
     def _recency_decay(self, indexed_at: float) -> float:
@@ -63,35 +76,83 @@ class ContextAssembler(ContextBuilder):
         return math.exp(-0.693 * age_days / self.decay_half_life_days)
 
     def _score_excerpt(self, excerpt_data: dict) -> float:
-        """Score an excerpt by importance * confidence * recency_decay."""
+        """Score an excerpt by importance * confidence * recency_decay * type_weight."""
         importance = excerpt_data.get("importance", 0.5)
         confidence = excerpt_data.get("confidence", 1.0)
         indexed_at = excerpt_data.get("indexed_at", 0)
         recency = self._recency_decay(indexed_at)
-        return importance * confidence * recency
+        memory_type = excerpt_data.get("memory_type")
+        type_weight = self.type_weights.get(memory_type, 1.0) if memory_type else 1.0
+        return importance * confidence * recency * type_weight
+
+    async def _gather_scored_items(self, query: str, top_k: int = 20) -> list:
+        """Gather excerpt data from vector, KG, and BM25 sources, deduplicate, and score."""
+        seen_ids = set()
+        scored_items = []
+
+        async def _add_excerpts(excerpts: list):
+            for exc in excerpts:
+                if not isinstance(exc, dict) or "excerpt" not in exc:
+                    continue
+                exc_id = exc.get("doc_id") or id(exc)
+                if exc_id in seen_ids:
+                    continue
+                seen_ids.add(exc_id)
+                score = self._score_excerpt(exc)
+                scored_items.append((str(exc_id), exc, score))
+
+        # 1. Vector similarity (primary)
+        try:
+            embedding = await self.smol_rag.rate_limited_get_embedding(query)
+            vector_results = await self.smol_rag.embeddings_db.query(embedding, top_k=top_k)
+            for r in vector_results:
+                excerpt_id = r.get("__id__")
+                if not excerpt_id or excerpt_id in seen_ids:
+                    continue
+                excerpt_data = await self.smol_rag.excerpt_kv.get_by_key(excerpt_id)
+                if not excerpt_data:
+                    continue
+                seen_ids.add(excerpt_id)
+                score = self._score_excerpt(excerpt_data)
+                scored_items.append((excerpt_id, excerpt_data, score))
+        except Exception as e:
+            logger.warning(f"Vector retrieval failed: {e}")
+
+        # 2. KG entity/relationship excerpts
+        try:
+            from app.utilities import extract_json_from_text
+            from app.prompts import get_high_low_level_keywords_prompt
+            from app.definitions import KG_SEP
+
+            prompt = get_high_low_level_keywords_prompt(query)
+            kw_result = await self.smol_rag.rate_limited_get_completion(prompt)
+            keyword_data = extract_json_from_text(kw_result) or {}
+
+            ll_dataset, ll_entity_excerpts, _ = await self.smol_rag._get_low_level_dataset(keyword_data)
+            _, _, hl_entity_excerpts = await self.smol_rag._get_high_level_dataset(keyword_data)
+            await _add_excerpts(ll_entity_excerpts)
+            await _add_excerpts(hl_entity_excerpts)
+        except Exception as e:
+            logger.warning(f"KG retrieval failed, using vector-only: {e}")
+
+        # 3. BM25 keyword search
+        try:
+            bm25_results = await self.smol_rag.bm25_query(query, top_k=top_k)
+            await _add_excerpts(bm25_results)
+        except Exception as e:
+            logger.warning(f"BM25 retrieval failed: {e}")
+
+        return scored_items
 
     async def retrieve_context(self, query: str, top_k: int = 20) -> tuple[str, AssemblyManifest]:
-        """Retrieve and assemble context from SmolRAG within token budget."""
+        """Retrieve and assemble context from SmolRAG within token budget.
+
+        Uses vector similarity + KG entities/relationships + BM25 for retrieval,
+        then scores and budget-filters the results.
+        """
         manifest = AssemblyManifest(total_budget=self.token_budget, used_tokens=0)
 
-        # Query SmolRAG for relevant excerpts
-        results = await self.smol_rag.embeddings_db.query(
-            await self.smol_rag.rate_limited_get_embedding(query),
-            top_k=top_k,
-        )
-
-        # Gather excerpt data and score each
-        scored_items = []
-        for r in results:
-            excerpt_id = r.get("__id__")
-            if not excerpt_id:
-                continue
-            excerpt_data = await self.smol_rag.excerpt_kv.get_by_key(excerpt_id)
-            if not excerpt_data:
-                continue
-            score = self._score_excerpt(excerpt_data)
-            scored_items.append((excerpt_id, excerpt_data, score))
-
+        scored_items = await self._gather_scored_items(query, top_k)
         # Sort by score descending
         scored_items.sort(key=lambda x: x[2], reverse=True)
 

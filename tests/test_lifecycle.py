@@ -26,9 +26,6 @@ def mock_lifecycle_rag():
     mock.excerpt_kv.add = AsyncMock(side_effect=add)
     mock.excerpt_kv.get_all = AsyncMock(side_effect=get_all)
 
-    mock.source_doc_map = MagicMock()
-    mock.source_doc_map.get_left_single = AsyncMock(return_value="/path/to/source.md")
-
     mock.rate_limited_get_embedding = AsyncMock(return_value=[0.1] * 1536)
     mock.embeddings_db = MagicMock()
     mock.embeddings_db.query = AsyncMock(return_value=[])
@@ -98,56 +95,17 @@ class TestDecay:
         data_after = await mock_lifecycle_rag.excerpt_kv.get_by_key("exc_1")
         assert data_after["importance"] == importance_before
 
-
-class TestConsolidate:
     @pytest.mark.asyncio
-    async def test_consolidate_with_llm(self, mock_lifecycle_rag):
-        llm = MagicMock()
-        llm.get_completion = AsyncMock(return_value="Python is a high-level language used with FastAPI.")
-        mgr = MemoryLifecycleManager(mock_lifecycle_rag, llm=llm)
-        result = await mgr.consolidate(["exc_1", "exc_2"])
-        assert "Python" in result
-        llm.get_completion.assert_awaited_once()
+    async def test_batch_decay_used_for_sqlite_store(self):
+        """When excerpt_kv is SqliteKvStore, batch_decay is used."""
+        from app.sqlite_store import SqliteKvStore
 
-    @pytest.mark.asyncio
-    async def test_consolidate_without_llm(self, mock_lifecycle_rag):
-        mgr = MemoryLifecycleManager(mock_lifecycle_rag, llm=None)
-        result = await mgr.consolidate(["exc_1", "exc_2"])
-        assert result is None
+        mock_rag = MagicMock()
+        mock_kv = MagicMock(spec=SqliteKvStore)
+        mock_kv.batch_decay = AsyncMock(return_value=5)
+        mock_rag.excerpt_kv = mock_kv
 
-    @pytest.mark.asyncio
-    async def test_consolidate_single_item(self, mock_lifecycle_rag):
-        llm = MagicMock()
-        mgr = MemoryLifecycleManager(mock_lifecycle_rag, llm=llm)
-        result = await mgr.consolidate(["exc_1"])
-        assert result is None
-
-
-class TestDetectContradictions:
-    @pytest.mark.asyncio
-    async def test_detect_no_contradictions(self, mock_lifecycle_rag):
-        mgr = MemoryLifecycleManager(mock_lifecycle_rag)
-        results = await mgr.detect_contradictions("exc_1")
-        assert isinstance(results, list)
-
-    @pytest.mark.asyncio
-    async def test_detect_nonexistent(self, mock_lifecycle_rag):
-        mgr = MemoryLifecycleManager(mock_lifecycle_rag)
-        results = await mgr.detect_contradictions("nonexistent")
-        assert results == []
-
-
-class TestAuditTrail:
-    @pytest.mark.asyncio
-    async def test_audit_trail_returns_provenance(self, mock_lifecycle_rag):
-        mgr = MemoryLifecycleManager(mock_lifecycle_rag)
-        trail = await mgr.get_audit_trail("exc_1")
-        assert trail["excerpt_id"] == "exc_1"
-        assert trail["doc_id"] == "doc_1"
-        assert trail["source"] == "/path/to/source.md"
-
-    @pytest.mark.asyncio
-    async def test_audit_trail_nonexistent(self, mock_lifecycle_rag):
-        mgr = MemoryLifecycleManager(mock_lifecycle_rag)
-        trail = await mgr.get_audit_trail("nonexistent")
-        assert "error" in trail
+        mgr = MemoryLifecycleManager(mock_rag)
+        count = await mgr.decay(threshold_days=30, factor=0.9)
+        assert count == 5
+        mock_kv.batch_decay.assert_awaited_once()

@@ -5,7 +5,23 @@ from datetime import datetime, timezone
 from app.tools.base import Tool
 from app.utilities import make_hash
 
+from app.lifecycle import MemoryLifecycleManager
+
 MEMORY_TYPES = ["fact", "decision", "preference", "episode", "task", "journal", "reference"]
+
+
+async def _promote_accessed_excerpts(smol_rag, query: str, boost: float = 0.05, top_k: int = 5):
+    """Promote excerpts returned by a search to reinforce frequently accessed memories."""
+    try:
+        mgr = MemoryLifecycleManager(smol_rag)
+        embedding = await smol_rag.rate_limited_get_embedding(query)
+        results = await smol_rag.embeddings_db.query(embedding, top_k=top_k)
+        for r in results:
+            excerpt_id = r.get("__id__")
+            if excerpt_id:
+                await mgr.promote(excerpt_id, boost=boost)
+    except Exception:
+        pass  # Promotion is best-effort
 RECALL_MODES = ["topic", "temporal"]
 
 
@@ -117,7 +133,9 @@ class MemorySearchTool(Tool):
     async def execute(self, **kwargs) -> str:
         query = kwargs["query"]
         memory_type = kwargs.get("memory_type")
-        return await self.smol_rag.mix_query(query, memory_type=memory_type)
+        result = await self.smol_rag.mix_query(query, memory_type=memory_type)
+        await _promote_accessed_excerpts(self.smol_rag, query)
+        return result
 
 
 class MemoryGraphQueryTool(Tool):
@@ -310,9 +328,11 @@ class MemoryRecallTool(Tool):
         days = kwargs.get("days", 7)
 
         if mode == "topic":
-            return await self.smol_rag.mix_query(
+            result = await self.smol_rag.mix_query(
                 query, memory_type="episode", include_bm25=True,
             )
+            await _promote_accessed_excerpts(self.smol_rag, query)
+            return result
         elif mode == "temporal":
             return await self._temporal_query(days)
         return "Unknown recall mode."

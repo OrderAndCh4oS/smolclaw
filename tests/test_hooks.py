@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from app.hooks import HookRunner, ON_BEFORE_TURN, ON_AFTER_TURN, ON_COMPACTION_FLUSH, ON_SESSION_START
+from app.hooks import HookRunner, ON_BEFORE_TURN, ON_AFTER_TURN, ON_SESSION_START
 
 
 class TestHookRunner:
@@ -69,7 +69,6 @@ class TestHookConstants:
     def test_event_names_exist(self):
         assert ON_BEFORE_TURN == "on_before_turn"
         assert ON_AFTER_TURN == "on_after_turn"
-        assert ON_COMPACTION_FLUSH == "on_compaction_flush"
         assert ON_SESSION_START == "on_session_start"
 
 

@@ -8,22 +8,20 @@ from typing import Optional
 
 import websockets
 
-from app.agent_loop import AgentLoop
-from app.context_builder import ContextBuilder
-from app.definitions import PROJECT_ROOT, SESSIONS_DIR, MEMORY_DOCS_DIR, WORKSPACE_DIR, AGENT_MODEL, MAX_ITERATIONS, MEMORY_WINDOW
+from app.agent_config import AgentConfigLoader
+from app.agent_factory import build_agent_loop
+from app.definitions import PROJECT_ROOT, SESSIONS_DIR, MEMORY_DOCS_DIR, WORKSPACE_DIR
 from app.hooks import ON_SESSION_END
 from app.lifecycle_hooks import MemoryDecayHook
-from app.llm import create_llm
 from app.session import SessionManager
 from app.session_export_hook import SessionExportHook
 from app.smol_rag import SmolRag
-from app.tools.memory_tools import MemorySearchTool, MemoryGraphQueryTool, MemoryStoreTool, MemoryRelateTool, MemoryRecallTool, MemoryGetTool
-from app.tools.registry import ToolRegistry
+from app.tools.factory import build_tool_registry
 from app.utilities import ensure_dir
 
 logger = logging.getLogger("smolclaw.gateway")
 
-BOOTSTRAP_PATH = os.path.join(PROJECT_ROOT, "AGENT.md")
+DEFAULT_AGENTS_CONFIG = os.path.join(PROJECT_ROOT, "agents.yaml")
 
 
 class Gateway:
@@ -33,37 +31,20 @@ class Gateway:
         token_issuer_url: str = "http://client:3000/mcp-tokens",
         gateway_url: str = "http://mcp-gateway:3200/mcp",
         validate_token: Optional[callable] = None,
+        agents_config: str = DEFAULT_AGENTS_CONFIG,
     ):
         self.port = port
         self.token_issuer_url = token_issuer_url
         self.gateway_url = gateway_url
         self._validate_token = validate_token or self._default_validate_token
-        self._active_loops: dict[str, AgentLoop] = {}
-        self._session_agents: dict[str, AgentLoop] = {}
+        self.agents_config = agents_config
+        self._active_loops: dict[str, "AgentLoop"] = {}
+        self._session_agents: dict[str, "AgentLoop"] = {}
         self._smol_rag: Optional[SmolRag] = None
         self._session_manager: Optional[SessionManager] = None
 
     def _default_validate_token(self, token: str) -> bool:
         return bool(token)
-
-    def _build_tool_registry(self, workspace: str, llm=None) -> ToolRegistry:
-        from app.tools.mcp_tools import (
-            McpFileReadTool, McpFileWriteTool, McpShellExecTool,
-            McpHttpFetchTool, McpWebSearchTool,
-        )
-        registry = ToolRegistry()
-        registry.register(McpFileReadTool(self.token_issuer_url, self.gateway_url))
-        registry.register(McpFileWriteTool(self.token_issuer_url, self.gateway_url))
-        registry.register(McpShellExecTool(self.token_issuer_url, self.gateway_url))
-        registry.register(McpHttpFetchTool(self.token_issuer_url, self.gateway_url))
-        registry.register(McpWebSearchTool(self.token_issuer_url, self.gateway_url))
-        registry.register(MemorySearchTool(self._smol_rag))
-        registry.register(MemoryGraphQueryTool(self._smol_rag))
-        registry.register(MemoryStoreTool(self._smol_rag, ensure_dir(MEMORY_DOCS_DIR), llm=llm))
-        registry.register(MemoryRelateTool(self._smol_rag))
-        registry.register(MemoryRecallTool(self._smol_rag))
-        registry.register(MemoryGetTool(self._smol_rag))
-        return registry
 
     async def _handle_connection(self, websocket):
         # Step 1: Send challenge
@@ -227,26 +208,31 @@ class Gateway:
             "payload": {"aborted": run_id},
         }))
 
-    def _get_or_create_agent(self, session_key: str) -> AgentLoop:
+    def _get_or_create_agent(self, session_key: str):
         if session_key in self._session_agents:
             return self._session_agents[session_key]
 
-        llm = create_llm(completion_model=AGENT_MODEL)
-        registry = self._build_tool_registry(WORKSPACE_DIR, llm=llm)
-        context_builder = ContextBuilder(shared_bootstrap_path=BOOTSTRAP_PATH)
-        session = self._session_manager.get_or_create(session_key)
-        agent = AgentLoop(
-            llm=llm,
-            tool_registry=registry,
-            context_builder=context_builder,
-            session=session,
-            session_manager=self._session_manager,
-            max_iterations=MAX_ITERATIONS,
-            memory_window=MEMORY_WINDOW,
+        configs = AgentConfigLoader.load(self.agents_config)
+        config = configs["default"]
+
+        registry = build_tool_registry(
             smol_rag=self._smol_rag,
+            memory_docs_dir=MEMORY_DOCS_DIR,
+            workspace=WORKSPACE_DIR,
+            mode="mcp",
+            token_issuer_url=self.token_issuer_url,
+            gateway_url=self.gateway_url,
+        )
+
+        agent = build_agent_loop(
+            config=config,
+            master_registry=registry,
+            smol_rag=self._smol_rag,
+            session_manager=self._session_manager,
+            session_key=session_key,
         )
         agent.hook_runner.on(ON_SESSION_END, SessionExportHook(
-            smol_rag=self._smol_rag, llm=llm, memory_dir=ensure_dir(MEMORY_DOCS_DIR),
+            smol_rag=self._smol_rag, llm=agent.llm, memory_dir=ensure_dir(MEMORY_DOCS_DIR),
         ))
         agent.hook_runner.on(ON_SESSION_END, MemoryDecayHook(self._smol_rag))
         self._session_agents[session_key] = agent

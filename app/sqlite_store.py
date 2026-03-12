@@ -72,6 +72,25 @@ class SqliteKvStore:
         existing = await self.get_by_key(key)
         return existing == value
 
+    async def batch_decay(self, factor: float, cutoff_timestamp: float) -> int:
+        """Batch-decay importance for all rows older than cutoff_timestamp.
+
+        Multiplies importance by factor in a single SQL UPDATE.
+        Returns count of affected rows.
+        """
+        db = await self._get_db()
+        cursor = await db.execute(
+            f"""UPDATE [{self.table}]
+                SET value = json_set(value, '$.importance',
+                    json_extract(value, '$.importance') * ?)
+                WHERE json_extract(value, '$.indexed_at') < ?
+                AND json_extract(value, '$.importance') IS NOT NULL
+                AND abs(json_extract(value, '$.importance') * ? - json_extract(value, '$.importance')) > 0.001""",
+            (factor, cutoff_timestamp, factor),
+        )
+        await db.commit()
+        return cursor.rowcount
+
     async def close(self):
         if self._db is not None:
             await self._db.close()

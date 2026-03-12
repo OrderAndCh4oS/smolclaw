@@ -3,7 +3,9 @@ import logging
 import os
 from typing import Dict, Optional
 
-from app.hooks import HookRunner, ON_FILE_CHANGE
+from app.hooks import HookRunner
+
+ON_FILE_CHANGE = "on_file_change"
 from app.utilities import make_hash, get_docs
 
 logger = logging.getLogger("smolclaw.watcher")

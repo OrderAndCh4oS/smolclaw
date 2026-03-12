@@ -40,6 +40,4 @@ class HookRunner:
 ON_SESSION_START = "on_session_start"
 ON_BEFORE_TURN = "on_before_turn"
 ON_AFTER_TURN = "on_after_turn"
-ON_COMPACTION_FLUSH = "on_compaction_flush"
-ON_FILE_CHANGE = "on_file_change"
 ON_SESSION_END = "on_session_end"

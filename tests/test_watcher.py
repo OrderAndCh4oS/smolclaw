@@ -93,7 +93,8 @@ class TestMemoryFileWatcher:
 
     @pytest.mark.asyncio
     async def test_fires_hook_on_change(self, watcher_dir, mock_watcher_rag):
-        from app.hooks import HookRunner, ON_FILE_CHANGE
+        from app.hooks import HookRunner
+        from app.watcher import ON_FILE_CHANGE
 
         hook = AsyncMock()
         runner = HookRunner()
