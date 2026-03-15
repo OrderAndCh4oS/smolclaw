@@ -327,6 +327,35 @@ def get_consolidation_prompt(conversation: str) -> str:
     """)
 
 
+def get_contradiction_adjudication_prompt(
+    entity_or_edge: str,
+    existing_descriptions: list[str],
+    new_description: str,
+) -> str:
+    numbered = "\n".join(f"  {i+1}. {d}" for i, d in enumerate(existing_descriptions))
+    return inspect.cleandoc(f"""
+        You are evaluating whether a new piece of knowledge contradicts existing knowledge
+        about the same entity or relationship in a knowledge graph.
+
+        Entity/Relationship: {entity_or_edge}
+
+        Existing descriptions:
+        {numbered}
+
+        New description:
+          {new_description}
+
+        Consider:
+        - Can the new statement coexist with the existing ones?
+        - Could differences reflect temporal changes (something was true before but changed)?
+        - Could differences reflect different contexts or perspectives?
+        - Are the statements genuinely contradictory (mutually exclusive)?
+
+        Respond with JSON only:
+        {{"verdict": "agree|contradict|ambiguous", "confidence": 0.0-1.0, "reasoning": "brief explanation"}}
+    """)
+
+
 def get_classify_memory_prompt(content: str) -> str:
     return inspect.cleandoc(f"""
         Classify the following content into exactly one memory type and provide a confidence score.

@@ -207,6 +207,19 @@ class ContextAssembler(ContextBuilder):
         if context_text:
             system_prompt += f"\n\n--- Relevant Memories ---\n{context_text}"
 
+        # Surface pending contradiction count as a lightweight nudge
+        if hasattr(self.smol_rag, 'contradiction_detector') and self.smol_rag.contradiction_detector:
+            try:
+                count = await self.smol_rag.contradiction_detector.get_count("pending")
+                if count > 0:
+                    system_prompt += (
+                        f"\n\n--- Knowledge Conflicts ---\n"
+                        f"{count} unresolved contradiction(s) in memory. "
+                        f"Use contradiction_review tool to inspect and resolve when relevant."
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to check contradiction count: {e}")
+
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(history)
         messages.append({"role": "user", "content": user_content})

@@ -46,7 +46,8 @@ class SmolRag:
             dimensions=None,
             excerpt_size=2000,
             overlap=200,
-            ingest_concurrency=4
+            ingest_concurrency=4,
+            contradiction_detector=None,
     ):
         set_logger("main.log")
         self.llm_limiter = AsyncLimiter(max_rate=100, time_period=1)
@@ -78,6 +79,8 @@ class SmolRag:
         self.bm25_store = bm25_store or BM25Store(_db, "bm25_index")
 
         self.graph = graph_db or NetworkXGraphStore(KG_DB)
+        self.contradiction_detector = contradiction_detector
+        self._current_ingest_source = "extraction"
 
     async def rate_limited_get_completion(self, *args, **kwargs):
         async with self.llm_limiter:
@@ -249,10 +252,12 @@ class SmolRag:
         if doc_id:
             await self.remove_document_by_id(doc_id)
 
-    async def ingest_text(self, content: str, source_id: str = None, save: bool = True):
+    async def ingest_text(self, content: str, source_id: str = None, save: bool = True, source: str = "extraction"):
         """Ingest raw text into the RAG pipeline (chunks, embeds, extracts entities).
         Also parses obsidian wiki links into graph edges and tags into entity labels.
-        Set save=False to defer store persistence (caller must call _save_stores)."""
+        Set save=False to defer store persistence (caller must call _save_stores).
+        source: "extraction" or "user" — user input gets higher priority for contradictions."""
+        self._current_ingest_source = source
         source_key = source_id or make_hash(content, "text-")
         doc_id = make_hash(content, "doc_")
 
@@ -276,6 +281,8 @@ class SmolRag:
                 name=f"#{tag}", category="tag", description=f"Tag: {tag}",
                 excerpt_id=make_hash(content[:200], "excerpt_id_"), sep=KG_SEP,
             )
+
+        self._current_ingest_source = "extraction"
 
         if save:
             await self._save_stores()
@@ -430,6 +437,16 @@ class SmolRag:
                 if record_type == 'entity':
                     if len(fields) >= 4:
                         _, name, category, description = fields[:4]
+                        # Contradiction check before upsert
+                        if self.contradiction_detector:
+                            existing = self.graph.get_node(name)
+                            if existing:
+                                contradictions = await self.contradiction_detector.check_entity(
+                                    name, category, description, excerpt_id,
+                                    source=self._current_ingest_source,
+                                )
+                                if any(c.get("status") == "dismissed" for c in contradictions):
+                                    continue  # Skip upsert for auto-dismissed contradictions
                         await self.graph.async_upsert_entity_node(
                             name=name,
                             category=category,
@@ -455,6 +472,17 @@ class SmolRag:
                             parsed_weight = float(weight)
                         except (TypeError, ValueError):
                             parsed_weight = 1.0
+
+                        # Contradiction check before upsert
+                        if self.contradiction_detector:
+                            existing = self.graph.get_edge((source, target))
+                            if existing:
+                                contradictions = await self.contradiction_detector.check_relationship(
+                                    source, target, description, excerpt_id,
+                                    source_type=self._current_ingest_source,
+                                )
+                                if any(c.get("status") == "dismissed" for c in contradictions):
+                                    continue  # Skip upsert for auto-dismissed contradictions
 
                         await self.graph.async_upsert_relationship_edge(
                             source=source,
@@ -920,3 +948,26 @@ class SmolRag:
         if not isinstance(keywords, list):
             return []
         return [str(k) for k in keywords if str(k).strip()]
+
+
+def create_smol_rag(**kwargs) -> SmolRag:
+    """Create a SmolRag instance with contradiction detection wired in."""
+    from app.contradiction import ContradictionDetector
+
+    rag = SmolRag(**kwargs)
+
+    async def _embedding_fn(text):
+        return await rag.rate_limited_get_embedding(text)
+
+    async def _llm_fn(prompt):
+        return await rag.rate_limited_get_completion(prompt)
+
+    db_path = kwargs.get("db_path") or SQLITE_DB_PATH
+    contradiction_store = SqliteKvStore(db_path, "contradictions")
+    rag.contradiction_detector = ContradictionDetector(
+        graph_store=rag.graph,
+        contradiction_store=contradiction_store,
+        llm=_llm_fn,
+        embedding_fn=_embedding_fn,
+    )
+    return rag

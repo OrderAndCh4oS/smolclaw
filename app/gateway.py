@@ -12,10 +12,10 @@ from app.agent_config import AgentConfigLoader
 from app.agent_factory import build_agent_loop
 from app.definitions import PROJECT_ROOT, SESSIONS_DIR, MEMORY_DOCS_DIR, WORKSPACE_DIR
 from app.hooks import ON_SESSION_END
-from app.lifecycle_hooks import MemoryDecayHook
+from app.lifecycle_hooks import MemoryDecayHook, ContradictionExpiryHook
 from app.session import SessionManager
 from app.session_export_hook import SessionExportHook
-from app.smol_rag import SmolRag
+from app.smol_rag import SmolRag, create_smol_rag
 from app.tools.factory import build_tool_registry
 from app.utilities import ensure_dir
 
@@ -235,12 +235,17 @@ class Gateway:
             smol_rag=self._smol_rag, llm=agent.llm, memory_dir=ensure_dir(MEMORY_DOCS_DIR),
         ))
         agent.hook_runner.on(ON_SESSION_END, MemoryDecayHook(self._smol_rag))
+        if hasattr(self._smol_rag, 'contradiction_detector') and self._smol_rag.contradiction_detector:
+            agent.hook_runner.on(
+                ON_SESSION_END,
+                ContradictionExpiryHook(self._smol_rag.contradiction_detector),
+            )
         self._session_agents[session_key] = agent
         return agent
 
     async def start(self):
         ensure_dir(SESSIONS_DIR)
-        self._smol_rag = SmolRag()
+        self._smol_rag = create_smol_rag()
         self._session_manager = SessionManager(SESSIONS_DIR)
         logger.info(f"SmolClaw gateway starting on port {self.port}")
         async with websockets.serve(self._handle_connection, "0.0.0.0", self.port):

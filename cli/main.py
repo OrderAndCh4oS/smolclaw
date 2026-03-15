@@ -20,7 +20,7 @@ from app.definitions import (
     DATA_DIR, SESSIONS_DIR, MEMORY_DOCS_DIR, WORKSPACE_DIR, AGENT_MODEL,
 )
 from app.session import SessionManager
-from app.smol_rag import SmolRag
+from app.smol_rag import SmolRag, create_smol_rag
 from app.tools.factory import build_tool_registry
 from app.tools.memory_tools import MemoryRecallTool
 from app.utilities import ensure_dir
@@ -149,7 +149,7 @@ async def _chat_loop(
 ):
     ensure_dir(SESSIONS_DIR)
 
-    smol_rag = SmolRag()
+    smol_rag = create_smol_rag()
     session_manager = SessionManager(SESSIONS_DIR)
 
     if agent_name:
@@ -171,7 +171,7 @@ async def _chat_loop(
     if auto_export:
         from app.hooks import ON_SESSION_END
         from app.session_export_hook import SessionExportHook
-        from app.lifecycle_hooks import MemoryDecayHook
+        from app.lifecycle_hooks import MemoryDecayHook, ContradictionExpiryHook
 
         agent.hook_runner.on(
             ON_SESSION_END,
@@ -182,6 +182,11 @@ async def _chat_loop(
             ),
         )
         agent.hook_runner.on(ON_SESSION_END, MemoryDecayHook(smol_rag))
+        if hasattr(smol_rag, 'contradiction_detector') and smol_rag.contradiction_detector:
+            agent.hook_runner.on(
+                ON_SESSION_END,
+                ContradictionExpiryHook(smol_rag.contradiction_detector),
+            )
 
     history_file = os.path.join(SESSIONS_DIR, "prompt_history.txt")
     prompt_session = PromptSession(history=FileHistory(history_file))
@@ -232,7 +237,7 @@ def ingest(
 
 async def _ingest(path: str):
     from app.utilities import get_docs, make_hash
-    smol_rag = SmolRag()
+    smol_rag = create_smol_rag()
 
     if os.path.isfile(path):
         files = [path]
@@ -276,7 +281,7 @@ def watch(
 
 async def _watch(memory_dir: str, interval: float):
     from app.watcher import MemoryFileWatcher
-    smol_rag = SmolRag()
+    smol_rag = create_smol_rag()
     watcher = MemoryFileWatcher(memory_dir, smol_rag, poll_interval=interval)
     console.print(f"[bold green]Watching[/bold green] {memory_dir} (poll every {interval}s)")
     try:
@@ -317,7 +322,7 @@ def recall(
 
 
 async def _recall(query: str, mode: str, days: float):
-    smol_rag = SmolRag()
+    smol_rag = create_smol_rag()
     tool = MemoryRecallTool(smol_rag)
     result = await tool.execute(query=query, mode=mode, days=days)
     console.print(Markdown(result))
@@ -334,7 +339,7 @@ def index_sessions(
 
 async def _index_sessions(sessions_dir: str, memory_dir: str):
     from app.session_indexer import index_all_sessions
-    smol_rag = SmolRag()
+    smol_rag = create_smol_rag()
     results = await index_all_sessions(sessions_dir, smol_rag, memory_dir=memory_dir)
     for key, source_id in results.items():
         console.print(f"[green]Indexed:[/green] {key} -> {source_id}")

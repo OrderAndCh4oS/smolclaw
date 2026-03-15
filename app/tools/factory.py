@@ -3,6 +3,7 @@
 from app.tools.memory_tools import (
     MemorySearchTool, MemoryGraphQueryTool, MemoryStoreTool,
     MemoryRelateTool, MemoryRecallTool, MemoryGetTool,
+    ContradictionReviewTool,
 )
 from app.tools.registry import ToolRegistry
 from app.utilities import ensure_dir
@@ -56,5 +57,9 @@ def build_tool_registry(
     registry.register(MemoryRelateTool(smol_rag))
     registry.register(MemoryRecallTool(smol_rag))
     registry.register(MemoryGetTool(smol_rag))
+
+    # Contradiction review tool (only when detector is wired up)
+    if hasattr(smol_rag, 'contradiction_detector') and smol_rag.contradiction_detector:
+        registry.register(ContradictionReviewTool(smol_rag.contradiction_detector))
 
     return registry

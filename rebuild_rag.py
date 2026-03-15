@@ -10,7 +10,7 @@ import sys
 # Add app to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from app.smol_rag import SmolRag
+from app.smol_rag import SmolRag, create_smol_rag
 from app.logger import logger
 from app.definitions import SQLITE_DB_PATH, EMBEDDINGS_DB, ENTITIES_DB, RELATIONSHIPS_DB, KG_DB
 
@@ -45,7 +45,7 @@ async def main(wipe=True):
         wipe_state()
 
     # Initialize RAG with default settings
-    rag = SmolRag()
+    rag = create_smol_rag()
 
     # Import all documents
     logger.info("\n🔄 Starting document import...")

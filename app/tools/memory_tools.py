@@ -287,6 +287,104 @@ class MemoryGetTool(Tool):
         return "\n".join(lines)
 
 
+class ContradictionReviewTool(Tool):
+    @property
+    def name(self) -> str:
+        return "contradiction_review"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Review and resolve contradictions in the knowledge graph. "
+            "Use 'list' to see pending conflicts, 'detail' for full info, "
+            "'resolve' to apply a resolution."
+        )
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "resolve", "detail"],
+                    "description": "Action to perform",
+                },
+                "contradiction_id": {
+                    "type": "string",
+                    "description": "ID of the contradiction (for resolve/detail)",
+                },
+                "resolution": {
+                    "type": "string",
+                    "enum": ["keep_existing", "keep_new", "merge", "dismiss"],
+                    "description": "Resolution to apply (for resolve action)",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Optional explanation for the resolution",
+                },
+            },
+            "required": ["action"],
+        }
+
+    def __init__(self, contradiction_detector):
+        self.detector = contradiction_detector
+
+    async def execute(self, **kwargs) -> str:
+        action = kwargs["action"]
+
+        if action == "list":
+            pending = await self.detector.get_pending(limit=10)
+            if not pending:
+                return "No pending contradictions."
+            lines = [f"**{len(pending)} pending contradiction(s):**\n"]
+            for r in pending:
+                entity = r.get("entity_name") or r.get("edge_key", "unknown")
+                lines.append(
+                    f"- `{r['id']}` [{r['kind']}] **{entity}**\n"
+                    f"  Existing: {_truncate(r.get('existing_value', ''), 80)}\n"
+                    f"  New: {_truncate(r.get('new_value', ''), 80)}\n"
+                    f"  Verdict: {r.get('verdict')} (confidence: {r.get('confidence', 0):.2f})"
+                )
+            return "\n".join(lines)
+
+        elif action == "detail":
+            cid = kwargs.get("contradiction_id")
+            if not cid:
+                return "contradiction_id is required for detail action."
+            record = await self.detector.store.get_by_key(cid)
+            if not record:
+                return f"No contradiction found with ID: {cid}"
+            lines = [f"**Contradiction: {cid}**\n"]
+            for key in ("kind", "entity_name", "edge_key", "existing_value",
+                        "new_value", "verdict", "confidence", "status",
+                        "source", "resolution_note", "existing_excerpt_id",
+                        "new_excerpt_id", "created_at", "resolved_at"):
+                val = record.get(key)
+                if val is not None:
+                    lines.append(f"- **{key}**: {val}")
+            return "\n".join(lines)
+
+        elif action == "resolve":
+            cid = kwargs.get("contradiction_id")
+            resolution = kwargs.get("resolution")
+            if not cid or not resolution:
+                return "Both contradiction_id and resolution are required."
+            note = kwargs.get("note")
+            result = await self.detector.resolve(cid, resolution, note=note)
+            if not result:
+                return f"No contradiction found with ID: {cid}"
+            return f"Resolved {cid} as **{result['status']}**."
+
+        return f"Unknown action: {action}"
+
+
+def _truncate(text: str, max_len: int) -> str:
+    if len(text) <= max_len:
+        return text
+    return text[:max_len - 3] + "..."
+
+
 class MemoryRecallTool(Tool):
     @property
     def name(self) -> str:

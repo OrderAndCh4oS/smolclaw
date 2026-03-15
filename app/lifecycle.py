@@ -52,3 +52,8 @@ class MemoryLifecycleManager:
 
         logger.info(f"Decayed {decayed_count} stale memories (threshold: {threshold_days}d, factor: {factor})")
         return decayed_count
+
+
+async def expire_old_contradictions(detector, max_age_days: float = 90.0) -> int:
+    """Auto-dismiss stale pending contradictions. Suitable as a session-end hook."""
+    return await detector.expire_old(max_age_days=max_age_days)
