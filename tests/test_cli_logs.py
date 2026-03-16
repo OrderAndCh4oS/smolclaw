@@ -28,3 +28,16 @@ class TestCliLogs:
 
         assert result.exit_code == 0
         assert "No log files to delete." in result.stdout
+
+    def test_clear_logs_command_preserves_non_log_files(self, temp_dir):
+        logs_dir = os.path.join(temp_dir, "logs")
+        os.makedirs(logs_dir, exist_ok=True)
+        with open(os.path.join(logs_dir, "main.log"), "w", encoding="utf-8") as handle:
+            handle.write("hello")
+        with open(os.path.join(logs_dir, "notes.txt"), "w", encoding="utf-8") as handle:
+            handle.write("keep")
+
+        result = CliRunner().invoke(app, ["clear-logs", "--force", "--logs-dir", logs_dir])
+
+        assert result.exit_code == 0
+        assert os.listdir(logs_dir) == ["notes.txt"]

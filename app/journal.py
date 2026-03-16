@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 
 from app.session import Session
 from app.tools.memory_tools import format_memory_content
-from app.utilities import make_hash
 
 logger = logging.getLogger("smolclaw.journal")
 
@@ -42,24 +41,26 @@ async def generate_journal(
     if not journal_content:
         return ""
 
+    source_id = f"journal-{session.key}"
+
     # Format with taxonomy
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     formatted = format_memory_content(
         journal_content,
         memory_type="journal",
         tags=["session_reflection", f"date_{timestamp}"],
-        source_id=f"journal-{session.key}",
+        source_id=source_id,
     )
 
     # Write to memory directory
     os.makedirs(memory_dir, exist_ok=True)
-    file_id = make_hash(journal_content, "journal-")
-    file_path = os.path.join(memory_dir, f"{file_id}.md")
+    file_path = os.path.join(memory_dir, f"{source_id}.md")
     with open(file_path, "w") as f:
         f.write(formatted)
 
-    # Ingest into SmolRAG
-    await smol_rag.ingest_text(formatted, source_id=f"journal-{session.key}")
+    # Re-exporting the same session should overwrite the prior journal.
+    await smol_rag.remove_document_by_source(source_id)
+    await smol_rag.ingest_text(formatted, source_id=source_id)
 
-    logger.info(f"Journal generated: {file_id} ({len(journal_content)} chars)")
+    logger.info(f"Journal generated: {source_id} ({len(journal_content)} chars)")
     return journal_content

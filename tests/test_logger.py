@@ -47,3 +47,14 @@ class TestLoggerManagement:
             handler for handler in logger_module.logger.handlers
             if isinstance(handler, logging.FileHandler)
         ] == []
+
+    def test_clear_logs_preserves_non_log_files(self, temp_dir):
+        with open(os.path.join(temp_dir, "notes.txt"), "w", encoding="utf-8") as handle:
+            handle.write("keep me")
+        with open(os.path.join(temp_dir, "main.log"), "w", encoding="utf-8") as handle:
+            handle.write("delete me")
+
+        deleted = logger_module.clear_logs(temp_dir)
+
+        assert sorted(os.path.basename(path) for path in deleted) == ["main.log"]
+        assert os.path.exists(os.path.join(temp_dir, "notes.txt"))

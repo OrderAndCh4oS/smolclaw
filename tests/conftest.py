@@ -175,6 +175,7 @@ def mock_smol_rag():
     mock = MagicMock()
     mock.mix_query = AsyncMock(return_value="Mock query result")
     mock.ingest_text = AsyncMock()
+    mock.remove_document_by_source = AsyncMock()
     mock.graph = MagicMock()
     return mock
 

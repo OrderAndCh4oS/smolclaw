@@ -58,6 +58,7 @@ class TestGenerateJournal:
     async def test_ingests_into_smol_rag(self, journal_session, mock_journal_llm, mock_smol_rag):
         with tempfile.TemporaryDirectory() as td:
             await generate_journal(journal_session, mock_journal_llm, mock_smol_rag, td)
+            mock_smol_rag.remove_document_by_source.assert_awaited_once_with("journal-test-journal")
             mock_smol_rag.ingest_text.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -79,3 +80,12 @@ class TestGenerateJournal:
             # The prompt should only include user/assistant messages
             call_args = mock_journal_llm.get_completion.call_args[0][0]
             assert "tool output" not in call_args
+
+    @pytest.mark.asyncio
+    async def test_repeated_generation_overwrites_same_session_file(self, journal_session, mock_journal_llm, mock_smol_rag):
+        with tempfile.TemporaryDirectory() as td:
+            await generate_journal(journal_session, mock_journal_llm, mock_smol_rag, td)
+            await generate_journal(journal_session, mock_journal_llm, mock_smol_rag, td)
+
+            assert sorted(os.listdir(td)) == ["journal-test-journal.md"]
+            assert mock_smol_rag.remove_document_by_source.await_count == 2

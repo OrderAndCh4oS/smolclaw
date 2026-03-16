@@ -1,12 +1,14 @@
 import logging
 import os.path
 import os
+import re
 from logging.handlers import RotatingFileHandler
 
 from app.definitions import LOG_DIR
 
 logger = logging.getLogger("mini-rag")
 _HANDLER_NAME = "smolclaw-log-file"
+_LOG_FILE_PATTERN = re.compile(r"^.+\.log(?:\.\d+)?$")
 
 
 def _get_configured_int(env_var: str, default: int) -> int:
@@ -28,6 +30,10 @@ def _clear_file_handlers():
         handler.close()
 
 
+def _is_log_filename(name: str) -> bool:
+    return bool(_LOG_FILE_PATTERN.match(name))
+
+
 def clear_logs(log_dir: str = LOG_DIR) -> list[str]:
     """Delete all files in the log directory and detach open file handlers."""
     _clear_file_handlers()
@@ -37,7 +43,7 @@ def clear_logs(log_dir: str = LOG_DIR) -> list[str]:
     deleted = []
     for name in sorted(os.listdir(log_dir)):
         path = os.path.join(log_dir, name)
-        if not os.path.isfile(path):
+        if not os.path.isfile(path) or not _is_log_filename(name):
             continue
         os.remove(path)
         deleted.append(path)
