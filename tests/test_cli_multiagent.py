@@ -3,9 +3,11 @@ from contextlib import nullcontext
 
 import pytest
 import typer
+from typer.testing import CliRunner
 
 from app.agent_config import AgentConfigLoader
 from app.agent_loop import AgentLoop
+from app.tools.registry import ToolRegistry
 from cli.main import _build_default_chat_agent, _build_multiagent
 from app.hooks import ON_SESSION_END, HookRunner
 from app.session import SessionManager
@@ -42,6 +44,24 @@ def agents_yaml(temp_dir):
 
 
 class TestCliMultiagent:
+    def test_empty_cli_invocation_shows_help(self):
+        from cli.main import app
+
+        result = CliRunner().invoke(app, [])
+
+        assert result.exit_code == 0
+        assert "Usage" in result.stdout
+        assert "chat" in result.stdout
+
+    def test_subcommand_help_renders(self):
+        from cli.main import app
+
+        result = CliRunner().invoke(app, ["chat", "--help"])
+
+        assert result.exit_code == 0
+        assert "Start an interactive chat session." in result.stdout
+        assert "--session" in result.stdout
+
     def test_runtime_default_agent_includes_memory_recall(self):
         configs = AgentConfigLoader.load(os.path.join(os.path.dirname(os.path.dirname(__file__)), "agents.yaml"))
         assert "memory_recall" in configs["default"].tools
@@ -157,6 +177,7 @@ class TestCliMultiagent:
         fake_agent = MagicMock()
         fake_agent.llm = MagicMock()
         fake_agent.hook_runner = HookRunner()
+        fake_agent.add_owned_resource = MagicMock()
         from app.tools.registry import ToolRegistry
         registry = ToolRegistry()
 
@@ -176,6 +197,7 @@ class TestCliMultiagent:
         assert agent is fake_agent
         registrar = mock_subagent_manager.call_args.kwargs["session_end_hook_registrar"]
         assert callable(registrar)
+        fake_agent.add_owned_resource.assert_called_once_with(mock_subagent_manager.return_value)
 
         subagent_loop = MagicMock()
         subagent_loop.llm = MagicMock()
@@ -186,6 +208,7 @@ class TestCliMultiagent:
     def test_build_multiagent_skips_registrar_when_disabled(self, agents_yaml, mock_smol_rag, sessions_dir):
         sm = SessionManager(sessions_dir)
         fake_agent = MagicMock()
+        fake_agent.add_owned_resource = MagicMock()
         from app.tools.registry import ToolRegistry
         registry = ToolRegistry()
 
@@ -204,6 +227,7 @@ class TestCliMultiagent:
 
         assert agent is fake_agent
         assert mock_subagent_manager.call_args.kwargs["session_end_hook_registrar"] is None
+        fake_agent.add_owned_resource.assert_called_once_with(mock_subagent_manager.return_value)
 
     @pytest.mark.asyncio
     async def test_chat_loop_registers_export_hook_for_multiagent(self):
@@ -213,7 +237,7 @@ class TestCliMultiagent:
             def __init__(self, **kwargs):
                 pass
 
-            def prompt(self, _prompt):
+            async def prompt_async(self, _prompt):
                 raise EOFError
 
         class FakeConsole:
@@ -259,7 +283,7 @@ class TestCliMultiagent:
             def __init__(self, **kwargs):
                 pass
 
-            def prompt(self, _prompt):
+            async def prompt_async(self, _prompt):
                 raise EOFError
 
         class FakeConsole:
@@ -305,7 +329,7 @@ class TestCliMultiagent:
             def __init__(self, **kwargs):
                 pass
 
-            def prompt(self, _prompt):
+            async def prompt_async(self, _prompt):
                 raise EOFError
 
         class FakeConsole:
@@ -340,4 +364,256 @@ class TestCliMultiagent:
             session_manager=session_manager,
         )
         assert ON_SESSION_END in fake_agent.hook_runner.events
+        fake_agent.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_chat_loop_remember_command_stores_memory_without_agent_turn(self):
+        from cli.main import DEFAULT_AGENTS_CONFIG, _chat_loop
+
+        class FakePromptSession:
+            def __init__(self, **kwargs):
+                self._inputs = iter(["/remember save this detail"])
+
+            async def prompt_async(self, _prompt):
+                try:
+                    return next(self._inputs)
+                except StopIteration:
+                    raise EOFError
+
+        class FakeConsole:
+            def status(self, *args, **kwargs):
+                return nullcontext()
+
+            def print(self, *args, **kwargs):
+                return None
+
+        fake_agent = MagicMock()
+        fake_agent.llm = MagicMock()
+        fake_agent.hook_runner = HookRunner()
+        fake_agent.close = AsyncMock()
+        fake_agent.process = AsyncMock()
+        fake_agent.session = MagicMock()
+
+        memory_tool = MagicMock()
+        memory_tool.execute = AsyncMock(return_value="Stored memory: mem-1")
+        smol_rag = MagicMock()
+        session_manager = MagicMock()
+
+        with patch("cli.main.create_smol_rag", return_value=smol_rag), \
+            patch("cli.main.SessionManager", return_value=session_manager), \
+            patch("cli.main.PromptSession", FakePromptSession), \
+            patch("cli.main.MemoryStoreTool", return_value=memory_tool), \
+            patch("cli.main._build_default_chat_agent", return_value=fake_agent) as mock_build_default_chat_agent, \
+            patch("cli.main.console", FakeConsole()):
+            await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+
+        mock_build_default_chat_agent.assert_called_once()
+        memory_tool.execute.assert_awaited_once_with(content="save this detail")
+        fake_agent.process.assert_not_called()
+        fake_agent.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_chat_loop_remember_thread_exports_current_session(self):
+        from cli.main import DEFAULT_AGENTS_CONFIG, _chat_loop
+
+        class FakePromptSession:
+            def __init__(self, **kwargs):
+                self._inputs = iter(["/remember-thread"])
+
+            async def prompt_async(self, _prompt):
+                try:
+                    return next(self._inputs)
+                except StopIteration:
+                    raise EOFError
+
+        class FakeConsole:
+            def status(self, *args, **kwargs):
+                return nullcontext()
+
+            def print(self, *args, **kwargs):
+                return None
+
+        fake_agent = MagicMock()
+        fake_agent.llm = MagicMock()
+        fake_agent.hook_runner = HookRunner()
+        fake_agent.close = AsyncMock()
+        fake_agent.process = AsyncMock()
+        fake_agent.session = MagicMock()
+        fake_agent.session.key = "default"
+
+        smol_rag = MagicMock()
+        session_manager = MagicMock()
+
+        with patch("cli.main.create_smol_rag", return_value=smol_rag), \
+            patch("cli.main.SessionManager", return_value=session_manager), \
+            patch("cli.main.PromptSession", FakePromptSession), \
+            patch("cli.main.SessionExportHook") as mock_export_hook_cls, \
+            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
+            patch("cli.main.console", FakeConsole()):
+            hook_instance = AsyncMock()
+            mock_export_hook_cls.return_value = hook_instance
+            await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+
+        hook_instance.assert_awaited_once_with({
+            "session_key": "default",
+            "session": fake_agent.session,
+        })
+        fake_agent.process.assert_not_called()
+        fake_agent.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_chat_loop_help_command_shows_slash_command_list(self):
+        from cli.main import DEFAULT_AGENTS_CONFIG, _chat_loop
+
+        class FakePromptSession:
+            def __init__(self, **kwargs):
+                self._inputs = iter(["/help"])
+
+            async def prompt_async(self, _prompt):
+                try:
+                    return next(self._inputs)
+                except StopIteration:
+                    raise EOFError
+
+        class FakeConsole:
+            def __init__(self):
+                self.lines = []
+
+            def status(self, *args, **kwargs):
+                return nullcontext()
+
+            def print(self, *args, **kwargs):
+                self.lines.append(" ".join(str(arg) for arg in args))
+
+        fake_console = FakeConsole()
+        fake_agent = MagicMock()
+        fake_agent.llm = MagicMock()
+        fake_agent.hook_runner = HookRunner()
+        fake_agent.close = AsyncMock()
+        fake_agent.process = AsyncMock()
+        fake_agent.session = MagicMock()
+
+        smol_rag = MagicMock()
+        session_manager = MagicMock()
+
+        with patch("cli.main.create_smol_rag", return_value=smol_rag), \
+            patch("cli.main.SessionManager", return_value=session_manager), \
+            patch("cli.main.PromptSession", FakePromptSession), \
+            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
+            patch("cli.main.console", fake_console):
+            await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+
+        help_output = "\n".join(fake_console.lines)
+        assert "Slash commands:" in help_output
+        assert "/remember <text>" in help_output
+        assert "/remember-thread" in help_output
+        assert "/quit or /exit" in help_output
+        fake_agent.process.assert_not_called()
+        fake_agent.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_chat_loop_close_releases_agent_llm(self, temp_dir):
+        from cli.main import DEFAULT_AGENTS_CONFIG, _chat_loop
+
+        class FakePromptSession:
+            def __init__(self, **kwargs):
+                pass
+
+            async def prompt_async(self, _prompt):
+                raise EOFError
+
+        class FakeConsole:
+            def status(self, *args, **kwargs):
+                return nullcontext()
+
+            def print(self, *args, **kwargs):
+                return None
+
+        llm = MagicMock()
+        llm.close = AsyncMock()
+        session_manager = SessionManager(temp_dir)
+        session = session_manager.get_or_create("close-test")
+        agent = AgentLoop(
+            llm=llm,
+            tool_registry=ToolRegistry(),
+            context_builder=MagicMock(),
+            session=session,
+            session_manager=session_manager,
+            hook_runner=HookRunner(),
+        )
+        smol_rag = MagicMock()
+        smol_rag.close = AsyncMock()
+
+        with patch("cli.main.create_smol_rag", return_value=smol_rag), \
+            patch("cli.main.SessionManager", return_value=session_manager), \
+            patch("cli.main.PromptSession", FakePromptSession), \
+            patch("cli.main._build_default_chat_agent", return_value=agent), \
+            patch("cli.main.console", FakeConsole()):
+            await _chat_loop("close-test", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+
+        llm.close.assert_awaited_once()
+        smol_rag.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_chat_loop_shows_live_tool_actions(self):
+        from cli.main import DEFAULT_AGENTS_CONFIG, _chat_loop
+
+        class FakePromptSession:
+            def __init__(self, **kwargs):
+                self._inputs = iter(["check the docs"])
+
+            async def prompt_async(self, _prompt):
+                try:
+                    return next(self._inputs)
+                except StopIteration:
+                    raise EOFError
+
+        class FakeConsole:
+            def __init__(self):
+                self.lines = []
+
+            def status(self, *args, **kwargs):
+                return nullcontext()
+
+            def print(self, *args, **kwargs):
+                self.lines.append(" ".join(str(arg) for arg in args))
+
+        async def fake_process(_message, on_output=None, on_event=None):
+            if on_event:
+                await on_event({
+                    "type": "tool",
+                    "phase": "start",
+                    "name": "web_fetch",
+                    "summary": "web_fetch url=https://example.com/docs",
+                })
+                await on_event({
+                    "type": "tool",
+                    "phase": "end",
+                    "name": "web_fetch",
+                    "ok": True,
+                    "duration_ms": 412,
+                })
+            return "done"
+
+        fake_console = FakeConsole()
+        fake_agent = MagicMock()
+        fake_agent.llm = MagicMock()
+        fake_agent.hook_runner = HookRunner()
+        fake_agent.close = AsyncMock()
+        fake_agent.process = AsyncMock(side_effect=fake_process)
+        fake_agent.session = MagicMock()
+
+        smol_rag = MagicMock()
+        session_manager = MagicMock()
+
+        with patch("cli.main.create_smol_rag", return_value=smol_rag), \
+            patch("cli.main.SessionManager", return_value=session_manager), \
+            patch("cli.main.PromptSession", FakePromptSession), \
+            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
+            patch("cli.main.console", fake_console):
+            await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True, show_actions=True)
+
+        output = "\n".join(fake_console.lines)
+        assert "action: web_fetch url=https://example.com/docs" in output
+        assert "done: web_fetch (0.4s)" in output
         fake_agent.close.assert_awaited_once()

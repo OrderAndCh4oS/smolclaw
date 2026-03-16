@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import replace
+import inspect
 import logging
 import os
 from typing import Optional
@@ -17,18 +18,111 @@ from prompt_toolkit.history import FileHistory
 
 from app.agent_loop import AgentLoop
 from app.definitions import (
-    DATA_DIR, SESSIONS_DIR, MEMORY_DOCS_DIR, WORKSPACE_DIR, AGENT_MODEL,
+    DATA_DIR, LOG_DIR, SESSIONS_DIR, MEMORY_DOCS_DIR, WORKSPACE_DIR, AGENT_MODEL,
 )
+from app.logger import clear_logs
+from app.session_export_hook import SessionExportHook
 from app.session import SessionManager
 from app.smol_rag import SmolRag, create_smol_rag
 from app.tools.factory import build_tool_registry
-from app.tools.memory_tools import MemoryRecallTool
+from app.tools.memory_tools import MemoryRecallTool, MemoryStoreTool
 from app.utilities import ensure_dir
 
-app = typer.Typer(help="SmolClaw — agentic assistant with persistent memory")
+
+def _get_param_metavar(param, ctx):
+    try:
+        return param.type.get_metavar(param=param, ctx=ctx)
+    except TypeError:
+        return param.type.get_metavar(param)
+
+
+def _patch_typer_click_compat():
+    # Typer 0.15.x still calls make_metavar() with the pre-Click 8.2 signature.
+    if tuple(inspect.signature(typer.core.TyperArgument.make_metavar).parameters) == ("self",):
+        def _argument_make_metavar(self, ctx=None):
+            if self.metavar is not None:
+                return self.metavar
+            var = (self.name or "").upper()
+            if not self.required:
+                var = f"[{var}]"
+            type_var = _get_param_metavar(self, ctx)
+            if type_var:
+                var += f":{type_var}"
+            if self.nargs != 1:
+                var += "..."
+            return var
+
+        typer.core.TyperArgument.make_metavar = _argument_make_metavar
+
+    if tuple(inspect.signature(typer.core.TyperOption.make_metavar).parameters) == ("self", "ctx"):
+        def _option_make_metavar(self, ctx=None):
+            if self.metavar is not None:
+                return self.metavar
+
+            metavar = _get_param_metavar(self, ctx)
+            if metavar is None:
+                metavar = self.type.name.upper()
+            if self.nargs != 1:
+                metavar += "..."
+            return metavar
+
+        typer.core.TyperOption.make_metavar = _option_make_metavar
+
+
+_patch_typer_click_compat()
+
+
+app = typer.Typer(
+    help="SmolClaw — agentic assistant with persistent memory",
+    rich_markup_mode=None,
+)
 console = Console()
 
 DEFAULT_AGENTS_CONFIG = os.path.join(os.path.dirname(os.path.dirname(__file__)), "agents.yaml")
+SLASH_COMMANDS_HELP = "\n".join([
+    "Slash commands:",
+    "  / or /help or /commands  Show this command list",
+    "  /remember <text>         Store a memory immediately",
+    "  /remember-thread         Export the current chat thread to memory",
+    "  /clear                   Clear the current chat session",
+    "  /quit or /exit           Exit chat",
+])
+
+
+@app.callback(invoke_without_command=True)
+def main(ctx: typer.Context):
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
+        raise typer.Exit()
+
+
+async def _close_async_resource(resource):
+    close_fn = getattr(resource, "close", None)
+    if not callable(close_fn):
+        return
+    result = close_fn()
+    if inspect.isawaitable(result):
+        await result
+
+
+def _format_action_event(event: dict) -> str | None:
+    if event.get("type") != "tool":
+        return None
+
+    name = event.get("name", "tool")
+    if event.get("phase") == "start":
+        summary = event.get("summary") or name
+        return f"action: {summary}"
+
+    if event.get("phase") == "end":
+        duration_ms = max(0, int(event.get("duration_ms", 0)))
+        duration_s = duration_ms / 1000
+        if event.get("ok", True):
+            return f"done: {name} ({duration_s:.1f}s)"
+        result_preview = event.get("result_preview") or "Error"
+        return f"failed: {name} ({duration_s:.1f}s) - {result_preview}"
+
+    return None
 
 
 def _build_cli_tool_registry(smol_rag: SmolRag, workspace: str, llm=None):
@@ -55,7 +149,6 @@ def _build_multiagent(
     from app.subagent import SubagentManager
     from app.tools.spawn import SpawnTool, GetResultTool, AwaitResultTool
     from app.hooks import ON_SESSION_END
-    from app.session_export_hook import SessionExportHook
 
     configs = AgentConfigLoader.load(agents_config_path)
     if agent_name not in configs:
@@ -89,13 +182,15 @@ def _build_multiagent(
     master_registry.register(GetResultTool(subagent_manager))
     master_registry.register(AwaitResultTool(subagent_manager))
 
-    return build_agent_loop(
+    agent = build_agent_loop(
         config=configs[agent_name],
         master_registry=master_registry,
         smol_rag=smol_rag,
         session_manager=session_manager,
         session_key_prefix=session_key,
     )
+    agent.add_owned_resource(subagent_manager)
+    return agent
 
 
 def _build_default_chat_agent(
@@ -134,9 +229,10 @@ def chat(
     agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Agent name from agents.yaml"),
     agents_config: str = typer.Option(DEFAULT_AGENTS_CONFIG, "--agents-config", help="Path to agents YAML config"),
     auto_export: bool = typer.Option(True, "--auto-export/--no-auto-export", help="Auto-export session on close"),
+    show_actions: bool = typer.Option(True, "--show-actions/--hide-actions", help="Show live tool activity while the agent works"),
 ):
     """Start an interactive chat session."""
-    asyncio.run(_chat_loop(session_key, workspace, model, agent, agents_config, auto_export))
+    asyncio.run(_chat_loop(session_key, workspace, model, agent, agents_config, auto_export, show_actions))
 
 
 async def _chat_loop(
@@ -146,6 +242,7 @@ async def _chat_loop(
     agent_name: Optional[str] = None,
     agents_config: str = DEFAULT_AGENTS_CONFIG,
     auto_export: bool = True,
+    show_actions: bool = True,
 ):
     ensure_dir(SESSIONS_DIR)
 
@@ -168,18 +265,24 @@ async def _chat_loop(
         )
         label = "SmolClaw"
 
+    memory_store_tool = MemoryStoreTool(
+        smol_rag=smol_rag,
+        memory_docs_dir=ensure_dir(MEMORY_DOCS_DIR),
+        llm=agent.llm,
+    )
+    session_export_hook = SessionExportHook(
+        smol_rag=smol_rag,
+        llm=agent.llm,
+        memory_dir=ensure_dir(MEMORY_DOCS_DIR),
+    )
+
     if auto_export:
         from app.hooks import ON_SESSION_END
-        from app.session_export_hook import SessionExportHook
         from app.lifecycle_hooks import MemoryDecayHook, ContradictionExpiryHook
 
         agent.hook_runner.on(
             ON_SESSION_END,
-            SessionExportHook(
-                smol_rag=smol_rag,
-                llm=agent.llm,
-                memory_dir=ensure_dir(MEMORY_DOCS_DIR),
-            ),
+            session_export_hook,
         )
         agent.hook_runner.on(ON_SESSION_END, MemoryDecayHook(smol_rag))
         if hasattr(smol_rag, 'contradiction_detector') and smol_rag.contradiction_detector:
@@ -191,40 +294,74 @@ async def _chat_loop(
     history_file = os.path.join(SESSIONS_DIR, "prompt_history.txt")
     prompt_session = PromptSession(history=FileHistory(history_file))
 
-    console.print(f"[bold green]{label}[/bold green] ready. Type /quit to exit.\n")
+    console.print(f"[bold green]{label}[/bold green] ready. Type /help for commands, /quit to exit.\n")
 
-    while True:
+    try:
+        while True:
+            try:
+                user_input = await prompt_session.prompt_async("you> ")
+            except (EOFError, KeyboardInterrupt):
+                break
+
+            user_input = user_input.strip()
+            if not user_input:
+                continue
+            command_parts = user_input.split(maxsplit=1)
+            command = command_parts[0]
+            command_arg = command_parts[1].strip() if len(command_parts) > 1 else ""
+            if command in ("/", "/help", "/commands"):
+                console.print(f"[dim]{SLASH_COMMANDS_HELP}[/dim]")
+                continue
+            if user_input in ("/quit", "/exit"):
+                break
+            if user_input == "/clear":
+                agent.session.clear()
+                session_manager.save(agent.session)
+                console.print("[dim]Session cleared.[/dim]")
+                continue
+            if command == "/remember":
+                if not command_arg:
+                    console.print("[dim]Usage: /remember <text>[/dim]")
+                    continue
+                with console.status("[bold cyan]storing memory...[/bold cyan]"):
+                    result = await memory_store_tool.execute(content=command_arg)
+                console.print(f"[dim]{result}[/dim]")
+                continue
+            if command == "/remember-thread":
+                with console.status("[bold cyan]remembering current thread...[/bold cyan]"):
+                    await session_export_hook({
+                        "session_key": agent.session.key,
+                        "session": agent.session,
+                    })
+                console.print("[dim]Current thread exported to memory.[/dim]")
+                continue
+
+            async def on_event(event: dict):
+                if not show_actions:
+                    return
+                line = _format_action_event(event)
+                if line:
+                    console.print(f"[dim]{line}[/dim]")
+
+            if show_actions:
+                response = await agent.process(user_input, on_event=on_event)
+            else:
+                with console.status("[bold cyan]thinking...[/bold cyan]"):
+                    response = await agent.process(user_input)
+
+            console.print()
+            console.print(Markdown(response))
+            console.print()
+    finally:
         try:
-            user_input = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: prompt_session.prompt("you> ")
-            )
-        except (EOFError, KeyboardInterrupt):
-            break
-
-        user_input = user_input.strip()
-        if not user_input:
-            continue
-        if user_input in ("/quit", "/exit"):
-            break
-        if user_input == "/clear":
-            agent.session.clear()
-            session_manager.save(agent.session)
-            console.print("[dim]Session cleared.[/dim]")
-            continue
-
-        with console.status("[bold cyan]thinking...[/bold cyan]"):
-            response = await agent.process(user_input)
-
-        console.print()
-        console.print(Markdown(response))
-        console.print()
-
-    if auto_export:
-        with console.status("[bold cyan]exporting session...[/bold cyan]"):
-            await agent.close()
-        console.print("[dim]Session exported.[/dim]")
-    else:
-        await agent.close()
+            if auto_export:
+                with console.status("[bold cyan]exporting session...[/bold cyan]"):
+                    await agent.close()
+                console.print("[dim]Session exported.[/dim]")
+            else:
+                await agent.close()
+        finally:
+            await _close_async_resource(smol_rag)
 
 
 @app.command()
@@ -238,34 +375,36 @@ def ingest(
 async def _ingest(path: str):
     from app.utilities import get_docs, make_hash
     smol_rag = create_smol_rag()
+    try:
+        if os.path.isfile(path):
+            files = [path]
+        elif os.path.isdir(path):
+            files = get_docs(path)
+        else:
+            console.print(f"[red]Not found:[/red] {path}")
+            return
 
-    if os.path.isfile(path):
-        files = [path]
-    elif os.path.isdir(path):
-        files = get_docs(path)
-    else:
-        console.print(f"[red]Not found:[/red] {path}")
-        return
+        ingested = 0
+        skipped = 0
+        for file_path in files:
+            with open(file_path) as f:
+                content = f.read()
 
-    ingested = 0
-    skipped = 0
-    for file_path in files:
-        with open(file_path) as f:
-            content = f.read()
+            doc_id = make_hash(content, "doc_")
+            if await smol_rag.source_doc_map.has_left(file_path) and await smol_rag.source_doc_map.equal_right(file_path, doc_id):
+                console.print(f"[dim]Skipped (unchanged):[/dim] {file_path}")
+                skipped += 1
+                continue
 
-        doc_id = make_hash(content, "doc_")
-        if await smol_rag.source_doc_map.has_left(file_path) and await smol_rag.source_doc_map.equal_right(file_path, doc_id):
-            console.print(f"[dim]Skipped (unchanged):[/dim] {file_path}")
-            skipped += 1
-            continue
+            await smol_rag.ingest_text(content, source_id=file_path, save=False)
+            console.print(f"[green]Ingested:[/green] {file_path}")
+            ingested += 1
 
-        await smol_rag.ingest_text(content, source_id=file_path, save=False)
-        console.print(f"[green]Ingested:[/green] {file_path}")
-        ingested += 1
-
-    if ingested > 0:
-        await smol_rag._save_stores()
-    console.print(f"\n[bold]Done:[/bold] {ingested} ingested, {skipped} skipped")
+        if ingested > 0:
+            await smol_rag._save_stores()
+        console.print(f"\n[bold]Done:[/bold] {ingested} ingested, {skipped} skipped")
+    finally:
+        await _close_async_resource(smol_rag)
 
 
 @app.command()
@@ -289,6 +428,8 @@ async def _watch(memory_dir: str, interval: float):
     except KeyboardInterrupt:
         watcher.stop()
         console.print("[dim]Watcher stopped.[/dim]")
+    finally:
+        await _close_async_resource(smol_rag)
 
 
 @app.command()
@@ -323,9 +464,12 @@ def recall(
 
 async def _recall(query: str, mode: str, days: float):
     smol_rag = create_smol_rag()
-    tool = MemoryRecallTool(smol_rag)
-    result = await tool.execute(query=query, mode=mode, days=days)
-    console.print(Markdown(result))
+    try:
+        tool = MemoryRecallTool(smol_rag)
+        result = await tool.execute(query=query, mode=mode, days=days)
+        console.print(Markdown(result))
+    finally:
+        await _close_async_resource(smol_rag)
 
 
 @app.command(name="index-sessions")
@@ -340,10 +484,13 @@ def index_sessions(
 async def _index_sessions(sessions_dir: str, memory_dir: str):
     from app.session_indexer import index_all_sessions
     smol_rag = create_smol_rag()
-    results = await index_all_sessions(sessions_dir, smol_rag, memory_dir=memory_dir)
-    for key, source_id in results.items():
-        console.print(f"[green]Indexed:[/green] {key} -> {source_id}")
-    console.print(f"\n[bold]Done:[/bold] {len(results)} sessions indexed")
+    try:
+        results = await index_all_sessions(sessions_dir, smol_rag, memory_dir=memory_dir)
+        for key, source_id in results.items():
+            console.print(f"[green]Indexed:[/green] {key} -> {source_id}")
+        console.print(f"\n[bold]Done:[/bold] {len(results)} sessions indexed")
+    finally:
+        await _close_async_resource(smol_rag)
 
 
 @app.command()
@@ -369,6 +516,28 @@ async def _reset():
         console.print(f"\n[bold]Reset complete.[/bold] {len(deleted)} action(s).")
     else:
         console.print("[dim]Nothing to reset — stores already clean.[/dim]")
+
+
+@app.command(name="clear-logs")
+def clear_logs_command(
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
+    logs_dir: str = typer.Option(LOG_DIR, "--logs-dir", help="Logs directory"),
+):
+    """Delete log files without touching memories, sessions, or indexes."""
+    if not force:
+        confirm = typer.confirm(
+            f"This will delete log files under '{logs_dir}'. Continue?"
+        )
+        if not confirm:
+            raise typer.Abort()
+
+    deleted = clear_logs(logs_dir)
+    if deleted:
+        for path in deleted:
+            console.print(f"  [red]Deleted {path}[/red]")
+        console.print(f"\n[bold]Log cleanup complete.[/bold] {len(deleted)} file(s) removed.")
+    else:
+        console.print("[dim]No log files to delete.[/dim]")
 
 
 if __name__ == "__main__":

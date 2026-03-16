@@ -1,4 +1,5 @@
 from typing import Any, Dict, List, Optional
+import inspect
 
 from app.anthropic_llm import AnthropicLlm
 from app.openai_llm import OpenAiLlm
@@ -23,6 +24,19 @@ class CompositeLlm:
 
     async def get_embeddings(self, *args, **kwargs) -> List[List[float]]:
         return await self.embedding_provider.get_embeddings(*args, **kwargs)
+
+    async def close(self):
+        seen = set()
+        for provider in (self.completion_provider, self.embedding_provider):
+            if provider is None or id(provider) in seen:
+                continue
+            seen.add(id(provider))
+            close_fn = getattr(provider, "close", None)
+            if not callable(close_fn):
+                continue
+            result = close_fn()
+            if inspect.isawaitable(result):
+                await result
 
 
 def detect_provider(model: str) -> str:

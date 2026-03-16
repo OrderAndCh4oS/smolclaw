@@ -73,3 +73,15 @@ class SubagentManager:
             self._tasks[task_id].cancel()
             return f"Error: agent timed out after {timeout}s"
         return self._results.get(task_id, "Error: no result")
+
+    async def close(self):
+        """Cancel and await any outstanding subagent tasks."""
+        pending = [(task_id, task) for task_id, task in self._tasks.items() if not task.done()]
+        if not pending:
+            return
+
+        for task_id, task in pending:
+            self._results.setdefault(task_id, "Error: agent cancelled during shutdown")
+            task.cancel()
+
+        await asyncio.gather(*(task for _, task in pending), return_exceptions=True)

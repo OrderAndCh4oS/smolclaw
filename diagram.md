@@ -60,8 +60,9 @@ classDiagram
         +close()
     }
 
-    class NanoVectorStore {
-        -storage_file: str
+    class SqliteVectorStore {
+        -db_path: str
+        -table: str
         -dimensions: int
         +upsert(rows)
         +delete(ids)
@@ -100,9 +101,9 @@ classDiagram
     class SmolRag {
         +llm: CompositeLlm
         +llm_limiter: AsyncLimiter
-        +embeddings_db: NanoVectorStore
-        +entities_db: NanoVectorStore
-        +relationships_db: NanoVectorStore
+        +embeddings_db: SqliteVectorStore
+        +entities_db: SqliteVectorStore
+        +relationships_db: SqliteVectorStore
         +source_doc_map: SqliteMappingStore
         +doc_excerpt_map: SqliteMappingStore
         +doc_entity_map: SqliteMappingStore
@@ -118,7 +119,7 @@ classDiagram
         +rate_limited_get_embedding(text) List~float~
     }
 
-    SmolRag *-- NanoVectorStore : embeddings/entities/relationships
+    SmolRag *-- SqliteVectorStore : embeddings/entities/relationships
     SmolRag *-- SqliteMappingStore : source↔doc, doc↔excerpt, etc.
     SmolRag *-- SqliteKvStore : excerpt_kv
     SmolRag *-- BM25Store

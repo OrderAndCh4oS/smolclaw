@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -79,3 +80,32 @@ class TestSubagentManager:
 
         assert "Error: agent failed" in manager._results["sub-1"]
         loop.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_close_cancels_pending_tasks(self, subagent_config):
+        manager = SubagentManager(
+            configs=subagent_config,
+            master_registry=ToolRegistry(),
+            smol_rag=MagicMock(),
+            session_manager=MagicMock(),
+        )
+        loop = MagicMock()
+
+        started = asyncio.Event()
+
+        async def long_running(_goal):
+            started.set()
+            await asyncio.Future()
+
+        loop.process = AsyncMock(side_effect=long_running)
+        loop.close = AsyncMock()
+
+        task = asyncio.create_task(manager._run("sub-1", loop, "finish task"))
+        manager._tasks["sub-1"] = task
+        await started.wait()
+
+        await manager.close()
+
+        assert manager._results["sub-1"] == "Error: agent cancelled during shutdown"
+        loop.close.assert_awaited_once()
+        assert task.cancelled()

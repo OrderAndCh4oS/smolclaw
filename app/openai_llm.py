@@ -201,3 +201,13 @@ class OpenAiLlm:
             logger.info(f"All {len(contents)} embeddings served from cache")
 
         return embeddings
+
+    async def close(self):
+        seen = set()
+        for store in (self.query_cache_kv, self.embedding_cache_kv):
+            if store is None or id(store) in seen:
+                continue
+            seen.add(id(store))
+            close_fn = getattr(store, "close", None)
+            if callable(close_fn):
+                await close_fn()

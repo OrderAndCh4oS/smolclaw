@@ -12,14 +12,22 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from app.smol_rag import create_smol_rag
 from app.logger import logger
-from app.definitions import SQLITE_DB_PATH, EMBEDDINGS_DB, ENTITIES_DB, RELATIONSHIPS_DB, KG_DB
+from app.definitions import (
+    KG_DB,
+    LEGACY_EMBEDDINGS_DB,
+    LEGACY_ENTITIES_DB,
+    LEGACY_RELATIONSHIPS_DB,
+    SQLITE_DB_PATH,
+)
 
 
 STATE_FILES = [
     SQLITE_DB_PATH,
-    EMBEDDINGS_DB,
-    ENTITIES_DB,
-    RELATIONSHIPS_DB,
+    f"{SQLITE_DB_PATH}-wal",
+    f"{SQLITE_DB_PATH}-shm",
+    LEGACY_EMBEDDINGS_DB,
+    LEGACY_ENTITIES_DB,
+    LEGACY_RELATIONSHIPS_DB,
     KG_DB,
 ]
 

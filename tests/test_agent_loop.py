@@ -341,3 +341,96 @@ class TestAgentLoop:
 
         mock_rag.ingest_text.assert_called_once()
         assert session.last_consolidated > 0
+
+    @pytest.mark.asyncio
+    async def test_close_closes_llm_and_owned_resources(self, temp_dir):
+        from app.hooks import HookRunner, ON_SESSION_END
+
+        llm = MagicMock()
+        llm.close = AsyncMock()
+        resource = MagicMock()
+        resource.close = AsyncMock()
+        fired = []
+
+        async def capture_hook(context):
+            fired.append(context["session_key"])
+
+        hook_runner = HookRunner()
+        hook_runner.on(ON_SESSION_END, capture_hook)
+
+        loop = AgentLoop(
+            llm=llm,
+            tool_registry=ToolRegistry(),
+            context_builder=ContextBuilder(),
+            session=Session(key="close-test"),
+            session_manager=SessionManager(temp_dir),
+            hook_runner=hook_runner,
+        )
+        loop.add_owned_resource(resource)
+
+        await loop.close()
+
+        assert fired == ["close-test"]
+        llm.close.assert_awaited_once()
+        resource.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_close_is_idempotent(self, temp_dir):
+        llm = MagicMock()
+        llm.close = AsyncMock()
+
+        loop = AgentLoop(
+            llm=llm,
+            tool_registry=ToolRegistry(),
+            context_builder=ContextBuilder(),
+            session=Session(key="idempotent-close-test"),
+            session_manager=SessionManager(temp_dir),
+        )
+
+        await loop.close()
+        await loop.close()
+
+        llm.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_process_emits_tool_events(self, temp_dir):
+        llm = MagicMock()
+        llm.get_tool_completion = AsyncMock(side_effect=[
+            {
+                "content": None,
+                "tool_calls": [_make_tool_call("echo", {"text": "hi"})],
+                "has_tool_calls": True,
+            },
+            {
+                "content": "done",
+                "tool_calls": None,
+                "has_tool_calls": False,
+            },
+        ])
+
+        registry = ToolRegistry()
+        registry.register(EchoTool())
+        loop = AgentLoop(
+            llm=llm,
+            tool_registry=registry,
+            context_builder=ContextBuilder(),
+            session=Session(key="tool-events-test"),
+            session_manager=SessionManager(temp_dir),
+        )
+
+        events = []
+
+        async def capture_event(event):
+            events.append(event)
+
+        result = await loop.process("do echo", on_event=capture_event)
+
+        assert result == "done"
+        assert len(events) == 2
+        assert events[0]["type"] == "tool"
+        assert events[0]["phase"] == "start"
+        assert events[0]["name"] == "echo"
+        assert "text=hi" in events[0]["summary"]
+        assert events[1]["phase"] == "end"
+        assert events[1]["ok"] is True
+        assert events[1]["duration_ms"] >= 0

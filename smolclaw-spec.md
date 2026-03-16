@@ -298,7 +298,7 @@ SmolClaw is built on SmolRAG (`github.com/OrderAndCh4oS/smol-rag`), which provid
 
 - **Document ingestion** — async chunking with markdown-aware splitting, per-chunk summarisation with document context, hash-based change detection
 - **Knowledge graph** — NetworkX-based entity and relationship extraction, stored locally
-- **Vector store** — NanoVectorDB with OpenAI-compatible embeddings
+- **Vector store** — SQLite-backed vectors with OpenAI-compatible embeddings
 - **Five query modes** — vector search, local KG, global KG, hybrid KG, and mix (vector + KG combined)
 - **Graph visualisation** — existing visualisation tooling in the repo
 

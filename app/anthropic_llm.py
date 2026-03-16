@@ -193,3 +193,8 @@ class AnthropicLlm:
             "tool_calls": tool_calls or None,
             "has_tool_calls": bool(tool_calls),
         }
+
+    async def close(self):
+        close_fn = getattr(self.query_cache_kv, "close", None)
+        if callable(close_fn):
+            await close_fn()

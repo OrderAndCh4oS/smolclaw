@@ -129,7 +129,7 @@ SmolRAG supports five query methods that balance speed, precision, and reasoning
 
 ### Storage
 
-SmolRAG uses SQLite for excerpt content, document mappings, provenance tracking, and LLM caches. NanoVectorDB handles embeddings, and NetworkX persists the knowledge graph as GraphML.
+SmolRAG uses SQLite for excerpt content, vector indexes, document mappings, provenance tracking, BM25 state, and LLM caches. NetworkX persists the knowledge graph as GraphML.
 
 ## Project Structure
 
@@ -162,10 +162,7 @@ app/
 cli/
   main.py              # Typer CLI (chat, ingest, watch, serve, recall, reset)
 store/                 # All persistent data (gitignored)
-  smolclaw.db          # SQLite (excerpts, mappings, caches, BM25)
-  embeddings_db.json   # NanoVectorDB embeddings
-  entities_db.json     # Entity data
-  relationships_db.json # Relationship data
+  smolclaw.db          # SQLite (vectors, excerpts, mappings, caches, BM25)
   kg_db.graphml        # NetworkX knowledge graph
   sessions/            # JSONL session files
   memory/              # Journal and session markdown docs

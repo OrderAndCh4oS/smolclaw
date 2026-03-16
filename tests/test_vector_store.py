@@ -253,17 +253,16 @@ class TestVectorStorePersistence:
 
         await store1.upsert(vectors)
 
-        # NanoVectorDB should persist automatically or on save
-        # Load in new instance (NanoVectorDB loads from disk)
+        await store1.save()
+
+        # SQLite-backed vector stores persist across instances.
         store2 = NanoVectorStore(temp_vector_db_path, dimensions=1536)
 
-        # Query should return results
         query_vector = np.array(np.random.rand(1536), dtype=np.float32)
         results = await store2.query(query_vector, top_k=5)
-
-        # May or may not persist depending on NanoVectorDB implementation
-        # This tests the behavior
-        print(f"\nLoaded {len(results)} results from persisted store")
+        persisted = await store2.get(list(range(10)))
+        assert len(results) == 5
+        assert len(persisted) == 10
 
 
 class TestVectorStoreEdgeCases:

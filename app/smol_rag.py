@@ -9,8 +9,8 @@ from aiolimiter import AsyncLimiter
 from app.bm25_store import BM25Store
 from app.chunking import preserve_markdown_code_excerpts
 from app.obsidian import parse_wiki_links, parse_tags
-from app.definitions import INPUT_DOCS_DIR, SQLITE_DB_PATH, EMBEDDINGS_DB, \
-    KG_DB, ENTITIES_DB, RELATIONSHIPS_DB, KG_SEP, \
+from app.definitions import INPUT_DOCS_DIR, SQLITE_DB_PATH, EMBEDDINGS_TABLE, \
+    KG_DB, ENTITIES_TABLE, RELATIONSHIPS_TABLE, KG_SEP, \
     TUPLE_SEP, REC_SEP, COMPLETE_TAG, COMPLETION_MODEL, EMBEDDING_MODEL
 from app.graph_store import NetworkXGraphStore
 from app.sqlite_store import SqliteKvStore
@@ -22,7 +22,7 @@ from app.prompts import get_query_system_prompt, excerpt_summary_prompt, get_ext
 from app.utilities import read_file, get_docs, make_hash, split_string_by_multi_markers, clean_str, \
     extract_json_from_text, truncate_list_by_token_size, \
     list_of_list_to_csv
-from app.vector_store import NanoVectorStore
+from app.vector_store import SqliteVectorStore
 
 
 class SmolRag:
@@ -66,11 +66,16 @@ class SmolRag:
         )
 
         self.dimensions = dimensions or 1536
-        self.embeddings_db = embeddings_db or NanoVectorStore(EMBEDDINGS_DB, self.dimensions)
-        self.entities_db = entities_db or NanoVectorStore(ENTITIES_DB, self.dimensions)
-        self.relationships_db = relationships_db or NanoVectorStore(RELATIONSHIPS_DB, self.dimensions)
-
         _db = db_path or SQLITE_DB_PATH
+        self.embeddings_db = embeddings_db or SqliteVectorStore(
+            _db, dimensions=self.dimensions, table=EMBEDDINGS_TABLE
+        )
+        self.entities_db = entities_db or SqliteVectorStore(
+            _db, dimensions=self.dimensions, table=ENTITIES_TABLE
+        )
+        self.relationships_db = relationships_db or SqliteVectorStore(
+            _db, dimensions=self.dimensions, table=RELATIONSHIPS_TABLE
+        )
         self.source_doc_map = source_doc_map or SqliteMappingStore(_db, "source_doc_map", "source", "doc_id")
         self.doc_excerpt_map = doc_excerpt_map or SqliteMappingStore(_db, "doc_excerpt_map", "doc_id", "excerpt_id")
         self.doc_entity_map = doc_entity_map or SqliteMappingStore(_db, "doc_entity_map", "doc_id", "entity_id")
@@ -948,6 +953,36 @@ class SmolRag:
         if not isinstance(keywords, list):
             return []
         return [str(k) for k in keywords if str(k).strip()]
+
+    async def close(self):
+        """Close all SQLite-backed stores and caches used by this SmolRag instance."""
+        seen = set()
+
+        async def _close_resource(resource):
+            if resource is None or id(resource) in seen:
+                return
+            seen.add(id(resource))
+            close_fn = getattr(resource, "close", None)
+            if not callable(close_fn):
+                return
+            result = close_fn()
+            if inspect.isawaitable(result):
+                await result
+
+        for resource in (
+            self.embeddings_db,
+            self.entities_db,
+            self.relationships_db,
+            self.source_doc_map,
+            self.doc_excerpt_map,
+            self.doc_entity_map,
+            self.doc_relationship_map,
+            self.excerpt_kv,
+            self.bm25_store,
+            self.llm,
+            getattr(self.contradiction_detector, "store", None),
+        ):
+            await _close_resource(resource)
 
 
 def create_smol_rag(**kwargs) -> SmolRag:

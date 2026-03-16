@@ -1,4 +1,6 @@
+import inspect
 import json
+import time
 from typing import Awaitable, Callable, Optional
 
 from app.context_builder import ContextBuilder
@@ -33,11 +35,61 @@ class AgentLoop:
         self.hook_runner = hook_runner or HookRunner()
         self._stop_after_current = False
         self._session_started = False
+        self._owned_resources = []
+        self._closed = False
+
+    @staticmethod
+    def _truncate_text(value: str, limit: int = 80) -> str:
+        text = str(value).replace("\n", "\\n")
+        if len(text) <= limit:
+            return text
+        return text[: limit - 3] + "..."
+
+    @classmethod
+    def _summarize_argument_value(cls, key: str, value):
+        if isinstance(value, str):
+            if key in {"content", "old_text", "new_text"}:
+                return f"<{len(value)} chars>"
+            return cls._truncate_text(value)
+        if isinstance(value, (int, float, bool)) or value is None:
+            return value
+        if isinstance(value, list):
+            return f"<list:{len(value)}>"
+        if isinstance(value, dict):
+            return f"<object:{len(value)}>"
+        return cls._truncate_text(repr(value))
+
+    @classmethod
+    def summarize_tool_call(cls, name: str, arguments: dict) -> str:
+        if not arguments:
+            return name
+        parts = []
+        for key, value in arguments.items():
+            summarized = cls._summarize_argument_value(key, value)
+            parts.append(f"{key}={summarized}")
+        return f"{name} " + ", ".join(parts)
+
+    @classmethod
+    def summarize_tool_result(cls, result: str, limit: int = 100) -> str:
+        return cls._truncate_text(result or "", limit=limit)
+
+    async def _emit_event(
+        self,
+        on_event: Optional[Callable[[dict], Awaitable[None]]],
+        event: dict,
+    ):
+        if not on_event:
+            return
+        try:
+            await on_event(event)
+        except Exception as exc:
+            logger.warning("Failed to emit agent event: %s", exc)
 
     async def process(
         self,
         user_content: str,
         on_output: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_event: Optional[Callable[[dict], Awaitable[None]]] = None,
     ) -> str:
         if not self._session_started:
             self._session_started = True
@@ -113,8 +165,31 @@ class AgentLoop:
             for tool_call in result["tool_calls"]:
                 name = tool_call["name"]
                 arguments = tool_call["arguments"]
+                summary = self.summarize_tool_call(name, arguments)
+                await self._emit_event(on_event, {
+                    "type": "tool",
+                    "phase": "start",
+                    "iteration": iteration,
+                    "name": name,
+                    "arguments": arguments,
+                    "summary": summary,
+                })
 
+                started_at = time.perf_counter()
                 tool_result = await self.tool_registry.execute(name, arguments)
+                duration_ms = int((time.perf_counter() - started_at) * 1000)
+                ok = not str(tool_result).startswith("Error:")
+                await self._emit_event(on_event, {
+                    "type": "tool",
+                    "phase": "end",
+                    "iteration": iteration,
+                    "name": name,
+                    "arguments": arguments,
+                    "summary": summary,
+                    "ok": ok,
+                    "duration_ms": duration_ms,
+                    "result_preview": self.summarize_tool_result(tool_result),
+                })
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call["id"],
@@ -138,12 +213,37 @@ class AgentLoop:
         """Signal the loop to stop after the current iteration completes."""
         self._stop_after_current = True
 
+    def add_owned_resource(self, resource):
+        """Register a closeable resource owned by this agent loop."""
+        if resource is not None:
+            self._owned_resources.append(resource)
+
     async def close(self):
-        """Fire session end hooks. Call this when the session is ending."""
-        await self.hook_runner.fire(ON_SESSION_END, {
-            "session_key": self.session.key,
-            "session": self.session,
-        })
+        """Fire session end hooks and close resources owned by this agent loop."""
+        if self._closed:
+            return
+        self._closed = True
+
+        try:
+            await self.hook_runner.fire(ON_SESSION_END, {
+                "session_key": self.session.key,
+                "session": self.session,
+            })
+        finally:
+            seen = set()
+            for resource in (self.llm, *self._owned_resources):
+                if resource is None or id(resource) in seen:
+                    continue
+                seen.add(id(resource))
+                close_fn = getattr(resource, "close", None)
+                if not callable(close_fn):
+                    continue
+                try:
+                    result = close_fn()
+                    if inspect.isawaitable(result):
+                        await result
+                except Exception as exc:
+                    logger.warning("Failed to close agent resource %r: %s", resource, exc)
 
     async def _maybe_consolidate(self):
         if not self.smol_rag:
