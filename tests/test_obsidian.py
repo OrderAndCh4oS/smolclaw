@@ -1,6 +1,6 @@
 import pytest
 
-from app.obsidian import parse_wiki_links, parse_tags, parse_frontmatter
+from app.obsidian import parse_wiki_links, parse_tags
 
 
 class TestParseWikiLinks:
@@ -39,21 +39,3 @@ class TestParseTags:
         result = parse_tags(content)
         assert "tag" in result
         assert "Heading" not in result
-
-
-class TestParseFrontmatter:
-    def test_parse_frontmatter(self):
-        content = "---\ntitle: Test\nauthor: Me\n---\nBody text"
-        result = parse_frontmatter(content)
-        assert result == {"title": "Test", "author": "Me"}
-
-    def test_parse_frontmatter_missing(self):
-        result = parse_frontmatter("No frontmatter here")
-        assert result == {}
-
-    def test_parse_frontmatter_with_types(self):
-        content = "---\ntags:\n  - python\n  - web\ncount: 42\nnested:\n  key: value\n---\nBody"
-        result = parse_frontmatter(content)
-        assert result["tags"] == ["python", "web"]
-        assert result["count"] == 42
-        assert result["nested"] == {"key": "value"}

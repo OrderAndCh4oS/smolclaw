@@ -3,8 +3,9 @@ from datetime import datetime
 from unittest.mock import MagicMock, AsyncMock
 
 import pytest
+import yaml
 
-from app.obsidian import parse_frontmatter, parse_tags
+from app.obsidian import parse_tags
 from app.tools.memory_tools import (
     MEMORY_TYPES,
     MemoryRelateTool,
@@ -14,6 +15,14 @@ from app.tools.memory_tools import (
     MemoryStoreTool,
     format_memory_content,
 )
+
+
+def _parse_yaml_frontmatter(content: str) -> dict:
+    if not content.startswith("---\n"):
+        return {}
+    _, remainder = content.split("---\n", 1)
+    frontmatter, _, _ = remainder.partition("\n---\n")
+    return yaml.safe_load(frontmatter) or {}
 
 
 class TestMemorySearchTool:
@@ -92,14 +101,14 @@ class TestFormatMemoryContent:
 
     def test_format_with_tags(self):
         result = format_memory_content("body", tags=["pricing", "saas"])
-        fm = parse_frontmatter(result)
+        fm = _parse_yaml_frontmatter(result)
         assert fm["tags"] == ["pricing", "saas"]
         assert "#pricing" in result
         assert "#saas" in result
 
     def test_format_with_type_and_tags(self):
         result = format_memory_content("body", memory_type="fact", tags=["pricing", "stripe"])
-        fm = parse_frontmatter(result)
+        fm = _parse_yaml_frontmatter(result)
         assert fm["memory_type"] == "fact"
         assert fm["tags"] == ["pricing", "stripe"]
         assert "#fact" in result
@@ -112,14 +121,14 @@ class TestFormatMemoryContent:
 
     def test_format_created_at_is_iso(self):
         result = format_memory_content("body", memory_type="fact")
-        fm = parse_frontmatter(result)
+        fm = _parse_yaml_frontmatter(result)
         ts = fm["created_at"]
         parsed = datetime.fromisoformat(ts)
         assert parsed.tzinfo is not None
 
-    def test_format_roundtrips_through_parse_frontmatter(self):
+    def test_format_roundtrips_through_yaml_frontmatter(self):
         result = format_memory_content("body", memory_type="decision", tags=["billing"])
-        fm = parse_frontmatter(result)
+        fm = _parse_yaml_frontmatter(result)
         assert fm["memory_type"] == "decision"
         assert fm["tags"] == ["billing"]
         assert "created_at" in fm
@@ -187,7 +196,7 @@ class TestMemoryStoreToolExecuteTaxonomy:
             on_disk = f.read()
         assert "#saas" in on_disk
         assert "#billing" in on_disk
-        fm = parse_frontmatter(on_disk)
+        fm = _parse_yaml_frontmatter(on_disk)
         assert fm["tags"] == ["saas", "billing"]
 
     @pytest.mark.asyncio

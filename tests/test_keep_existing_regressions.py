@@ -105,7 +105,7 @@ async def test_rebuild_main_keep_existing_does_not_wipe_state(temp_dir, monkeypa
         return rag
 
     monkeypatch.setattr(rebuild_rag, "STATE_FILES", state_files)
-    monkeypatch.setattr(rebuild_rag, "SmolRag", fake_ctor)
+    monkeypatch.setattr(rebuild_rag, "create_smol_rag", fake_ctor)
 
     exit_code = await rebuild_rag.main(wipe=False)
 
@@ -124,7 +124,7 @@ async def test_rebuild_main_wipe_removes_state(temp_dir, monkeypatch):
             f.write("state")
 
     monkeypatch.setattr(rebuild_rag, "STATE_FILES", state_files)
-    monkeypatch.setattr(rebuild_rag, "SmolRag", lambda: _FakeRag())
+    monkeypatch.setattr(rebuild_rag, "create_smol_rag", lambda: _FakeRag())
 
     exit_code = await rebuild_rag.main(wipe=True)
 

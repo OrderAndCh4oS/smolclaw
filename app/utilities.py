@@ -86,19 +86,11 @@ def get_encoded_tokens(text, model=COMPLETION_MODEL):
     return tiktoken_encoders[model].encode(text)
 
 
-def is_float_regex(value):
-    return bool(re.match(r"^[-+]?[0-9]*\.?[0-9]+$", value))
-
-
 def list_of_list_to_csv(data: List[List[str]]) -> str:
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerows(data)
     return output.getvalue()
-
-
-def safe_filename(name: str) -> str:
-    return re.sub(r'[^\w\-.]', '_', name)
 
 
 def ensure_dir(path: str) -> str:

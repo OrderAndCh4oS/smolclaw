@@ -1,8 +1,7 @@
 import pytest
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
-from app.taxonomy import MemoryType, MemoryMetadata, classify_chunk
+from app.taxonomy import MemoryType, classify_chunk
 
 
 class TestMemoryType:
@@ -18,56 +17,6 @@ class TestMemoryType:
     def test_from_string(self):
         assert MemoryType("fact") == MemoryType.FACT
         assert MemoryType("journal") == MemoryType.JOURNAL
-
-
-class TestMemoryMetadata:
-    def test_defaults(self):
-        meta = MemoryMetadata(memory_type=MemoryType.FACT)
-        assert meta.confidence == 1.0
-        assert meta.importance == 0.5
-        assert meta.tags == []
-        assert meta.source_file is None
-        assert isinstance(meta.created_at, datetime)
-
-    def test_to_dict(self):
-        meta = MemoryMetadata(
-            memory_type=MemoryType.DECISION,
-            confidence=0.9,
-            tags=["pricing", "billing"],
-            importance=0.8,
-        )
-        d = meta.to_dict()
-        assert d["memory_type"] == "decision"
-        assert d["confidence"] == 0.9
-        assert d["tags"] == ["pricing", "billing"]
-        assert d["importance"] == 0.8
-
-    def test_from_dict(self):
-        data = {
-            "memory_type": "preference",
-            "confidence": 0.95,
-            "tags": ["style"],
-            "importance": 0.7,
-            "created_at": "2025-01-01T00:00:00+00:00",
-        }
-        meta = MemoryMetadata.from_dict(data)
-        assert meta.memory_type == MemoryType.PREFERENCE
-        assert meta.confidence == 0.95
-        assert meta.tags == ["style"]
-
-    def test_roundtrip(self):
-        original = MemoryMetadata(
-            memory_type=MemoryType.EPISODE,
-            confidence=0.85,
-            tags=["session"],
-            importance=0.6,
-            source_file="/tmp/test.md",
-        )
-        restored = MemoryMetadata.from_dict(original.to_dict())
-        assert restored.memory_type == original.memory_type
-        assert restored.confidence == original.confidence
-        assert restored.tags == original.tags
-        assert restored.importance == original.importance
 
 
 class TestClassifyChunk:

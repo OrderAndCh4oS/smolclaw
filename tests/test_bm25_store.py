@@ -182,44 +182,7 @@ class TestBM25StoreReplace:
         assert len(results) == 0
 
 
-class TestBM25StoreReindex:
-    @pytest.mark.asyncio
-    async def test_reindex_retokenizes_from_raw_text(self, temp_dir):
-        db_path = os.path.join(temp_dir, "reindex.db")
-        store = BM25Store(db_path, "bm25_reindex")
-        await store.add("doc1", "the quick brown fox jumps over the lazy dog")
-        await store.add("doc2", "running and jumping are great exercises")
-
-        # Verify docs are indexed
-        results = await store.query("fox", top_k=5)
-        assert len(results) > 0
-
-        # Reindex and verify it still works
-        await store.reindex()
-        results = await store.query("fox", top_k=5)
-        assert len(results) > 0
-        assert results[0]["doc_id"] == "doc1"
-        await store.close()
-
-    @pytest.mark.asyncio
-    async def test_reindex_skips_docs_without_raw_text(self, temp_dir):
-        """Docs added before raw_text column was introduced have NULL raw_text."""
-        db_path = os.path.join(temp_dir, "reindex_null.db")
-        store = BM25Store(db_path, "bm25_reindex_null")
-        # Manually insert a row without raw_text to simulate old data
-        db = await store._get_db()
-        await db.execute(
-            f"INSERT INTO [{store.table}] (doc_id, tokens, raw_text) VALUES (?, ?, ?)",
-            ("old_doc", '{"hello": 1}', None),
-        )
-        await db.commit()
-        store._loaded = False  # Force reload
-
-        await store.reindex()
-        # old_doc should be gone from in-memory index since raw_text was NULL
-        assert "old_doc" not in store._docs
-        await store.close()
-
+class TestBM25StoreRawText:
     @pytest.mark.asyncio
     async def test_raw_text_stored_on_add(self, temp_dir):
         db_path = os.path.join(temp_dir, "raw.db")

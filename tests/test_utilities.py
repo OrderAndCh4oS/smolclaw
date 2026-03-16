@@ -9,7 +9,6 @@ from app.utilities import (
     split_string_by_multi_markers,
     clean_str,
     make_hash,
-    is_float_regex
 )
 
 
@@ -51,14 +50,6 @@ class TestUtilitiesBaseline:
 
         hash3 = make_hash("different string")
         assert hash1 != hash3  # Different input -> different hash
-
-    def test_is_float_regex(self):
-        """Test float detection."""
-        assert is_float_regex("3.14") == True
-        assert is_float_regex("0.5") == True
-        assert is_float_regex("not a float") == False
-        assert is_float_regex("123") == True  # Integers are floats
-
 
 class TestTokenCountingPerformance:
     """Tests for token counting performance bottleneck (#9)."""
@@ -230,10 +221,3 @@ class TestUtilitiesEdgeCases:
         hash1 = make_hash("")
         hash2 = make_hash("")
         assert hash1 == hash2
-
-    def test_is_float_regex_edge_cases(self):
-        """Test float detection edge cases."""
-        assert is_float_regex("") == False
-        assert is_float_regex(".") == False
-        assert is_float_regex("1.") == True or is_float_regex("1.") == False  # Depends on regex
-        assert is_float_regex(".5") == True or is_float_regex(".5") == False

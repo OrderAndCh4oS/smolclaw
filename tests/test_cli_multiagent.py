@@ -232,7 +232,7 @@ class TestCliMultiagent:
         smol_rag = MagicMock()
         session_manager = MagicMock()
 
-        with patch("cli.main.SmolRag", return_value=smol_rag), \
+        with patch("cli.main.create_smol_rag", return_value=smol_rag), \
             patch("cli.main.SessionManager", return_value=session_manager), \
             patch("cli.main.PromptSession", FakePromptSession), \
             patch("cli.main._build_multiagent", return_value=fake_agent) as mock_build_multiagent, \
@@ -278,7 +278,7 @@ class TestCliMultiagent:
         smol_rag = MagicMock()
         session_manager = MagicMock()
 
-        with patch("cli.main.SmolRag", return_value=smol_rag), \
+        with patch("cli.main.create_smol_rag", return_value=smol_rag), \
             patch("cli.main.SessionManager", return_value=session_manager), \
             patch("cli.main.PromptSession", FakePromptSession), \
             patch("cli.main._build_multiagent", return_value=fake_agent) as mock_build_multiagent, \
@@ -324,7 +324,7 @@ class TestCliMultiagent:
         smol_rag = MagicMock()
         session_manager = MagicMock()
 
-        with patch("cli.main.SmolRag", return_value=smol_rag), \
+        with patch("cli.main.create_smol_rag", return_value=smol_rag), \
             patch("cli.main.SessionManager", return_value=session_manager), \
             patch("cli.main.PromptSession", FakePromptSession), \
             patch("cli.main._build_default_chat_agent", return_value=fake_agent) as mock_default_builder, \

@@ -153,29 +153,6 @@ class BM25Store:
         ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
         return [{"doc_id": doc_id, "score": score} for doc_id, score in ranked]
 
-    async def reindex(self):
-        """Re-tokenize all documents from stored raw text. Use after tokenizer changes."""
-        async with self._lock:
-            await self._ensure_loaded_unlocked()
-            db = await self._get_db()
-            cursor = await db.execute(f"SELECT doc_id, raw_text FROM [{self.table}]")
-            rows = await cursor.fetchall()
-            self._docs.clear()
-            self._doc_lengths.clear()
-            for doc_id, raw_text in rows:
-                if not raw_text:
-                    continue
-                tokens = self._tokenize(raw_text)
-                tf = Counter(tokens)
-                self._docs[doc_id] = tf
-                self._doc_lengths[doc_id] = len(tokens)
-                await db.execute(
-                    f"UPDATE [{self.table}] SET tokens = ? WHERE doc_id = ?",
-                    (json.dumps(dict(tf)), doc_id),
-                )
-            await db.commit()
-            self._recompute_stats()
-
     async def close(self):
         async with self._lock:
             if self._db is not None:

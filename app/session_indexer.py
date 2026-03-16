@@ -1,21 +1,11 @@
 import logging
 import os
-from dataclasses import dataclass
 from typing import Optional
 
 from app.session import Session, SessionManager
 from app.tools.memory_tools import format_memory_content
 
 logger = logging.getLogger("smolclaw.session_indexer")
-
-
-@dataclass
-class SessionMetadata:
-    session_key: str
-    file_path: str
-    message_count: int
-    user_message_count: int
-    assistant_message_count: int
 
 
 def parse_session_content(session: Session) -> str:
@@ -27,19 +17,6 @@ def parse_session_content(session: Session) -> str:
         if role in ("user", "assistant") and content:
             parts.append(f"{role}: {content}")
     return "\n".join(parts)
-
-
-def extract_session_metadata(session: Session, file_path: str) -> SessionMetadata:
-    """Extract metadata from a session."""
-    user_count = sum(1 for m in session.messages if m.get("role") == "user" and m.get("content"))
-    assistant_count = sum(1 for m in session.messages if m.get("role") == "assistant" and m.get("content"))
-    return SessionMetadata(
-        session_key=session.key,
-        file_path=file_path,
-        message_count=len(session.messages),
-        user_message_count=user_count,
-        assistant_message_count=assistant_count,
-    )
 
 
 async def _extract_topics(content: str, llm) -> list[str]:

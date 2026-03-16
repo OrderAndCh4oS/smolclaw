@@ -1,7 +1,5 @@
 import re
-from typing import Dict, List, Tuple
-
-import yaml
+from typing import List, Tuple
 
 
 def parse_wiki_links(content: str) -> List[Tuple[str, str]]:
@@ -22,14 +20,3 @@ def parse_tags(content: str) -> List[str]:
     # Match tags: # followed by word chars, but not at start of line (headings)
     tags = re.findall(r'(?:^|(?<=\s))#(\w+)', no_code, flags=re.MULTILINE)
     return tags
-
-
-def parse_frontmatter(content: str) -> Dict:
-    """Parse YAML frontmatter between --- delimiters. Returns empty dict if none found."""
-    match = re.match(r'^---\s*\n(.*?)\n---', content, flags=re.DOTALL)
-    if not match:
-        return {}
-    try:
-        return yaml.safe_load(match.group(1)) or {}
-    except yaml.YAMLError:
-        return {}

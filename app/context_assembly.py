@@ -224,13 +224,3 @@ class ContextAssembler(ContextBuilder):
         messages.extend(history)
         messages.append({"role": "user", "content": user_content})
         return messages
-
-    async def build_messages_with_context(
-        self,
-        history: List[Dict],
-        user_content: str,
-    ) -> List[Dict]:
-        return await self.build_messages_async(
-            history=history,
-            user_content=user_content,
-        )

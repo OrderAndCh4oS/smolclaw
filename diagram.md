@@ -93,7 +93,6 @@ classDiagram
         +add(doc_id, text)
         +remove(doc_id)
         +query(text, top_k) list~dict~
-        +reindex()
         +close()
     }
 
@@ -300,16 +299,6 @@ classDiagram
         REFERENCE
     }
 
-    class MemoryMetadata {
-        +memory_type: MemoryType
-        +created_at: datetime
-        +confidence: float
-        +importance: float
-        +tags: List~str~
-        +to_dict() dict
-        +from_dict(data) MemoryMetadata
-    }
-
     class MemoryLifecycleManager {
         +smol_rag: SmolRag
         +llm: LLM
@@ -322,7 +311,6 @@ classDiagram
 
     MemoryDecayHook --> MemoryLifecycleManager
     MemoryLifecycleManager --> SmolRag
-    MemoryMetadata --> MemoryType
     SessionExportHook --> SmolRag
 
     %% ─────────────────── Agent Loop ───────────────────

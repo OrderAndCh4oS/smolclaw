@@ -1,16 +1,6 @@
 import os
 
-import pytest
-
-from app.utilities import safe_filename, ensure_dir
-
-
-class TestSafeFilename:
-    def test_safe_filename(self):
-        assert safe_filename("foo:bar/baz qux") == "foo_bar_baz_qux"
-
-    def test_safe_filename_preserves_normal(self):
-        assert safe_filename("hello-world_123") == "hello-world_123"
+from app.utilities import ensure_dir
 
 
 class TestEnsureDir:

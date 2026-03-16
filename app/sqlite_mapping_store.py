@@ -81,15 +81,6 @@ class SqliteMappingStore:
         )
         await db.commit()
 
-    async def remove_pair(self, left_key: str, right_key: str):
-        """Remove a specific (left, right) pair."""
-        db = await self._get_db()
-        await db.execute(
-            f"DELETE FROM [{self.table}] WHERE {self.left_col} = ? AND {self.right_col} = ?",
-            (str(left_key), str(right_key)),
-        )
-        await db.commit()
-
     async def get_by_left(self, left_key: str) -> list[str]:
         """Get all right values for a left key."""
         db = await self._get_db()
@@ -136,16 +127,6 @@ class SqliteMappingStore:
         cursor = await db.execute(
             f"SELECT {self.right_col} FROM [{self.table}] WHERE {self.left_col} = ? LIMIT 1",
             (str(left_key),),
-        )
-        row = await cursor.fetchone()
-        return row[0] if row else None
-
-    async def get_left_single(self, right_key: str) -> str | None:
-        """For 1:1 maps — get the single left value for a right key, or None."""
-        db = await self._get_db()
-        cursor = await db.execute(
-            f"SELECT {self.left_col} FROM [{self.table}] WHERE {self.right_col} = ? LIMIT 1",
-            (str(right_key),),
         )
         row = await cursor.fetchone()
         return row[0] if row else None

@@ -55,14 +55,6 @@ class TestMappingStoreBaseline:
         assert await mapping_store.get_by_right("entity1") == []
 
     @pytest.mark.asyncio
-    async def test_remove_pair(self, mapping_store):
-        await mapping_store.add("doc1", "excerpt1")
-        await mapping_store.add("doc1", "excerpt2")
-        await mapping_store.remove_pair("doc1", "excerpt1")
-        result = await mapping_store.get_by_left("doc1")
-        assert result == ["excerpt2"]
-
-    @pytest.mark.asyncio
     async def test_has_left(self, mapping_store):
         await mapping_store.add("doc1", "excerpt1")
         assert await mapping_store.has_left("doc1") is True
@@ -86,12 +78,6 @@ class TestMappingStoreOneToOne:
     async def test_get_right_single_missing(self, mapping_store):
         result = await mapping_store.get_right_single("nonexistent")
         assert result is None
-
-    @pytest.mark.asyncio
-    async def test_get_left_single(self, mapping_store):
-        await mapping_store.add("source1", "doc1")
-        result = await mapping_store.get_left_single("doc1")
-        assert result == "source1"
 
     @pytest.mark.asyncio
     async def test_equal_right(self, mapping_store):

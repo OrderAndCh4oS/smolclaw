@@ -7,7 +7,6 @@ import pytest
 from app.session import Session, SessionManager
 from app.session_indexer import (
     parse_session_content,
-    extract_session_metadata,
     index_session,
     index_all_sessions,
 )
@@ -56,22 +55,6 @@ class TestParseSessionContent:
         result = parse_session_content(session)
         assert "user:" not in result
         assert "assistant: response" in result
-
-
-class TestExtractSessionMetadata:
-    def test_extracts_counts(self):
-        session = _make_session(messages=[
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi"},
-            {"role": "user", "content": "bye"},
-            {"role": "tool", "tool_call_id": "t", "content": "r"},
-        ])
-        meta = extract_session_metadata(session, "/path/to/session.jsonl")
-        assert meta.session_key == "test-session"
-        assert meta.file_path == "/path/to/session.jsonl"
-        assert meta.message_count == 4
-        assert meta.user_message_count == 2
-        assert meta.assistant_message_count == 1
 
 
 class TestIndexSession:
