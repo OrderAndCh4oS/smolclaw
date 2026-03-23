@@ -1,12 +1,12 @@
 """
-Tests for NanoVectorStore operations, focusing on memory and performance.
+Tests for SqliteVectorStore operations, focusing on memory and performance.
 Tests bottleneck #3: In-memory vector storage scaling issues.
 """
 import time
 import pytest
 import numpy as np
 
-from app.vector_store import NanoVectorStore
+from app.vector_store import SqliteVectorStore
 
 
 def make_vector_dict(id_val, dims=1536, **metadata):
@@ -108,13 +108,13 @@ class TestVectorStoreMemoryUsage:
     @pytest.mark.asyncio
     async def test_memory_grows_linearly_with_vectors(self, temp_vector_db_path):
         """Test that memory usage grows linearly with number of vectors."""
-        store = NanoVectorStore(temp_vector_db_path, dimensions=1536)
+        store = SqliteVectorStore(temp_vector_db_path, dimensions=1536)
 
         # Add vectors in batches and estimate memory
         batch_sizes = [100, 500, 1000]
 
         for size in batch_sizes:
-            store = NanoVectorStore(temp_vector_db_path + f"_{size}", dimensions=1536)
+            store = SqliteVectorStore(temp_vector_db_path + f"_{size}", dimensions=1536)
 
             vectors = [make_vector_dict(i, index=i) for i in range(size)]
 
@@ -173,7 +173,7 @@ class TestVectorStoreMemoryUsage:
         query_times = []
 
         for size in sizes:
-            store = NanoVectorStore(temp_vector_db_path + f"_{size}", dimensions=1536)
+            store = SqliteVectorStore(temp_vector_db_path + f"_{size}", dimensions=1536)
 
             vectors = [make_vector_dict(i, index=i) for i in range(size)]
 
@@ -246,7 +246,7 @@ class TestVectorStorePersistence:
     @pytest.mark.asyncio
     async def test_save_and_load(self, temp_vector_db_path):
         """Test saving and loading vector database."""
-        store1 = NanoVectorStore(temp_vector_db_path, dimensions=1536)
+        store1 = SqliteVectorStore(temp_vector_db_path, dimensions=1536)
 
         # Add vectors
         vectors = [make_vector_dict(i, index=i) for i in range(10)]
@@ -256,7 +256,7 @@ class TestVectorStorePersistence:
         await store1.save()
 
         # SQLite-backed vector stores persist across instances.
-        store2 = NanoVectorStore(temp_vector_db_path, dimensions=1536)
+        store2 = SqliteVectorStore(temp_vector_db_path, dimensions=1536)
 
         query_vector = np.array(np.random.rand(1536), dtype=np.float32)
         results = await store2.query(query_vector, top_k=5)

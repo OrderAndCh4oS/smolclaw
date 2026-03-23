@@ -13,7 +13,6 @@ __pycache__
 # Test and dev artifacts
 tests/
 pytest.ini
-rebuild_rag.py
 graph_visualisation/
 
 # Data stores (mounted at runtime, not baked in)

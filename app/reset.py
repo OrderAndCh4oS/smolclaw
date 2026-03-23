@@ -19,14 +19,7 @@ async def reset_all_stores(data_dir: str) -> list[str]:
             p.unlink()
             deleted.append(f"Deleted {p}")
 
-    # 2. Vector / entity JSON stores
-    for pattern in ("embeddings_db.json", "entities_db.json", "relationships_db.json"):
-        p = data / pattern
-        if p.exists():
-            p.unlink()
-            deleted.append(f"Deleted {p}")
-
-    # 3. Knowledge graph
+    # 2. Knowledge graph
     p = data / "kg_db.graphml"
     if p.exists():
         p.unlink()

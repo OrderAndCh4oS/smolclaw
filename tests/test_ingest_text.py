@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 from app.graph_store import NetworkXGraphStore
 from app.sqlite_store import SqliteKvStore
 from app.sqlite_mapping_store import SqliteMappingStore
-from app.vector_store import NanoVectorStore
+from app.vector_store import SqliteVectorStore
 from app.smol_rag import SmolRag
 
 
@@ -21,14 +21,14 @@ def rag_temp_dir():
 
 
 @pytest.fixture
-def test_rag(rag_temp_dir, mock_openai_llm):
+async def test_rag(rag_temp_dir, mock_openai_llm):
     """Create a SmolRag instance with mock LLM and temp storage."""
     db_path = os.path.join(rag_temp_dir, "test.db")
-    return SmolRag(
+    rag = SmolRag(
         llm=mock_openai_llm,
-        embeddings_db=NanoVectorStore(os.path.join(rag_temp_dir, "embeddings.json"), 1536),
-        entities_db=NanoVectorStore(os.path.join(rag_temp_dir, "entities.json"), 1536),
-        relationships_db=NanoVectorStore(os.path.join(rag_temp_dir, "relationships.json"), 1536),
+        embeddings_db=SqliteVectorStore(os.path.join(rag_temp_dir, "embeddings.json"), 1536),
+        entities_db=SqliteVectorStore(os.path.join(rag_temp_dir, "entities.json"), 1536),
+        relationships_db=SqliteVectorStore(os.path.join(rag_temp_dir, "relationships.json"), 1536),
         source_doc_map=SqliteMappingStore(db_path, "source_doc_map", "source", "doc_id"),
         doc_excerpt_map=SqliteMappingStore(db_path, "doc_excerpt_map", "doc_id", "excerpt_id"),
         doc_entity_map=SqliteMappingStore(db_path, "doc_entity_map", "doc_id", "entity_id"),
@@ -41,6 +41,8 @@ def test_rag(rag_temp_dir, mock_openai_llm):
         excerpt_size=500,
         overlap=50,
     )
+    yield rag
+    await rag.close()
 
 
 class TestIngestText:

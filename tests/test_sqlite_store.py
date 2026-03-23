@@ -7,10 +7,11 @@ from app.sqlite_store import SqliteKvStore
 
 
 @pytest.fixture
-def sqlite_kv(temp_dir):
+async def sqlite_kv(temp_dir):
     db_path = os.path.join(temp_dir, "test.db")
     store = SqliteKvStore(db_path, "test_table")
     yield store
+    await store.close()
 
 
 class TestSqliteKvStoreBaseline:

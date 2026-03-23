@@ -5,12 +5,11 @@ import pytest
 
 pytest.importorskip("nltk")
 
-import rebuild_rag
 from app.graph_store import NetworkXGraphStore
 from app.sqlite_store import SqliteKvStore
 from app.sqlite_mapping_store import SqliteMappingStore
 from app.smol_rag import SmolRag
-from app.vector_store import NanoVectorStore
+from app.vector_store import SqliteVectorStore
 
 
 def _build_rag(temp_dir, llm):
@@ -18,9 +17,9 @@ def _build_rag(temp_dir, llm):
     return SmolRag(
         llm=llm,
         excerpt_fn=lambda text, _size, _overlap: [text],
-        embeddings_db=NanoVectorStore(os.path.join(temp_dir, "embeddings"), dimensions=1536),
-        entities_db=NanoVectorStore(os.path.join(temp_dir, "entities"), dimensions=1536),
-        relationships_db=NanoVectorStore(os.path.join(temp_dir, "relationships"), dimensions=1536),
+        embeddings_db=SqliteVectorStore(os.path.join(temp_dir, "embeddings"), dimensions=1536),
+        entities_db=SqliteVectorStore(os.path.join(temp_dir, "entities"), dimensions=1536),
+        relationships_db=SqliteVectorStore(os.path.join(temp_dir, "relationships"), dimensions=1536),
         source_doc_map=SqliteMappingStore(db_path, "source_doc_map", "source", "doc_id"),
         doc_excerpt_map=SqliteMappingStore(db_path, "doc_excerpt_map", "doc_id", "excerpt_id"),
         doc_entity_map=SqliteMappingStore(db_path, "doc_entity_map", "doc_id", "entity_id"),
@@ -77,56 +76,3 @@ async def test_import_documents_reprocesses_changed_source(temp_dir, mock_openai
     rag._extract_entities.assert_awaited_once()
 
 
-class _FakeRag:
-    def __init__(self):
-        self.import_called = False
-        self.queries = []
-
-    async def import_documents(self):
-        self.import_called = True
-
-    async def query(self, text):
-        self.queries.append(text)
-        return "ok"
-
-
-@pytest.mark.asyncio
-async def test_rebuild_main_keep_existing_does_not_wipe_state(temp_dir, monkeypatch):
-    state_files = [os.path.join(temp_dir, "a.json"), os.path.join(temp_dir, "b.json")]
-    for path in state_files:
-        with open(path, "w") as f:
-            f.write("state")
-
-    created = []
-
-    def fake_ctor():
-        rag = _FakeRag()
-        created.append(rag)
-        return rag
-
-    monkeypatch.setattr(rebuild_rag, "STATE_FILES", state_files)
-    monkeypatch.setattr(rebuild_rag, "create_smol_rag", fake_ctor)
-
-    exit_code = await rebuild_rag.main(wipe=False)
-
-    assert exit_code == 0
-    assert len(created) == 1
-    assert created[0].import_called is True
-    assert len(created[0].queries) == 3
-    assert all(os.path.exists(path) for path in state_files)
-
-
-@pytest.mark.asyncio
-async def test_rebuild_main_wipe_removes_state(temp_dir, monkeypatch):
-    state_files = [os.path.join(temp_dir, "a.json"), os.path.join(temp_dir, "b.json")]
-    for path in state_files:
-        with open(path, "w") as f:
-            f.write("state")
-
-    monkeypatch.setattr(rebuild_rag, "STATE_FILES", state_files)
-    monkeypatch.setattr(rebuild_rag, "create_smol_rag", lambda: _FakeRag())
-
-    exit_code = await rebuild_rag.main(wipe=True)
-
-    assert exit_code == 0
-    assert all(not os.path.exists(path) for path in state_files)

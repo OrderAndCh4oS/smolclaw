@@ -16,9 +16,6 @@ SQLITE_DB_PATH = os.path.join(DATA_DIR, "smolclaw.db")
 EMBEDDINGS_TABLE = "embeddings"
 ENTITIES_TABLE = "entities"
 RELATIONSHIPS_TABLE = "relationships"
-LEGACY_EMBEDDINGS_DB = os.path.join(DATA_DIR, "embeddings_db.json")
-LEGACY_ENTITIES_DB = os.path.join(DATA_DIR, "entities_db.json")
-LEGACY_RELATIONSHIPS_DB = os.path.join(DATA_DIR, "relationships_db.json")
 KG_DB = os.path.join(DATA_DIR, "kg_db.graphml")
 
 KG_SEP = ":|:"

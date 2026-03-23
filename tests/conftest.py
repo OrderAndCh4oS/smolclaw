@@ -11,7 +11,7 @@ import numpy as np
 from app.graph_store import NetworkXGraphStore
 from app.sqlite_store import SqliteKvStore
 from app.sqlite_mapping_store import SqliteMappingStore
-from app.vector_store import NanoVectorStore
+from app.vector_store import SqliteVectorStore
 
 
 @pytest.fixture
@@ -44,8 +44,8 @@ def graph_store(temp_graph_path):
 
 @pytest.fixture
 def vector_store(temp_vector_db_path):
-    """Create a NanoVectorStore instance for testing."""
-    store = NanoVectorStore(temp_vector_db_path, dimensions=1536)
+    """Create a SqliteVectorStore instance for testing."""
+    store = SqliteVectorStore(temp_vector_db_path, dimensions=1536)
     yield store
 
 

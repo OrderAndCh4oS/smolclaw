@@ -196,6 +196,3 @@ class SqliteVectorStore:
                 await self._db.close()
                 self._db = None
                 self._loaded = False
-
-
-NanoVectorStore = SqliteVectorStore

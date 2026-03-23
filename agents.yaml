@@ -15,6 +15,7 @@ agents:
       - memory_store
       - memory_relate
       - memory_recall
+      - contradiction_review
       - read_file
       - write_file
       - edit_file

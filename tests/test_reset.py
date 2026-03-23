@@ -17,11 +17,6 @@ def data_dir(temp_dir):
     (d / "smolclaw.db-wal").write_text("wal")
     (d / "smolclaw.db-shm").write_text("shm")
 
-    # Vector / entity JSON stores
-    (d / "embeddings_db.json").write_text("{}")
-    (d / "entities_db.json").write_text("{}")
-    (d / "relationships_db.json").write_text("{}")
-
     # Knowledge graph
     (d / "kg_db.graphml").write_text("<graphml/>")
 
@@ -47,11 +42,6 @@ async def test_reset_deletes_all_stores(data_dir):
     assert not (d / "smolclaw.db").exists()
     assert not (d / "smolclaw.db-wal").exists()
     assert not (d / "smolclaw.db-shm").exists()
-
-    # JSON stores gone
-    assert not (d / "embeddings_db.json").exists()
-    assert not (d / "entities_db.json").exists()
-    assert not (d / "relationships_db.json").exists()
 
     # Graph gone
     assert not (d / "kg_db.graphml").exists()

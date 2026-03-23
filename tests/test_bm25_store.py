@@ -7,9 +7,11 @@ from app.bm25_store import BM25Store
 
 
 @pytest.fixture
-def bm25(temp_dir):
+async def bm25(temp_dir):
     db_path = os.path.join(temp_dir, "test.db")
-    return BM25Store(db_path, "bm25_test")
+    store = BM25Store(db_path, "bm25_test")
+    yield store
+    await store.close()
 
 
 class TestBM25StoreBaseline:

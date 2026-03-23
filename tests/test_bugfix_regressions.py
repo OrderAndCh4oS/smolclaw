@@ -8,7 +8,7 @@ import pytest
 from app.openai_llm import OpenAiLlm
 from app.sqlite_store import SqliteKvStore
 from app.sqlite_mapping_store import SqliteMappingStore
-from app.vector_store import NanoVectorStore
+from app.vector_store import SqliteVectorStore
 from app.graph_store import NetworkXGraphStore
 from app.utilities import make_hash
 from app.definitions import KG_SEP
@@ -87,9 +87,9 @@ def _build_rag(temp_dir, llm, excerpt_fn=None):
     return SmolRag(
         llm=llm,
         excerpt_fn=excerpt_fn,
-        embeddings_db=NanoVectorStore(os.path.join(temp_dir, "embeddings"), dimensions=1536),
-        entities_db=NanoVectorStore(os.path.join(temp_dir, "entities"), dimensions=1536),
-        relationships_db=NanoVectorStore(os.path.join(temp_dir, "relationships"), dimensions=1536),
+        embeddings_db=SqliteVectorStore(os.path.join(temp_dir, "embeddings"), dimensions=1536),
+        entities_db=SqliteVectorStore(os.path.join(temp_dir, "entities"), dimensions=1536),
+        relationships_db=SqliteVectorStore(os.path.join(temp_dir, "relationships"), dimensions=1536),
         source_doc_map=SqliteMappingStore(db_path, "source_doc_map", "source", "doc_id"),
         doc_excerpt_map=SqliteMappingStore(db_path, "doc_excerpt_map", "doc_id", "excerpt_id"),
         doc_entity_map=SqliteMappingStore(db_path, "doc_entity_map", "doc_id", "entity_id"),
@@ -153,6 +153,7 @@ class TestRuntimeRegressions:
 
         result = await rag.hybrid_kg_query("what is this?")
         assert result == "final response"
+        await rag.close()
 
     @pytest.mark.asyncio
     async def test_entities_from_relationships_handles_missing_nodes(self, temp_dir, mock_openai_llm):
@@ -162,6 +163,7 @@ class TestRuntimeRegressions:
         dataset = [{"src_tgt": ("A", "B"), "rank": 1, "description": "edge", "keywords": "k", "weight": 1.0}]
         entities = rag._get_entities_from_relationships(dataset)
         assert entities == []
+        await rag.close()
 
     @pytest.mark.asyncio
     async def test_import_update_removes_then_reindexes_without_excerpt_loss(self, temp_dir, mock_openai_llm):
@@ -196,6 +198,7 @@ class TestRuntimeRegressions:
 
         assert shared_excerpt_id in excerpt_ids
         assert await rag.excerpt_kv.get_by_key(shared_excerpt_id) is not None
+        await rag.close()
 
     @pytest.mark.asyncio
     async def test_low_level_dataset_skips_stale_entity_rows(self, temp_dir, mock_openai_llm):
@@ -209,6 +212,7 @@ class TestRuntimeRegressions:
         assert ll_dataset == []
         assert ll_excerpts == []
         assert ll_relations == []
+        await rag.close()
 
     @pytest.mark.asyncio
     async def test_high_level_dataset_skips_stale_relationship_rows(self, temp_dir, mock_openai_llm):
@@ -222,6 +226,7 @@ class TestRuntimeRegressions:
         assert hl_dataset == []
         assert hl_entities == []
         assert hl_excerpts == []
+        await rag.close()
 
     @pytest.mark.asyncio
     async def test_mix_query_keeps_metadata_only_session_content_for_episode_recall(self, temp_dir, mock_openai_llm):
@@ -241,6 +246,7 @@ class TestRuntimeRegressions:
         context = rag.rate_limited_get_completion.await_args_list[1].kwargs["context"]
         assert "user: shipped the feature" in context
         assert "pricing decision" not in context
+        await rag.close()
 
     @pytest.mark.asyncio
     async def test_remove_document_removes_orphaned_kg_entries(self, temp_dir, mock_openai_llm):
@@ -289,6 +295,7 @@ class TestRuntimeRegressions:
         assert await rag.relationships_db.get([relationship_id]) == []
         assert rag.graph.get_node(entity_name) is None
         assert rag.graph.get_edge((entity_name, "EntityPeer")) is None
+        await rag.close()
 
     @pytest.mark.asyncio
     async def test_remove_document_prunes_shared_entity_excerpt_ids(self, temp_dir, mock_openai_llm):
@@ -333,6 +340,7 @@ class TestRuntimeRegressions:
         remaining_docs = await rag.doc_entity_map.get_by_right(entity_id)
         assert remaining_docs == [doc_b]
         assert len(await rag.entities_db.get([entity_id])) == 1
+        await rag.close()
 
     @pytest.mark.asyncio
     async def test_cleanup_entity_retains_node_when_excerpt_ids_overlap(self, temp_dir, mock_openai_llm):
@@ -369,6 +377,7 @@ class TestRuntimeRegressions:
         remaining_docs = await rag.doc_entity_map.get_by_right(entity_id)
         assert remaining_docs == [doc_b]
         assert len(await rag.entities_db.get([entity_id])) == 1
+        await rag.close()
 
     @pytest.mark.asyncio
     async def test_cleanup_relationship_retains_edge_when_excerpt_ids_overlap(self, temp_dir, mock_openai_llm):
@@ -409,6 +418,7 @@ class TestRuntimeRegressions:
         remaining_docs = await rag.doc_relationship_map.get_by_right(relationship_id)
         assert remaining_docs == [doc_b]
         assert len(await rag.relationships_db.get([relationship_id])) == 1
+        await rag.close()
 
     @pytest.mark.asyncio
     async def test_track_kg_provenance_serializes_shared_id_updates(self, temp_dir, mock_openai_llm):
@@ -434,6 +444,7 @@ class TestRuntimeRegressions:
         assert doc_b_entities == [shared_entity_id]
         assert doc_a_relationships == [shared_relationship_id]
         assert doc_b_relationships == [shared_relationship_id]
+        await rag.close()
 
     @pytest.mark.asyncio
     async def test_remove_document_serializes_shared_provenance_pruning(self, temp_dir, mock_openai_llm):
@@ -463,3 +474,4 @@ class TestRuntimeRegressions:
         assert await rag.doc_entity_map.get_by_right(entity_id) == []
         assert await rag.entities_db.get([entity_id]) == []
         assert rag.graph.get_node(entity_name) is None
+        await rag.close()
