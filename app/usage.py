@@ -58,6 +58,7 @@ class TurnUsage:
 class SessionUsage:
     session_key: str
     started_at: float = field(default_factory=time.time)
+    ended_at: float = 0.0
     turns: list = field(default_factory=list)
     background_calls: list = field(default_factory=list)
 
@@ -104,6 +105,7 @@ class SessionUsage:
         return {
             "session_key": self.session_key,
             "started_at": self.started_at,
+            "ended_at": self.ended_at,
             "totals": {
                 "prompt_tokens": self.total_prompt_tokens,
                 "completion_tokens": self.total_completion_tokens,

@@ -207,7 +207,8 @@ class AgentLoop:
                 })
 
                 started_at = time.perf_counter()
-                tool_result = await self.tool_registry.execute(name, arguments)
+                with self._usage_collector.category("context_retrieval"):
+                    tool_result = await self.tool_registry.execute(name, arguments)
                 tool_duration_ms = int((time.perf_counter() - started_at) * 1000)
                 turn.tool_duration_ms += tool_duration_ms
                 ok = not str(tool_result).startswith("Error:")
@@ -265,6 +266,7 @@ class AgentLoop:
         try:
             # Drain any remaining usage from background hooks
             self.session_usage.background_calls.extend(self._usage_collector.drain())
+            self.session_usage.ended_at = time.time()
             await self.hook_runner.fire(ON_SESSION_END, {
                 "session_key": self.session.key,
                 "session": self.session,

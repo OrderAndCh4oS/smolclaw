@@ -99,11 +99,14 @@ class TestSessionUsage:
 
     def test_summary_dict(self):
         su = SessionUsage(session_key="test")
+        su.ended_at = su.started_at + 5.0
         turn = TurnUsage(iteration=0)
         turn.llm_calls.append(_make_record(total=100, prompt=60, completion=40, duration=500))
         su.turns.append(turn)
         d = su.summary_dict()
         assert d["session_key"] == "test"
+        assert d["started_at"] > 0
+        assert d["ended_at"] == d["started_at"] + 5.0
         assert d["totals"]["total_tokens"] == 100
         assert d["totals"]["llm_calls"] == 1
         assert len(d["turns"]) == 1
