@@ -1,4 +1,5 @@
 import json
+import time
 from typing import Any, Dict, List, Optional
 
 import os
@@ -26,6 +27,24 @@ class OpenAiLlm:
         self.embedding_cache_kv = embedding_cache_kv or SqliteKvStore(SQLITE_DB_PATH, "embedding_cache")
         self.completion_model = completion_model or COMPLETION_MODEL
         self.embedding_model = embedding_model or EMBEDDING_MODEL
+        self.usage_collector = None
+
+    def _record_usage(self, operation: str, model: str, prompt_tokens: int,
+                       completion_tokens: int, total_tokens: int, duration_ms: int, cached: bool = False):
+        if self.usage_collector is None:
+            return
+        from app.usage import LlmUsageRecord
+        self.usage_collector.record(LlmUsageRecord(
+            timestamp=time.time(),
+            category="unknown",
+            operation=operation,
+            model=model or self.completion_model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            duration_ms=duration_ms,
+            cached=cached,
+        ))
 
     def _get_query_cache_key(self, query: str, model: str, context: str) -> str:
         key_payload = {
@@ -58,6 +77,7 @@ class OpenAiLlm:
         if use_cache and await self.query_cache_kv.has(query_hash):
             logger.info("Query cache hit")
             cache_data = await self.query_cache_kv.get_by_key(query_hash)
+            self._record_usage("completion", model, 0, 0, 0, 0, cached=True)
             return cache_data["result"]
 
         logger.info("New query")
@@ -65,12 +85,22 @@ class OpenAiLlm:
         messages: List[Dict[str, str]] = [{"role": "user", "content": query}]
 
         try:
+            started = time.perf_counter()
             response = self.client.chat.completions.create(
                 model=model,
                 store=True,
                 messages=system_message + messages
             )
+            duration_ms = int((time.perf_counter() - started) * 1000)
             result = response.choices[0].message.content
+            usage = getattr(response, "usage", None)
+            self._record_usage(
+                "completion", model,
+                getattr(usage, "prompt_tokens", 0),
+                getattr(usage, "completion_tokens", 0),
+                getattr(usage, "total_tokens", 0),
+                duration_ms,
+            )
         except Exception as e:
             logger.error(f"Error getting completion: {e}")
             raise
@@ -104,9 +134,19 @@ class OpenAiLlm:
             kwargs["tools"] = tools
 
         try:
+            started = time.perf_counter()
             response = self.client.chat.completions.create(**kwargs)
+            duration_ms = int((time.perf_counter() - started) * 1000)
             message = response.choices[0].message
             tool_calls = message.tool_calls
+            usage = getattr(response, "usage", None)
+            self._record_usage(
+                "tool_completion", model,
+                getattr(usage, "prompt_tokens", 0),
+                getattr(usage, "completion_tokens", 0),
+                getattr(usage, "total_tokens", 0),
+                duration_ms,
+            )
             return {
                 "content": message.content,
                 "tool_calls": [
@@ -137,14 +177,24 @@ class OpenAiLlm:
         if await self.embedding_cache_kv.has(content_hash):
             logger.info("Embedding cache hit")
             embedding = await self.embedding_cache_kv.get_by_key(content_hash)
+            self._record_usage("embedding", model, 0, 0, 0, 0, cached=True)
         else:
             logger.info("New embedding")
             try:
+                started = time.perf_counter()
                 response = self.client.embeddings.create(
                     model=model,
                     input=content,
                 )
+                duration_ms = int((time.perf_counter() - started) * 1000)
                 embedding = response.data[0].embedding
+                usage = getattr(response, "usage", None)
+                self._record_usage(
+                    "embedding", model,
+                    getattr(usage, "prompt_tokens", 0), 0,
+                    getattr(usage, "total_tokens", 0),
+                    duration_ms,
+                )
             except Exception as e:
                 logger.error(f"Error getting embedding: {e}")
                 raise
@@ -181,10 +231,12 @@ class OpenAiLlm:
         if uncached_contents:
             logger.info(f"Fetching {len(uncached_contents)} new embeddings in batch")
             try:
+                started = time.perf_counter()
                 response = self.client.embeddings.create(
                     model=model,
                     input=[content for content, _ in uncached_contents],
                 )
+                duration_ms = int((time.perf_counter() - started) * 1000)
 
                 # Store new embeddings in cache and result
                 for idx, (content, content_hash), embedding_data in zip(
@@ -194,11 +246,19 @@ class OpenAiLlm:
                     embeddings[idx] = embedding
                     await self.embedding_cache_kv.add(content_hash, embedding)
 
+                usage = getattr(response, "usage", None)
+                self._record_usage(
+                    "embeddings", model,
+                    getattr(usage, "prompt_tokens", 0), 0,
+                    getattr(usage, "total_tokens", 0),
+                    duration_ms,
+                )
             except Exception as e:
                 logger.error(f"Error getting batch embeddings: {e}")
                 raise
         else:
             logger.info(f"All {len(contents)} embeddings served from cache")
+            self._record_usage("embeddings", model, 0, 0, 0, 0, cached=True)
 
         return embeddings
 

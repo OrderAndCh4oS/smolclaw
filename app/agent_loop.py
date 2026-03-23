@@ -9,6 +9,7 @@ from app.hooks import HookRunner, ON_SESSION_START, ON_BEFORE_TURN, ON_AFTER_TUR
 from app.logger import logger
 from app.session import Session, SessionManager
 from app.tools.registry import ToolRegistry
+from app.usage import UsageCollector, SessionUsage, TurnUsage
 
 
 class AgentLoop:
@@ -37,6 +38,8 @@ class AgentLoop:
         self._session_started = False
         self._owned_resources = []
         self._closed = False
+        self.session_usage = SessionUsage(session_key=session.key)
+        self._usage_collector = UsageCollector()
 
     @staticmethod
     def _truncate_text(value: str, limit: int = 80) -> str:
@@ -93,6 +96,11 @@ class AgentLoop:
     ) -> str:
         if not self._session_started:
             self._session_started = True
+            # Wire usage collector to LLM(s)
+            if hasattr(self.llm, "usage_collector"):
+                self.llm.usage_collector = self._usage_collector
+            if self.smol_rag and hasattr(getattr(self.smol_rag, "llm", None), "usage_collector"):
+                self.smol_rag.llm.usage_collector = self._usage_collector
             await self.hook_runner.fire(ON_SESSION_START, {
                 "session_key": self.session.key,
             })
@@ -126,10 +134,31 @@ class AgentLoop:
                 "user_content": user_content,
             })
 
-            result = await self.llm.get_tool_completion(
-                messages=messages,
-                tools=tools,
-            )
+            turn = TurnUsage(iteration=iteration)
+
+            await self._emit_event(on_event, {
+                "type": "llm", "phase": "start", "iteration": iteration,
+            })
+
+            with self._usage_collector.category("agent_turn"):
+                llm_started = time.perf_counter()
+                result = await self.llm.get_tool_completion(
+                    messages=messages,
+                    tools=tools,
+                )
+                llm_duration_ms = int((time.perf_counter() - llm_started) * 1000)
+
+            llm_records = self._usage_collector.drain()
+            turn.llm_calls.extend(llm_records)
+
+            await self._emit_event(on_event, {
+                "type": "llm", "phase": "end", "iteration": iteration,
+                "duration_ms": llm_duration_ms,
+                "prompt_tokens": sum(r.prompt_tokens for r in llm_records),
+                "completion_tokens": sum(r.completion_tokens for r in llm_records),
+                "total_tokens": sum(r.total_tokens for r in llm_records),
+                "model": getattr(self.llm, "completion_model", "unknown"),
+            })
 
             if not result["has_tool_calls"]:
                 content = result["content"] or ""
@@ -137,6 +166,8 @@ class AgentLoop:
                     await on_output(content)
                 self.session.add_message({"role": "assistant", "content": content})
                 self.session_manager.save(self.session)
+
+                self.session_usage.turns.append(turn)
 
                 await self.hook_runner.fire(ON_AFTER_TURN, {
                     "iteration": iteration,
@@ -177,7 +208,8 @@ class AgentLoop:
 
                 started_at = time.perf_counter()
                 tool_result = await self.tool_registry.execute(name, arguments)
-                duration_ms = int((time.perf_counter() - started_at) * 1000)
+                tool_duration_ms = int((time.perf_counter() - started_at) * 1000)
+                turn.tool_duration_ms += tool_duration_ms
                 ok = not str(tool_result).startswith("Error:")
                 await self._emit_event(on_event, {
                     "type": "tool",
@@ -187,7 +219,7 @@ class AgentLoop:
                     "arguments": arguments,
                     "summary": summary,
                     "ok": ok,
-                    "duration_ms": duration_ms,
+                    "duration_ms": tool_duration_ms,
                     "result_preview": self.summarize_tool_result(tool_result),
                 })
                 messages.append({
@@ -195,6 +227,12 @@ class AgentLoop:
                     "tool_call_id": tool_call["id"],
                     "content": tool_result,
                 })
+
+            # Drain any usage from tool-initiated LLM calls (e.g. memory search context retrieval)
+            tool_llm_records = self._usage_collector.drain()
+            turn.llm_calls.extend(tool_llm_records)
+
+            self.session_usage.turns.append(turn)
 
             await self.hook_runner.fire(ON_AFTER_TURN, {
                 "iteration": iteration,
@@ -225,9 +263,12 @@ class AgentLoop:
         self._closed = True
 
         try:
+            # Drain any remaining usage from background hooks
+            self.session_usage.background_calls.extend(self._usage_collector.drain())
             await self.hook_runner.fire(ON_SESSION_END, {
                 "session_key": self.session.key,
                 "session": self.session,
+                "usage": self.session_usage,
             })
         finally:
             seen = set()
@@ -266,8 +307,10 @@ class AgentLoop:
 
         if text_parts:
             raw_text = "\n".join(text_parts)
-            summary = await self._summarize_for_consolidation(raw_text)
-            await self.smol_rag.ingest_text(summary, source_id=f"session-{self.session.key}")
+            with self._usage_collector.category("consolidation"):
+                summary = await self._summarize_for_consolidation(raw_text)
+                await self.smol_rag.ingest_text(summary, source_id=f"session-{self.session.key}")
+            self.session_usage.background_calls.extend(self._usage_collector.drain())
 
         self.session.last_consolidated = end
 

@@ -318,7 +318,10 @@ class TestCliMultiagent:
             session_manager,
             False,
         )
-        assert ON_SESSION_END not in fake_agent.hook_runner.events
+        # Usage persist hook is always registered; export hooks only when auto_export=True
+        assert ON_SESSION_END in fake_agent.hook_runner.events
+        # Only 1 hook (UsagePersistHook), not the export/decay/contradiction hooks
+        assert len(fake_agent.hook_runner._hooks[ON_SESSION_END]) == 1
         fake_agent.close.assert_awaited_once()
 
     @pytest.mark.asyncio

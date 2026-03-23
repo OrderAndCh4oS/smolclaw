@@ -153,7 +153,7 @@ class TestGatewayProtocol:
     @pytest.mark.asyncio
     async def test_chat_send_on_output_streams_messages(self, wired_gateway, fake_ws):
         """Mock agent calling on_output twice -> two agent.message events before lifecycle end."""
-        async def fake_process(message, on_output=None):
+        async def fake_process(message, on_output=None, on_event=None):
             if on_output:
                 await on_output("chunk 1")
                 await on_output("chunk 2")

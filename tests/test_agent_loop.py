@@ -426,11 +426,17 @@ class TestAgentLoop:
         result = await loop.process("do echo", on_event=capture_event)
 
         assert result == "done"
-        assert len(events) == 2
-        assert events[0]["type"] == "tool"
-        assert events[0]["phase"] == "start"
-        assert events[0]["name"] == "echo"
-        assert "text=hi" in events[0]["summary"]
-        assert events[1]["phase"] == "end"
-        assert events[1]["ok"] is True
-        assert events[1]["duration_ms"] >= 0
+        tool_events = [e for e in events if e.get("type") == "tool"]
+        llm_events = [e for e in events if e.get("type") == "llm"]
+        assert len(tool_events) == 2
+        assert tool_events[0]["phase"] == "start"
+        assert tool_events[0]["name"] == "echo"
+        assert "text=hi" in tool_events[0]["summary"]
+        assert tool_events[1]["phase"] == "end"
+        assert tool_events[1]["ok"] is True
+        assert tool_events[1]["duration_ms"] >= 0
+        # LLM events should also be emitted (start + end per iteration)
+        assert len(llm_events) >= 2
+        assert llm_events[0]["phase"] == "start"
+        assert llm_events[1]["phase"] == "end"
+        assert "total_tokens" in llm_events[1]

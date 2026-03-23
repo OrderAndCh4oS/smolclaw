@@ -13,6 +13,19 @@ class CompositeLlm:
     def completion_model(self):
         return self.completion_provider.completion_model
 
+    @property
+    def usage_collector(self):
+        return getattr(self.completion_provider, "usage_collector", None)
+
+    @usage_collector.setter
+    def usage_collector(self, collector):
+        if hasattr(self.completion_provider, "usage_collector"):
+            self.completion_provider.usage_collector = collector
+        if (self.embedding_provider
+                and self.embedding_provider is not self.completion_provider
+                and hasattr(self.embedding_provider, "usage_collector")):
+            self.embedding_provider.usage_collector = collector
+
     async def get_completion(self, *args, **kwargs) -> str:
         return await self.completion_provider.get_completion(*args, **kwargs)
 

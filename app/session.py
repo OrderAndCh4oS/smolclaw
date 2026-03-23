@@ -55,3 +55,15 @@ class SessionManager:
         for line in lines[1:]:
             session.messages.append(json.loads(line))
         return session
+
+    def save_usage(self, session_key: str, usage_data: dict):
+        path = os.path.join(self.sessions_dir, f"{session_key}.usage.json")
+        with open(path, "w") as f:
+            json.dump(usage_data, f, indent=2)
+
+    def load_usage(self, session_key: str) -> Optional[dict]:
+        path = os.path.join(self.sessions_dir, f"{session_key}.usage.json")
+        if not os.path.exists(path):
+            return None
+        with open(path) as f:
+            return json.load(f)

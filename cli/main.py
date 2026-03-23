@@ -106,7 +106,18 @@ async def _close_async_resource(resource):
 
 
 def _format_action_event(event: dict) -> str | None:
-    if event.get("type") != "tool":
+    event_type = event.get("type")
+
+    if event_type == "llm":
+        if event.get("phase") == "start":
+            return "thinking..."
+        if event.get("phase") == "end":
+            duration_s = max(0, event.get("duration_ms", 0)) / 1000
+            tokens = event.get("total_tokens", 0)
+            return f"thought: {tokens:,} tokens ({duration_s:.1f}s)"
+        return None
+
+    if event_type != "tool":
         return None
 
     name = event.get("name", "tool")
@@ -123,6 +134,31 @@ def _format_action_event(event: dict) -> str | None:
         return f"failed: {name} ({duration_s:.1f}s) - {result_preview}"
 
     return None
+
+
+def _print_usage_summary(console, session_usage):
+    from app.usage import SessionUsage
+    if not isinstance(session_usage, SessionUsage) or not session_usage.turns:
+        return
+    console.print()
+    console.print("[bold]Session Usage[/bold]")
+    console.print(
+        f"  Tokens: {session_usage.total_tokens:,} "
+        f"(prompt: {session_usage.total_prompt_tokens:,}, "
+        f"completion: {session_usage.total_completion_tokens:,})"
+    )
+    console.print(
+        f"  LLM time: {session_usage.total_duration_ms / 1000:.1f}s "
+        f"across {len(session_usage.turns)} turn(s)"
+    )
+    by_cat = session_usage.by_category()
+    if len(by_cat) > 1:
+        for cat, data in sorted(by_cat.items(), key=lambda x: x[1]["total_tokens"], reverse=True):
+            console.print(
+                f"    {cat}: {data['total_tokens']:,} tokens "
+                f"({data['count']} call{'s' if data['count'] != 1 else ''}, "
+                f"{data['duration_ms'] / 1000:.1f}s)"
+            )
 
 
 def _build_cli_tool_registry(smol_rag: SmolRag, workspace: str, llm=None):
@@ -276,8 +312,12 @@ async def _chat_loop(
         memory_dir=ensure_dir(MEMORY_DOCS_DIR),
     )
 
+    from app.hooks import ON_SESSION_END
+    from app.usage import UsagePersistHook
+
+    agent.hook_runner.on(ON_SESSION_END, UsagePersistHook(SESSIONS_DIR))
+
     if auto_export:
-        from app.hooks import ON_SESSION_END
         from app.lifecycle_hooks import MemoryDecayHook, ContradictionExpiryHook
 
         agent.hook_runner.on(
@@ -360,6 +400,7 @@ async def _chat_loop(
                 console.print("[dim]Session exported.[/dim]")
             else:
                 await agent.close()
+            _print_usage_summary(console, agent.session_usage)
         finally:
             await _close_async_resource(smol_rag)
 

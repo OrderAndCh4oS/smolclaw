@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 import anthropic
@@ -19,6 +20,24 @@ class AnthropicLlm:
         self.client = anthropic.Anthropic(api_key=api_key)
         self.query_cache_kv = query_cache_kv or SqliteKvStore(SQLITE_DB_PATH, "query_cache")
         self.completion_model = completion_model or COMPLETION_MODEL
+        self.usage_collector = None
+
+    def _record_usage(self, operation: str, model: str, prompt_tokens: int,
+                       completion_tokens: int, total_tokens: int, duration_ms: int, cached: bool = False):
+        if self.usage_collector is None:
+            return
+        from app.usage import LlmUsageRecord
+        self.usage_collector.record(LlmUsageRecord(
+            timestamp=time.time(),
+            category="unknown",
+            operation=operation,
+            model=model or self.completion_model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            duration_ms=duration_ms,
+            cached=cached,
+        ))
 
     def _get_query_cache_key(self, query: str, model: str, context: str) -> str:
         key_payload = {
@@ -35,6 +54,7 @@ class AnthropicLlm:
         if use_cache and await self.query_cache_kv.has(query_hash):
             logger.info("Query cache hit")
             cache_data = await self.query_cache_kv.get_by_key(query_hash)
+            self._record_usage("completion", model, 0, 0, 0, 0, cached=True)
             return cache_data["result"]
 
         logger.info("New query")
@@ -47,8 +67,18 @@ class AnthropicLlm:
             kwargs["system"] = context
 
         try:
+            started = time.perf_counter()
             response = self.client.messages.create(**kwargs)
+            duration_ms = int((time.perf_counter() - started) * 1000)
             result = response.content[0].text
+            usage = getattr(response, "usage", None)
+            input_tokens = getattr(usage, "input_tokens", 0)
+            output_tokens = getattr(usage, "output_tokens", 0)
+            self._record_usage(
+                "completion", model,
+                input_tokens, output_tokens, input_tokens + output_tokens,
+                duration_ms,
+            )
         except Exception as e:
             logger.error(f"Error getting completion: {e}")
             raise
@@ -83,7 +113,17 @@ class AnthropicLlm:
             kwargs["tools"] = anthropic_tools
 
         try:
+            started = time.perf_counter()
             response = self.client.messages.create(**kwargs)
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            usage = getattr(response, "usage", None)
+            input_tokens = getattr(usage, "input_tokens", 0)
+            output_tokens = getattr(usage, "output_tokens", 0)
+            self._record_usage(
+                "tool_completion", model,
+                input_tokens, output_tokens, input_tokens + output_tokens,
+                duration_ms,
+            )
             return self._normalize_response(response)
         except Exception as e:
             logger.error(f"Error getting tool completion: {e}")

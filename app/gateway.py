@@ -161,7 +161,16 @@ class Gateway:
                     "payload": {"content": content, "runId": run_id},
                 }))
 
-            response = await agent.process(message, on_output=on_output)
+            async def on_event(event: dict):
+                event_type = event.get("type")
+                if event_type in ("llm", "tool"):
+                    await websocket.send(json.dumps({
+                        "type": "event",
+                        "event": "agent.activity",
+                        "payload": {**event, "runId": run_id, "sessionKey": session_key},
+                    }))
+
+            response = await agent.process(message, on_output=on_output, on_event=on_event)
 
             # Send final response
             await websocket.send(json.dumps({
@@ -170,13 +179,17 @@ class Gateway:
                 "payload": {"content": response, "runId": run_id, "final": True},
             }))
 
-            # Emit lifecycle end
+            # Emit lifecycle end with usage
+            usage_summary = None
+            from app.usage import SessionUsage
+            if isinstance(getattr(agent, "session_usage", None), SessionUsage):
+                usage_summary = agent.session_usage.summary_dict()
             await websocket.send(json.dumps({
                 "type": "event",
                 "event": "agent",
                 "payload": {
                     "stream": "lifecycle",
-                    "data": {"phase": "end"},
+                    "data": {"phase": "end", "usage": usage_summary},
                     "runId": run_id,
                     "sessionKey": session_key,
                 },
@@ -231,6 +244,8 @@ class Gateway:
             session_manager=self._session_manager,
             session_key=session_key,
         )
+        from app.usage import UsagePersistHook
+        agent.hook_runner.on(ON_SESSION_END, UsagePersistHook(SESSIONS_DIR))
         agent.hook_runner.on(ON_SESSION_END, SessionExportHook(
             smol_rag=self._smol_rag, llm=agent.llm, memory_dir=ensure_dir(MEMORY_DOCS_DIR),
         ))
