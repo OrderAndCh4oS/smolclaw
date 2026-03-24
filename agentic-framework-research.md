@@ -255,6 +255,101 @@ Privacy-first. Everything can run locally. No data leaves your machine if you us
 
 ---
 
+## Direct Agent Prompt Comparison
+
+Side-by-side comparison of the actual system prompts and identity files used by each framework.
+
+### Identity / Opening Line
+
+**OpenClaw** (SOUL.md template):
+> Be genuinely helpful, not performatively helpful. Skip the "Great question!" and "I'd be happy to help!" — just help.
+> Have opinions. You're allowed to disagree, prefer things, find stuff amusing or boring.
+> Be resourceful before asking. Try to figure it out. Read the file. Check the context. Search for it.
+
+**Claude Code** (main system prompt):
+> You are an interactive CLI tool that helps users with software engineering tasks.
+
+**NanoClaw** (CLAUDE.md):
+> NanoClaw is a personal Claude assistant built as a single Node.js orchestrator with a skill-based channel system. *(Focuses on architecture, not personality — delegates identity to the SDK.)*
+
+**OpenCode** (provider-specific prompt):
+> *(Assembles dynamically from environment block + AGENTS.md + provider template. No single static identity line — identity comes from configuration.)*
+
+**SmolClaw** (AGENT.md):
+> You are SmolClaw, an agentic assistant with deep, persistent, associative memory backed by a knowledge graph.
+
+### Reasoning / Methodology Instructions
+
+**OpenClaw** (from agent-prompts.md):
+- Research agent: "Gather, analyze, and synthesize information from multiple sources. Prioritize thorough source checking, cite sources with URLs, compare perspectives, identify information gaps."
+- Coordinator agent: "Break down complex tasks, delegate to specialists, and synthesize results."
+- Monitor agent: "Perform lightweight checks and report status without taking action. Use read-only operations preferentially."
+
+**Claude Code**:
+> You MUST answer concisely with fewer than 4 lines. Minimize output tokens as much as possible.
+> Search to understand the codebase, implement solutions, verify with tests, and run lint/typecheck commands before finishing.
+> NEVER assume that a given library is available — verify dependencies first.
+
+**NanoClaw**:
+> Run commands directly — don't tell the user to run them.
+> *(Minimal reasoning instructions — delegates to Claude SDK's built-in reasoning.)*
+
+**OpenCode**:
+> Advanced agents use a "chain-of-thought" reasoning step inspired by advanced prompting techniques, where the agent explicitly formulates a plan before acting.
+> *(Reasoning is architectural, not prompt-level — the ReAct loop is in code, not instructions.)*
+
+**SmolClaw** (AGENT.md + researcher.md):
+> Search before assuming. Check memory first, then the web. Don't guess when you can look it up.
+> Verify claims against sources. Cross-reference information when multiple sources are available. Flag contradictions.
+> Break complex questions into steps. Decompose multi-part questions. Answer each part, then synthesise.
+> Researcher methodology: Decompose → Search memory → Search web → Cross-reference → Synthesize → Verify → Store.
+
+### Tool Guidance Style
+
+**OpenClaw**: Tools defined in separate TOOLS.md. Agent-specific tool access via skills. No inline guidance in system prompt — tools are self-describing via MCP schema.
+
+**Claude Code**: 20 built-in tool descriptions embedded in the system prompt (~14-17K tokens of tool definitions). Highly specific — e.g. "Batch multiple independent tool calls together." Tells the agent to use specialized sub-agents (Plan, Explore, Task) for different work.
+
+**NanoClaw**: Tools added via skills. Four skill categories: feature skills, utility skills, operational skills, container skills. No centralized tool guidance — each skill is self-contained.
+
+**OpenCode**: Tools auto-validated with argument schemas. Output truncated to 2000 lines / 50KB. When output is truncated, the model is told to use Grep/Read or delegate to an explore agent.
+
+**SmolClaw** (AGENT.md Tool Selection section):
+> memory_search — Your first move for any knowledge question. Searches across vectors, knowledge graph, and full text.
+> web_search — When memory doesn't have the answer or you need current information.
+> *(Each tool gets a one-liner explaining when to use it and what it's for.)*
+
+### Style / Tone Guidance
+
+**OpenClaw** (SOUL.md):
+> Be the assistant you'd actually want to talk to. Concise when needed, thorough when it matters. Not a corporate drone. Not a sycophant.
+> No "it depends" — make a recommendation. Never say "Great question!"
+> Private information stays private. Ask before external communications.
+
+**Claude Code**:
+> Answer concisely with fewer than 4 lines. DO NOT ADD ANY COMMENTS unless asked.
+> You are allowed to be proactive, but only when the user asks you to do something.
+
+**NanoClaw**: No explicit tone guidance. Inherits from Claude SDK defaults.
+
+**OpenCode**: No explicit tone guidance. Provider-specific templates handle model quirks.
+
+**SmolClaw** (agents.yaml persona):
+> You are SmolClaw, an agentic assistant with deep, persistent, associative memory. You remember across sessions, classify what you learn, and build connections between concepts over time.
+> Use memory tools proactively — search before answering, store important facts and decisions. When you don't know something and can't find it in memory, say so.
+
+### Key Differences in Prompt Philosophy
+
+| Approach | Who | How |
+|----------|-----|-----|
+| **Personality-first** | OpenClaw | SOUL.md defines who you ARE. Values, opinions, style. Identity drives behavior. |
+| **Task-first** | Claude Code | Minimal identity. Heavy on execution instructions. "Do X, verify Y, minimize Z." |
+| **Architecture-first** | NanoClaw | Prompt is about the system, not the agent. Identity delegated to the SDK. |
+| **Configuration-first** | OpenCode | Identity comes from config files and provider templates, not a single prompt. |
+| **Memory-first** | SmolClaw | Identity centers on knowledge capabilities. Reasoning principles + tool selection. |
+
+---
+
 ## Agent Prompt & Configuration Comparison
 
 ### System Prompt Structure
