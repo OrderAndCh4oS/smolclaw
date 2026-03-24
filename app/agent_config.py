@@ -14,6 +14,8 @@ class AgentConfig:
     max_iterations: int = 15
     memory_window: int = 20
     timeout: int = 600
+    context_budget: int = 4000
+    reflection: bool = False
 
 
 class AgentConfigLoader:
@@ -32,6 +34,8 @@ class AgentConfigLoader:
                 max_iterations=entry.get("max_iterations", 15),
                 memory_window=entry.get("memory_window", 20),
                 timeout=entry.get("timeout", 600),
+                context_budget=entry.get("context_budget", 4000),
+                reflection=entry.get("reflection", False),
             )
             agents[config.name] = config
         return agents

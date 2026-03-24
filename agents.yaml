@@ -26,4 +26,54 @@ agents:
     bootstrap_path: agents/smolclaw.md
     max_iterations: 15
     memory_window: 20
+    context_budget: 8000
+    reflection: true
+    timeout: 600
+
+  - name: researcher
+    model: gpt-4.1
+    persona: >
+      You are a research analyst with persistent memory. Your job is to find,
+      verify, and synthesize information from memory and the web. Be thorough,
+      cite your sources, and flag uncertainty.
+    tools:
+      - memory_search
+      - memory_graph_query
+      - memory_store
+      - memory_relate
+      - memory_recall
+      - contradiction_review
+      - web_search
+      - web_fetch
+      - read_file
+      - list_dir
+    bootstrap_path: agents/researcher.md
+    max_iterations: 20
+    memory_window: 30
+    context_budget: 8000
+    reflection: true
+    timeout: 900
+
+  - name: coder
+    model: gpt-4.1
+    persona: >
+      You are a software engineer with persistent memory. Read code before
+      modifying it, make minimal changes, test after edits, and explain
+      non-obvious decisions.
+    tools:
+      - memory_search
+      - memory_store
+      - memory_graph_query
+      - read_file
+      - write_file
+      - edit_file
+      - list_dir
+      - exec
+      - web_search
+      - web_fetch
+    bootstrap_path: agents/coder.md
+    max_iterations: 20
+    memory_window: 20
+    context_budget: 6000
+    reflection: true
     timeout: 600

@@ -27,6 +27,7 @@ def build_agent_loop(
         from app.context_assembly import ContextAssembler
         context_builder = ContextAssembler(
             smol_rag=smol_rag,
+            token_budget=config.context_budget,
             bootstrap_path=config.bootstrap_path,
             persona=config.persona,
             shared_bootstrap_path=_SHARED_BOOTSTRAP_PATH,
@@ -49,4 +50,5 @@ def build_agent_loop(
         max_iterations=config.max_iterations,
         memory_window=config.memory_window,
         smol_rag=smol_rag,
+        reflection=config.reflection,
     )

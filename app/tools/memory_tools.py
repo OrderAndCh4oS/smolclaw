@@ -110,7 +110,12 @@ class MemorySearchTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Search memory using vector + knowledge graph retrieval. Optionally filter by memory type."
+        return (
+            "Search memory using hybrid retrieval (vector similarity + knowledge graph + full-text). "
+            "Best for broad questions, finding related concepts, or when you don't know the exact entity name. "
+            "Use this first when answering questions — check what you already know before searching the web. "
+            "Supports filtering by memory_type (fact, decision, preference, episode, task, journal, reference)."
+        )
 
     @property
     def parameters(self) -> dict:
@@ -145,7 +150,11 @@ class MemoryGraphQueryTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Query the knowledge graph for a specific entity and its relationships."
+        return (
+            "Look up a specific entity in the knowledge graph and see its relationships. "
+            "Use this when you know the exact entity name and want to explore its connections. "
+            "For broader searches where you don't know the entity name, use memory_search instead."
+        )
 
     @property
     def parameters(self) -> dict:
@@ -191,7 +200,9 @@ class MemoryStoreTool(Tool):
     def description(self) -> str:
         return (
             "Store content into long-term memory (ingests into knowledge graph + vectors). "
-            "Optionally classify with memory_type and tags for better retrieval."
+            "Use this to save important facts, decisions, preferences, or findings for future sessions. "
+            "Classify with memory_type (fact, decision, preference, task, reference) and tags for better retrieval. "
+            "If memory_type is omitted, it will be auto-classified."
         )
 
     @property
@@ -256,7 +267,7 @@ class MemoryGetTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Retrieve a specific memory by its excerpt ID."
+        return "Retrieve a specific memory excerpt by its ID. Use when you have an exact excerpt ID from a previous search result."
 
     @property
     def parameters(self) -> dict:
@@ -295,9 +306,11 @@ class ContradictionReviewTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Review and resolve contradictions in the knowledge graph. "
-            "Use 'list' to see pending conflicts, 'detail' for full info, "
-            "'resolve' to apply a resolution."
+            "Review and resolve contradictions detected in the knowledge graph. "
+            "Use 'list' to see pending conflicts between entities or relationships. "
+            "Use 'detail' with a contradiction_id to see full context. "
+            "Use 'resolve' to apply a resolution (keep_existing, keep_new, merge, dismiss). "
+            "Check this when you encounter conflicting information or after ingesting updated content."
         )
 
     @property
@@ -394,8 +407,9 @@ class MemoryRecallTool(Tool):
     def description(self) -> str:
         return (
             "Recall past session content and memories. "
-            "Use 'topic' mode for keyword+semantic search over past sessions. "
-            "Use 'temporal' mode to find recent session memories by time."
+            "Use 'topic' mode for keyword+semantic search across all past sessions. "
+            "Use 'temporal' mode with --days to find recent session memories by time range. "
+            "Use this when you need to remember what was discussed in previous conversations."
         )
 
     @property

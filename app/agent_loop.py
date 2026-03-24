@@ -24,6 +24,7 @@ class AgentLoop:
         memory_window: int = MEMORY_WINDOW,
         smol_rag=None,
         hook_runner: Optional[HookRunner] = None,
+        reflection: bool = False,
     ):
         self.llm = llm
         self.tool_registry = tool_registry
@@ -33,6 +34,7 @@ class AgentLoop:
         self.max_iterations = max_iterations
         self.memory_window = memory_window
         self.smol_rag = smol_rag
+        self.reflection = reflection
         self.hook_runner = hook_runner or HookRunner()
         self._stop_after_current = False
         self._session_started = False
@@ -242,6 +244,17 @@ class AgentLoop:
             # Drain any usage from tool-initiated LLM calls (e.g. memory search context retrieval)
             tool_llm_records = self._usage_collector.drain()
             turn.llm_calls.extend(tool_llm_records)
+
+            # Inject reflection prompt to encourage self-assessment before next LLM call
+            if self.reflection:
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "Before continuing, assess: Have you gathered enough information to answer completely? "
+                        "Are your findings verified against sources? Is anything missing or uncertain? "
+                        "If incomplete, continue working. If complete, provide your final answer."
+                    ),
+                })
 
             self.session_usage.turns.append(turn)
 

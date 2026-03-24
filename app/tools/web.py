@@ -13,7 +13,11 @@ class WebSearchTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Search the web using Brave Search API."
+        return (
+            "Search the web for current information. Use this when memory doesn't have the answer, "
+            "or when you need up-to-date information beyond what's stored. "
+            "Always check memory_search first before searching the web."
+        )
 
     @property
     def parameters(self) -> dict:
@@ -66,7 +70,11 @@ class WebFetchTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Fetch and extract text content from a URL."
+        return (
+            "Fetch and extract text content from a specific URL. "
+            "Use this to read a web page you already have the URL for. "
+            "For discovering pages, use web_search first."
+        )
 
     @property
     def parameters(self) -> dict:

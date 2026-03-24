@@ -255,6 +255,67 @@ Privacy-first. Everything can run locally. No data leaves your machine if you us
 
 ---
 
+## Agent Prompt & Configuration Comparison
+
+### System Prompt Structure
+
+| Component | OpenClaw | Claude Code | NanoClaw | OpenCode | SmolClaw |
+|-----------|----------|-------------|----------|----------|----------|
+| Identity file | SOUL.md (immutable) | CLAUDE.md | CLAUDE.md per group | Config file | AGENT.md (shared) |
+| Persona | In SOUL.md | Built-in (2,896 tokens) | Per-group CLAUDE.md | Per-config | agents.yaml persona field |
+| Tool descriptions | In TOOLS.md | 20 built-in (in system prompt) | Via skills | Built-in | In tool class `description` property |
+| Memory context | On-demand via tools (not auto-injected) | Auto-compressed | CLAUDE.md (always loaded) | Persistent store | Auto-injected (token-budgeted) |
+| Bootstrap/skills | SKILL.md files (composable) | Slash commands + sub-agent prompts | SKILL.md files | Plugin system | bootstrap_path per agent |
+| Runtime context | Host, OS, model, workspace, date | Model, shell, OS, git status, date | Container ID, group, channel | Model, workspace | Current timestamp only |
+
+### Reasoning & Methodology
+
+| Aspect | OpenClaw | Claude Code | NanoClaw | OpenCode | SmolClaw |
+|--------|----------|-------------|----------|----------|----------|
+| Reasoning pattern | ReAct (think → act → observe) | Adaptive (task-type detection) | Delegated to Claude SDK | ReAct | Tool-use loop (no explicit reasoning) |
+| Planning step | Yes (in extended thinking) | Yes (Plan sub-agent) | Via SDK | Yes | No (Phase 2 roadmap) |
+| Reflection | Yes (observation analysis) | Yes (course correction) | Via SDK | Yes | Config-driven prompt (just added) |
+| Self-correction | Checkpoints + retry | Implicit in loop | Via SDK | Implicit | No |
+| Extended thinking | 6 configurable levels | Built-in | Via SDK | No | No (Phase 5 roadmap) |
+| Task decomposition | Via skills + reasoning | Sub-agent delegation | Via SDK | Via ReAct | Via bootstrap methodology files |
+
+### Memory & Context
+
+| Aspect | OpenClaw | Claude Code | NanoClaw | OpenCode | SmolClaw |
+|--------|----------|-------------|----------|----------|----------|
+| Memory tiers | T0 (identity) / T1 (core) / T2 (working) | Context compression | CLAUDE.md per group | Preferences + session history | Flat (promote/decay, no tiers) |
+| Decay model | Half-life 23 days on T2 | Auto-compression | None | None | Configurable (batch SQL decay) |
+| Context injection | On-demand (tools search) | Auto (compressed) | Always loaded | Auto | Auto (budgeted, configurable) |
+| Token budget | Varies by model | ~200K context | Per-container | Model-dependent | Configurable per agent (default 8K) |
+| Contradiction detection | No | No | No | No | Yes (built-in) |
+| Knowledge graph | No | No | No | No | Yes (NetworkX + vector + BM25) |
+
+### Agent Configuration
+
+| Aspect | OpenClaw | Claude Code | NanoClaw | OpenCode | SmolClaw |
+|--------|----------|-------------|----------|----------|----------|
+| Multi-agent | Via AGENTS.md delegation | Plan/Explore/Task sub-agents | Per-channel | Single agent | agents.yaml with spawn tools |
+| Per-agent model | Yes | Fixed (Claude) | Per-group | Yes (75+ providers) | Yes (per agent in YAML) |
+| Per-agent tools | Via skills | Fixed set | Via skills | Via plugins | tools list in YAML |
+| Per-agent reasoning depth | Extended thinking levels | Task-type adaptive | Fixed | Fixed | context_budget + reflection flag |
+| Agent profiles | Custom SOUL.md + skills | Built-in sub-agent types | Custom CLAUDE.md | Config-based | YAML + bootstrap_path |
+| Hot-reload | Yes (file watch) | No | Container restart | No | No (restart required) |
+
+### Tool Ecosystem
+
+| Tool Category | OpenClaw | Claude Code | NanoClaw | OpenCode | SmolClaw |
+|---------------|----------|-------------|----------|----------|----------|
+| File operations | Yes | Yes (Read, Write, Edit, Glob, Grep) | Via sandbox | Yes | Yes (4 tools) |
+| Shell/terminal | Yes | Yes (Bash) | Via container | Yes | Yes (exec, pattern-blocked) |
+| Web search | Via skills | Yes (WebSearch, WebFetch) | Via skills | Yes | Yes (Brave API) |
+| Memory/knowledge | MEMORY.md + search | CLAUDE.md + context | CLAUDE.md per group | Persistent store | KG + vector + BM25 (6 tools) |
+| Messaging | Slack, WhatsApp, Telegram, Discord, email | No | WhatsApp, Telegram, Slack, Discord, Gmail | No | No |
+| Scheduling | HEARTBEAT.md (cron) | No | Scheduled jobs | No | No |
+| Code analysis | Via skills | LSP, Notebook | No | grep, terminal | Via exec |
+| Sub-agents | Via AGENTS.md | Agent tool | No | No | spawn_agent/get_result |
+
+---
+
 ## Recommended Priority for SmolClaw
 
 ### Tier 1: Highest Impact, Achievable Now
