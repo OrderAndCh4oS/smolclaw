@@ -8,8 +8,8 @@ from app.tools.base import Tool
 class McpToolBase(Tool):
     """Base class for MCP-delegating tools."""
 
-    def __init__(self, token_issuer_url: str, gateway_url: str):
-        self._client = McpClient(token_issuer_url, gateway_url)
+    def __init__(self, token_issuer_url: str):
+        self._client = McpClient(token_issuer_url)
 
     @property
     def _mcp_tool_name(self) -> str:

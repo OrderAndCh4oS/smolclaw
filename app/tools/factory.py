@@ -43,11 +43,11 @@ def build_tool_registry(
             McpHttpFetchTool, McpWebSearchTool,
         )
 
-        registry.register(McpFileReadTool(token_issuer_url, gateway_url))
-        registry.register(McpFileWriteTool(token_issuer_url, gateway_url))
-        registry.register(McpShellExecTool(token_issuer_url, gateway_url))
-        registry.register(McpHttpFetchTool(token_issuer_url, gateway_url))
-        registry.register(McpWebSearchTool(token_issuer_url, gateway_url))
+        registry.register(McpFileReadTool(token_issuer_url))
+        registry.register(McpFileWriteTool(token_issuer_url))
+        registry.register(McpShellExecTool(token_issuer_url))
+        registry.register(McpHttpFetchTool(token_issuer_url))
+        registry.register(McpWebSearchTool(token_issuer_url))
 
     # Memory tools are shared across both modes
     docs_dir = ensure_dir(memory_docs_dir)
