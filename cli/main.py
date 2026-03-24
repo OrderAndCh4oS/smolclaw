@@ -376,6 +376,16 @@ async def _chat_loop(
                 console.print("[dim]Current thread exported to memory.[/dim]")
                 continue
 
+            streamed = False
+
+            async def on_output(chunk: str):
+                nonlocal streamed
+                if not streamed:
+                    console.print()  # blank line before response
+                    streamed = True
+                console.file.write(chunk)
+                console.file.flush()
+
             async def on_event(event: dict):
                 if not show_actions:
                     return
@@ -384,14 +394,18 @@ async def _chat_loop(
                     console.print(f"[dim]{line}[/dim]")
 
             if show_actions:
-                response = await agent.process(user_input, on_event=on_event)
+                response = await agent.process(user_input, on_output=on_output, on_event=on_event)
             else:
-                with console.status("[bold cyan]thinking...[/bold cyan]"):
-                    response = await agent.process(user_input)
+                response = await agent.process(user_input, on_output=on_output)
 
-            console.print()
-            console.print(Markdown(response))
-            console.print()
+            if streamed:
+                console.file.write("\n")
+                console.file.flush()
+                console.print()
+            else:
+                console.print()
+                console.print(Markdown(response))
+                console.print()
     finally:
         try:
             if auto_export:

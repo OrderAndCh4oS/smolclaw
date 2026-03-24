@@ -1,6 +1,6 @@
 import json
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import os
 
@@ -119,6 +119,8 @@ class OpenAiLlm:
         messages: List[Dict[str, str]],
         tools: Optional[List[dict]] = None,
         model: Optional[str] = None,
+        stream: bool = False,
+        on_chunk: Optional[Callable] = None,
     ) -> Dict[str, Any]:
         """
         Gets a completion that may include tool calls.
@@ -126,12 +128,17 @@ class OpenAiLlm:
         :param messages: Full message list including system, history, user.
         :param tools: Optional list of tool schemas in OpenAI format.
         :param model: The model to use; if None, use self.completion_model.
+        :param stream: If True, stream tokens via on_chunk callback.
+        :param on_chunk: Async callback receiving text chunks during streaming.
         :return: Dict with 'content', 'tool_calls', 'has_tool_calls'.
         """
         model = model or self.completion_model
         kwargs = {"model": model, "messages": messages}
         if tools:
             kwargs["tools"] = tools
+
+        if stream and on_chunk:
+            return await self._stream_tool_completion(kwargs, model, on_chunk)
 
         try:
             started = time.perf_counter()
@@ -161,6 +168,83 @@ class OpenAiLlm:
             }
         except Exception as e:
             logger.error(f"Error getting tool completion: {e}")
+            raise
+
+    async def _stream_tool_completion(self, kwargs: dict, model: str, on_chunk: Callable) -> Dict[str, Any]:
+        """Stream a tool completion, emitting text chunks via callback."""
+        kwargs["stream"] = True
+        kwargs["stream_options"] = {"include_usage": True}
+
+        try:
+            started = time.perf_counter()
+            content_parts = []
+            tool_call_deltas: Dict[int, dict] = {}
+            final_usage = None
+
+            stream = self.client.chat.completions.create(**kwargs)
+            for chunk in stream:
+                if not chunk.choices:
+                    # Final chunk with usage only
+                    if chunk.usage:
+                        final_usage = chunk.usage
+                    continue
+
+                delta = chunk.choices[0].delta
+
+                # Stream text content
+                if delta.content:
+                    content_parts.append(delta.content)
+                    await on_chunk(delta.content)
+
+                # Accumulate tool call deltas
+                if delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in tool_call_deltas:
+                            tool_call_deltas[idx] = {"id": "", "name": "", "arguments": ""}
+                        entry = tool_call_deltas[idx]
+                        if tc_delta.id:
+                            entry["id"] = tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                entry["name"] = tc_delta.function.name
+                            if tc_delta.function.arguments:
+                                entry["arguments"] += tc_delta.function.arguments
+
+                # Check for usage in final chunk
+                if hasattr(chunk, "usage") and chunk.usage:
+                    final_usage = chunk.usage
+
+            duration_ms = int((time.perf_counter() - started) * 1000)
+
+            self._record_usage(
+                "tool_completion", model,
+                getattr(final_usage, "prompt_tokens", 0),
+                getattr(final_usage, "completion_tokens", 0),
+                getattr(final_usage, "total_tokens", 0),
+                duration_ms,
+            )
+
+            # Build tool calls from accumulated deltas
+            tool_calls = None
+            if tool_call_deltas:
+                tool_calls = []
+                for idx in sorted(tool_call_deltas):
+                    entry = tool_call_deltas[idx]
+                    tool_calls.append({
+                        "id": entry["id"],
+                        "name": entry["name"],
+                        "arguments": json.loads(entry["arguments"]) if entry["arguments"] else {},
+                    })
+
+            content = "".join(content_parts) or None
+            return {
+                "content": content,
+                "tool_calls": tool_calls or None,
+                "has_tool_calls": bool(tool_calls),
+            }
+        except Exception as e:
+            logger.error(f"Error streaming tool completion: {e}")
             raise
 
     async def get_embedding(self, content: Any, model: Optional[str] = None) -> List[float]:

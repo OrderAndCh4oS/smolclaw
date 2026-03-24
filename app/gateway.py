@@ -158,7 +158,7 @@ class Gateway:
                 await websocket.send(json.dumps({
                     "type": "event",
                     "event": "agent.message",
-                    "payload": {"content": content, "runId": run_id},
+                    "payload": {"content": content, "runId": run_id, "streaming": True},
                 }))
 
             async def on_event(event: dict):

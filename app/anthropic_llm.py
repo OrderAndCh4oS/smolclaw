@@ -1,7 +1,7 @@
 import json
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import anthropic
 from dotenv import load_dotenv
@@ -97,6 +97,8 @@ class AnthropicLlm:
         messages: List[Dict[str, str]],
         tools: Optional[List[dict]] = None,
         model: Optional[str] = None,
+        stream: bool = False,
+        on_chunk: Optional[Callable] = None,
     ) -> Dict[str, Any]:
         model = model or self.completion_model
         anthropic_messages, system = self._translate_messages(messages)
@@ -111,6 +113,9 @@ class AnthropicLlm:
             kwargs["system"] = system
         if anthropic_tools:
             kwargs["tools"] = anthropic_tools
+
+        if stream and on_chunk:
+            return await self._stream_tool_completion(kwargs, model, on_chunk)
 
         try:
             started = time.perf_counter()
@@ -127,6 +132,31 @@ class AnthropicLlm:
             return self._normalize_response(response)
         except Exception as e:
             logger.error(f"Error getting tool completion: {e}")
+            raise
+
+    async def _stream_tool_completion(self, kwargs: dict, model: str, on_chunk: Callable) -> Dict[str, Any]:
+        """Stream a tool completion, emitting text chunks via callback."""
+        try:
+            started = time.perf_counter()
+
+            with self.client.messages.stream(**kwargs) as stream:
+                for text in stream.text_stream:
+                    await on_chunk(text)
+
+                response = stream.get_final_message()
+
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            usage = getattr(response, "usage", None)
+            input_tokens = getattr(usage, "input_tokens", 0)
+            output_tokens = getattr(usage, "output_tokens", 0)
+            self._record_usage(
+                "tool_completion", model,
+                input_tokens, output_tokens, input_tokens + output_tokens,
+                duration_ms,
+            )
+            return self._normalize_response(response)
+        except Exception as e:
+            logger.error(f"Error streaming tool completion: {e}")
             raise
 
     async def get_embedding(self, content: Any, model: Optional[str] = None) -> List[float]:

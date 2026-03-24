@@ -140,11 +140,21 @@ class AgentLoop:
                 "type": "llm", "phase": "start", "iteration": iteration,
             })
 
+            streamed_content = False
+
+            async def _stream_chunk(text: str):
+                nonlocal streamed_content
+                streamed_content = True
+                if on_output:
+                    await on_output(text)
+
             with self._usage_collector.category("agent_turn"):
                 llm_started = time.perf_counter()
                 result = await self.llm.get_tool_completion(
                     messages=messages,
                     tools=tools,
+                    stream=on_output is not None,
+                    on_chunk=_stream_chunk if on_output else None,
                 )
                 llm_duration_ms = int((time.perf_counter() - llm_started) * 1000)
 
@@ -162,7 +172,7 @@ class AgentLoop:
 
             if not result["has_tool_calls"]:
                 content = result["content"] or ""
-                if on_output and content:
+                if on_output and content and not streamed_content:
                     await on_output(content)
                 self.session.add_message({"role": "assistant", "content": content})
                 self.session_manager.save(self.session)
