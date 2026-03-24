@@ -171,87 +171,95 @@ Privacy-first. Everything can run locally. No data leaves your machine if you us
 
 ## Patterns SmolClaw Is Missing
 
-### 1. ReAct Reasoning Loop (Critical)
+### ~~1. Identity / SOUL.md~~ — DONE
+
+AGENT.md rewritten with personality, anti-patterns ("What NOT to Do"), behavioral guidance ("act don't narrate", "have opinions"), reasoning methodology, tool selection guidance. Per-agent bootstrap files (researcher.md, coder.md). Composable via agents.yaml.
+
+### ~~2. Tool Selection Guidance~~ — DONE
+
+All tool descriptions enriched with when/how guidance. memory_search, memory_graph_query, memory_recall, memory_store, web_search, web_fetch, contradiction_review all updated.
+
+### ~~3. Context Budget~~ — DONE
+
+Configurable per-agent via `context_budget` in AgentConfig. Default raised to 8K tokens.
+
+### ~~4. Specialized Sub-Agents~~ — DONE
+
+Three agent profiles (default, researcher, coder) with different personas, bootstrap files, tool sets, and settings.
+
+### ~~5. Reflection~~ — DONE
+
+Config-driven reflection prompt injected after tool rounds. Asks agent to assess completeness and verification before responding.
+
+### ~~6. Token Tracking~~ — DONE
+
+Full audit trail: per-call, per-turn, per-session. Real-time events. Persisted JSON. Per-category breakdown.
+
+### ~~7. Streaming~~ — DONE
+
+Token-by-token streaming for both OpenAI and Anthropic. CLI, gateway, and auth system bridge all support it.
+
+### 8. ReAct Reasoning Loop (Critical — next up)
 
 **What it is**: Before taking an action, the agent explicitly reasons about what it should do and why. After observing the result, it reflects on whether it worked and what to do next.
 
 **Who has it**: OpenClaw, Claude Code, OpenCode
 
-**SmolClaw today**: Pure tool-use trampoline. LLM decides actions implicitly in its response. No explicit planning, no observation analysis, no strategy adjustment.
+**SmolClaw today**: Tool-use loop with post-hoc reflection prompt. But no explicit planning step before acting, no observation analysis after tool results, no strategy adjustment on failure.
 
-**Impact**: Without ReAct, the agent can't decompose complex tasks, can't recover from failed approaches, and can't reason about whether its answer is complete.
+**Impact**: Agent can reflect but can't plan ahead or self-correct.
 
-### 2. Identity / SOUL.md (High)
+### 9. Memory Tiers (High)
 
-**What it is**: A persistent, immutable identity file that defines who the agent is, its values, behavioral boundaries, and communication style. Loaded first, never modified by the agent.
-
-**Who has it**: OpenClaw (SOUL.md), Claude Code (CLAUDE.md), NanoClaw (CLAUDE.md per group)
-
-**SmolClaw today**: `AGENT.md` exists but is thin — lists capabilities and memory taxonomy. No personality, values, reasoning methodology, or behavioral guidelines.
-
-**Impact**: The agent has no consistent identity or approach. Every session starts from a generic persona.
-
-### 3. Memory Tiers (High)
-
-**What it is**: Separating memory into tiers with different persistence, decay, and access patterns:
-- Immutable identity (never changes)
-- Core/evergreen knowledge (curated, no decay)
-- Working memory (recent, decays)
-- On-demand access (search, don't auto-inject)
+**What it is**: Separating memory into tiers with different persistence, decay, and access patterns. Immutable identity (T0), curated evergreen knowledge (T1), working/temporal memory with decay (T2). On-demand access instead of auto-inject.
 
 **Who has it**: OpenClaw (T0/T1/T2), Claude Code (context compression)
 
-**SmolClaw today**: Single flat retrieval layer. Everything has the same importance weighting (modulo taxonomy weights). Context auto-injected into system prompt (4K budget). No "must never forget" vs "happened yesterday" distinction.
+**SmolClaw today**: Single flat retrieval with configurable budget (8K). Taxonomy weights and promote/decay exist but no tier separation.
 
-**Impact**: Important knowledge gets buried under recent noise. Context window wasted on auto-injected content that may not be relevant.
+### 10. Skills-as-Prompts (Medium)
 
-### 4. Extended Thinking / Reasoning Budget (Medium)
+**What it is**: Agent capabilities defined as markdown instruction files. Composable, shareable, agent can write its own.
 
-**What it is**: Configurable reasoning depth. Agent can spend more tokens thinking before acting for complex tasks, or less for simple ones.
+**Who has it**: OpenClaw, NanoClaw, Claude Code
+
+**SmolClaw today**: Bootstrap files per agent (similar concept), but no runtime skill loading or agent self-authoring.
+
+### 11. Extended Thinking / Reasoning Budget (Medium)
+
+**What it is**: Configurable reasoning depth via Anthropic extended thinking or OpenAI reasoning tokens.
 
 **Who has it**: OpenClaw (6 levels), Claude Code (built-in)
 
-**SmolClaw today**: No reasoning budget concept. Agent always responds at the same depth.
+**SmolClaw today**: No reasoning budget concept.
 
-**Impact**: Complex research tasks get the same shallow reasoning as simple fact lookups.
+### 12. Self-Correction & Checkpoints (Medium)
 
-### 5. Specialized Sub-Agents (Medium)
-
-**What it is**: Different agent configurations for different task types. A planning agent thinks differently than an exploration agent or an execution agent.
-
-**Who has it**: Claude Code (Plan, Explore, Task agents with different system prompts)
-
-**SmolClaw today**: Multi-agent spawn exists but all agents use the same generic persona. No task-type specialization.
-
-**Impact**: Research tasks, creative tasks, and simple lookups all get the same approach.
-
-### 6. Skills-as-Prompts (Medium)
-
-**What it is**: Agent capabilities defined as markdown instruction files (SKILL.md), not code. Composable, shareable, and the agent can write its own.
-
-**Who has it**: OpenClaw, NanoClaw, Claude Code (slash commands)
-
-**SmolClaw today**: Tools are code-level plugins. Agent cannot create or modify its own capabilities.
-
-**Impact**: Adding capabilities requires code changes. Agent can't adapt to novel tasks by writing its own skill files.
-
-### 7. Self-Correction & Checkpoints (Medium)
-
-**What it is**: Agent observes action results, recognizes failures, and tries alternative approaches. Checkpoints allow backtracking.
+**What it is**: Agent detects failed approaches and tries alternatives. Checkpoints allow backtracking.
 
 **Who has it**: OpenClaw (checkpoints every N steps), Claude Code (course correction)
 
-**SmolClaw today**: No self-correction. If a tool call fails, the error is fed back to the LLM but there's no explicit "try a different approach" mechanism.
+**SmolClaw today**: Error fed back to LLM, but no explicit retry/backtrack mechanism.
 
-### 8. Multi-Provider Model Support (Low)
+### 13. Auth Awareness (New)
 
-**What it is**: Support for many LLM providers, including local models.
+**What it is**: Agent knows what auth capabilities it has — which tools are pre-approved, which need human approval, token types (single-use vs reusable), expiry windows.
+
+**Who has it**: OpenClaw (tool policy in system prompt), NanoClaw (container-level permissions)
+
+**SmolClaw today**: Agent has no awareness of the JWT auth layer. MCP tools request tokens transparently but the agent can't reason about approval requirements or batch operations under a reusable token.
+
+### 14. Multi-Provider Model Support (Low)
+
+**What it is**: Support for many LLM providers, including local models via Ollama.
 
 **Who has it**: OpenCode (75+ providers), OpenClaw (multiple)
 
 **SmolClaw today**: OpenAI + Anthropic only.
 
-**Impact**: Can't use local models for privacy. Can't try different models for different tasks.
+### 15. Platform Features (Low)
+
+Messaging channels (Slack, Telegram, etc.), scheduled jobs / heartbeat, multi-user / multi-tenant, cost controls / budget enforcement. See Phase 6.
 
 ---
 
@@ -445,24 +453,23 @@ Side-by-side comparison of the actual system prompts and identity files used by 
 
 All four frameworks (OpenClaw, Claude Code, NanoClaw, OpenCode) use the same pattern: **generic loop + composable configuration = specialized agents.** Nobody hardcodes reasoning for one purpose. The loop stays generic. Prompts, tool sets, and bootstrap files make it smart for a given task. SmolClaw should follow this pattern.
 
-### Phase 1: Composable Agent Intelligence (Current — ready to implement)
+### Phase 1: Composable Agent Intelligence — COMPLETE
 
 Make reasoning behavior configurable per-agent. No hardcoded logic for any single use case.
 
-**What this checks off:**
 - [x] Research complete (this document)
-- [ ] Extend `AgentConfig` with `context_budget` (int, default 4000) and `reflection` (bool, default false)
-- [ ] Wire `context_budget` through `agent_factory.py` → `ContextAssembler`
-- [ ] Add reflection prompt injection in agent loop (config-driven, fires after tool rounds when enabled)
-- [ ] Enrich tool descriptions in `app/tools/*.py` — universal guidance on when/how to use each tool
-- [ ] Rewrite `AGENT.md` as universal reasoning foundation (search before assuming, verify claims, store findings, be explicit about uncertainty)
-- [ ] Rewrite `agents/smolclaw.md` as improved default agent methodology
-- [ ] Create `agents/researcher.md` — research decomposition, multi-source synthesis, citation
-- [ ] Create `agents/coder.md` — read before modifying, test after changes, minimal diffs
-- [ ] Update `agents.yaml` default agent with `context_budget: 8000`, `reflection: true`
-- [ ] Update tests for new config fields and reflection behavior
-
-**Patterns addressed:** Identity file, tool selection guidance, configurable reasoning depth, sub-agent specialization, composability.
+- [x] Extend `AgentConfig` with `context_budget` and `reflection`
+- [x] Wire `context_budget` through `agent_factory.py` → `ContextAssembler`
+- [x] Add reflection prompt injection in agent loop (config-driven)
+- [x] Enrich tool descriptions in `app/tools/*.py`
+- [x] Rewrite `AGENT.md` — reasoning principles, behavioral guidance, anti-patterns, tool selection
+- [x] Rewrite `agents/smolclaw.md` as default agent methodology
+- [x] Create `agents/researcher.md` and `agents/coder.md`
+- [x] Update `agents.yaml` with `context_budget: 8000`, `reflection: true`, 3 agent profiles
+- [x] Sharpen prompts: anti-sycophancy, act-don't-narrate, tone guidance
+- [x] Token-by-token streaming (OpenAI + Anthropic)
+- [x] Token usage tracking and audit trail
+- [x] All tests passing (504)
 
 ### Phase 2: ReAct Reasoning Loop
 
