@@ -72,22 +72,27 @@ class SqliteKvStore:
         existing = await self.get_by_key(key)
         return existing == value
 
-    async def batch_decay(self, factor: float, cutoff_timestamp: float) -> int:
-        """Batch-decay importance for all rows older than cutoff_timestamp.
+    async def batch_decay(self, factor: float, cutoff_timestamp: float, tier: int = None) -> int:
+        """Batch-decay importance for rows older than cutoff_timestamp.
 
         Multiplies importance by factor in a single SQL UPDATE.
+        If tier is specified, only decays rows with that tier value.
         Returns count of affected rows.
         """
         db = await self._get_db()
-        cursor = await db.execute(
-            f"""UPDATE [{self.table}]
+        sql = f"""UPDATE [{self.table}]
                 SET value = json_set(value, '$.importance',
                     json_extract(value, '$.importance') * ?)
                 WHERE json_extract(value, '$.indexed_at') < ?
                 AND json_extract(value, '$.importance') IS NOT NULL
-                AND abs(json_extract(value, '$.importance') * ? - json_extract(value, '$.importance')) > 0.001""",
-            (factor, cutoff_timestamp, factor),
-        )
+                AND abs(json_extract(value, '$.importance') * ? - json_extract(value, '$.importance')) > 0.001"""
+        params = [factor, cutoff_timestamp, factor]
+
+        if tier is not None:
+            sql += "\n                AND COALESCE(json_extract(value, '$.tier'), 2) = ?"
+            params.append(tier)
+
+        cursor = await db.execute(sql, params)
         await db.commit()
         return cursor.rowcount
 

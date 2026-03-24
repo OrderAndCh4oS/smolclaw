@@ -30,14 +30,17 @@ def format_memory_content(
     memory_type: str | None = None,
     tags: list[str] | None = None,
     source_id: str | None = None,
+    tier: int | None = None,
 ) -> str:
     """Format memory content with YAML frontmatter and inline tags when taxonomy is provided."""
-    if not memory_type and not tags:
+    if not memory_type and not tags and tier is None:
         return content
 
     fm_lines = ["---"]
     if memory_type:
         fm_lines.append(f"memory_type: {memory_type}")
+    if tier is not None:
+        fm_lines.append(f"tier: {tier}")
     if tags:
         fm_lines.append("tags:")
         for tag in tags:
@@ -227,6 +230,18 @@ class MemoryStoreTool(Tool):
                     "items": {"type": "string"},
                     "description": "Topic tags for categorisation (e.g. pricing, stripe, trello)",
                 },
+                "tier": {
+                    "type": "integer",
+                    "enum": [0, 1, 2],
+                    "description": (
+                        "Memory tier: 0=identity (always in context, never decays), "
+                        "1=core (high priority, slow decay), "
+                        "2=working (default, normal decay). "
+                        "Use tier 0 for essential knowledge the agent must always have. "
+                        "Use tier 1 for important facts and decisions. "
+                        "Default tier 2 for session observations."
+                    ),
+                },
             },
             "required": ["content"],
         }
@@ -241,6 +256,7 @@ class MemoryStoreTool(Tool):
         source_id = kwargs.get("source_id")
         memory_type = kwargs.get("memory_type")
         tags = kwargs.get("tags")
+        tier = kwargs.get("tier")
 
         # Auto-classify if no memory_type provided and LLM is available
         if not memory_type and self.llm:
@@ -248,7 +264,7 @@ class MemoryStoreTool(Tool):
             classified_type, confidence = await classify_chunk(content, self.llm)
             memory_type = classified_type.value
 
-        formatted = format_memory_content(content, memory_type, tags, source_id)
+        formatted = format_memory_content(content, memory_type, tags, source_id, tier=tier)
 
         os.makedirs(self.memory_docs_dir, exist_ok=True)
         file_id = source_id or make_hash(content, "mem-")

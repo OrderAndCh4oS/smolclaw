@@ -52,3 +52,13 @@ When storing memories, classify them for better retrieval:
 - **reference** — External knowledge, docs, or links
 
 Use `tags` to add topic labels (e.g. `pricing`, `stripe`, `billing`).
+
+## Memory Tiers
+
+Memories have three tiers that control persistence and priority:
+
+- **Tier 0 (Identity)** — Always in context, never decays. Use for essential knowledge the agent must always have available (user identity, core project facts, key preferences). Set explicitly with `tier: 0`.
+- **Tier 1 (Core)** — High retrieval priority, slow decay. Use for important facts and decisions that should persist long-term. Set with `tier: 1`, or auto-promoted from tier 2 when frequently accessed.
+- **Tier 2 (Working)** — Default. Normal priority and decay. Session observations, recent findings, journal entries. No need to set explicitly.
+
+When in doubt, use tier 2 (default). Only promote to tier 0 or 1 when the information is genuinely essential or frequently needed.

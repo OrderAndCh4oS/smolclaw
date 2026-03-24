@@ -97,7 +97,7 @@ class TestDecay:
 
     @pytest.mark.asyncio
     async def test_batch_decay_used_for_sqlite_store(self):
-        """When excerpt_kv is SqliteKvStore, batch_decay is used."""
+        """When excerpt_kv is SqliteKvStore, batch_decay is called per tier (T1 + T2, not T0)."""
         from app.sqlite_store import SqliteKvStore
 
         mock_rag = MagicMock()
@@ -107,5 +107,6 @@ class TestDecay:
 
         mgr = MemoryLifecycleManager(mock_rag)
         count = await mgr.decay(threshold_days=30, factor=0.9)
-        assert count == 5
-        mock_kv.batch_decay.assert_awaited_once()
+        # Called twice: once for T1 (factor 0.98) and once for T2 (factor 0.95)
+        assert mock_kv.batch_decay.await_count == 2
+        assert count == 10  # 5 per tier pass

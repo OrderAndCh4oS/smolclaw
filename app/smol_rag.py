@@ -343,7 +343,7 @@ class SmolRag:
                 try:
                     fm = yaml.safe_load(parts[1])
                     if isinstance(fm, dict):
-                        for key in ("memory_type", "tags", "confidence", "importance", "source_id"):
+                        for key in ("memory_type", "tags", "confidence", "importance", "source_id", "tier"):
                             if key in fm:
                                 metadata[key] = fm[key]
                 except Exception:
@@ -383,7 +383,7 @@ class SmolRag:
                 "indexed_at": time.time(),
             }
             # Propagate taxonomy metadata from frontmatter
-            for key in ("memory_type", "tags", "confidence", "importance"):
+            for key in ("memory_type", "tags", "confidence", "importance", "tier"):
                 if key in doc_metadata:
                     excerpt_data[key] = doc_metadata[key]
             storage_tasks.append(self.excerpt_kv.add(excerpt_id, excerpt_data))

@@ -42,6 +42,11 @@ DEFAULT_TYPE_WEIGHTS = {
     "journal": 0.8,
 }
 
+# Tier 0: identity (always in context, never decays)
+# Tier 1: core (high priority, slow decay)
+# Tier 2: working (normal priority, normal decay)
+TIER_BOOSTS = {0: 2.0, 1: 1.5, 2: 1.0}
+
 
 class ContextAssembler(ContextBuilder):
     """Budget-aware context builder that retrieves memories from SmolRAG
@@ -76,14 +81,16 @@ class ContextAssembler(ContextBuilder):
         return math.exp(-0.693 * age_days / self.decay_half_life_days)
 
     def _score_excerpt(self, excerpt_data: dict) -> float:
-        """Score an excerpt by importance * confidence * recency_decay * type_weight."""
+        """Score an excerpt by importance * confidence * recency_decay * type_weight * tier_boost."""
         importance = excerpt_data.get("importance", 0.5)
         confidence = excerpt_data.get("confidence", 1.0)
         indexed_at = excerpt_data.get("indexed_at", 0)
         recency = self._recency_decay(indexed_at)
         memory_type = excerpt_data.get("memory_type")
         type_weight = self.type_weights.get(memory_type, 1.0) if memory_type else 1.0
-        return importance * confidence * recency * type_weight
+        tier = excerpt_data.get("tier", 2)
+        tier_boost = TIER_BOOSTS.get(tier, 1.0)
+        return importance * confidence * recency * type_weight * tier_boost
 
     async def _gather_scored_items(self, query: str, top_k: int = 20) -> list:
         """Gather excerpt data from vector, KG, and BM25 sources, deduplicate, and score."""
@@ -144,20 +151,47 @@ class ContextAssembler(ContextBuilder):
 
         return scored_items
 
+    async def _gather_t0_items(self) -> list:
+        """Gather all tier-0 (identity) excerpts — always included regardless of query."""
+        t0_items = []
+        try:
+            all_excerpts = await self.smol_rag.excerpt_kv.get_all()
+            for excerpt_id, data in all_excerpts.items():
+                if isinstance(data, dict) and data.get("tier") == 0:
+                    t0_items.append((excerpt_id, data))
+        except Exception as e:
+            logger.warning(f"Failed to gather T0 items: {e}")
+        return t0_items
+
     async def retrieve_context(self, query: str, top_k: int = 20) -> tuple[str, AssemblyManifest]:
         """Retrieve and assemble context from SmolRAG within token budget.
 
-        Uses vector similarity + KG entities/relationships + BM25 for retrieval,
-        then scores and budget-filters the results.
+        T0 (identity) memories are always included outside the token budget.
+        T1/T2 memories are retrieved via vector + KG + BM25 and budget-filtered.
         """
         manifest = AssemblyManifest(total_budget=self.token_budget, used_tokens=0)
 
+        # T0 memories: always in context (outside budget)
+        t0_items = await self._gather_t0_items()
+        t0_parts = []
+        for excerpt_id, data in t0_items:
+            text = data.get("excerpt", "")
+            if text:
+                t0_parts.append(text)
+                manifest.included.append(InclusionRecord(
+                    excerpt_id=excerpt_id, included=True,
+                    score=self._score_excerpt(data),
+                ))
+
         scored_items = await self._gather_scored_items(query, top_k)
+        # Exclude T0 items from budget-scored list (already included above)
+        t0_ids = {eid for eid, _ in t0_items}
+        scored_items = [(eid, data, score) for eid, data, score in scored_items if eid not in t0_ids]
         # Sort by score descending
         scored_items.sort(key=lambda x: x[2], reverse=True)
 
         # Build context within budget — summaries first, then expand
-        context_parts = []
+        context_parts = list(t0_parts)
         tokens_used = 0
 
         for excerpt_id, data, score in scored_items:
