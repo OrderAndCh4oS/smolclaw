@@ -25,6 +25,7 @@ class AgentLoop:
         smol_rag=None,
         hook_runner: Optional[HookRunner] = None,
         reflection: bool = False,
+        planning: bool = False,
     ):
         self.llm = llm
         self.tool_registry = tool_registry
@@ -35,6 +36,7 @@ class AgentLoop:
         self.memory_window = memory_window
         self.smol_rag = smol_rag
         self.reflection = reflection
+        self.planning = planning
         self.hook_runner = hook_runner or HookRunner()
         self._stop_after_current = False
         self._session_started = False
@@ -137,6 +139,18 @@ class AgentLoop:
             })
 
             turn = TurnUsage(iteration=iteration)
+
+            # Planning prompt: nudge the agent to think before acting (first iteration only)
+            if self.planning and iteration == 0:
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "Before acting, think through your approach: "
+                        "What is the user asking for? What information do you need? "
+                        "What's the best sequence of steps? Which tools should you use and in what order? "
+                        "State your plan briefly, then execute it."
+                    ),
+                })
 
             await self._emit_event(on_event, {
                 "type": "llm", "phase": "start", "iteration": iteration,
@@ -245,7 +259,17 @@ class AgentLoop:
             tool_llm_records = self._usage_collector.drain()
             turn.llm_calls.extend(tool_llm_records)
 
-            # Inject reflection prompt to encourage self-assessment before next LLM call
+            # Observation prompt: nudge the agent to interpret tool results
+            if self.planning:
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "Review the tool results above. What did you learn? "
+                        "Does this change your approach? Do you need more information or can you answer now?"
+                    ),
+                })
+
+            # Reflection prompt: encourage self-assessment before next LLM call
             if self.reflection:
                 messages.append({
                     "role": "system",

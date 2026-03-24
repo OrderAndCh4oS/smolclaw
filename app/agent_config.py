@@ -16,6 +16,7 @@ class AgentConfig:
     timeout: int = 600
     context_budget: int = 4000
     reflection: bool = False
+    planning: bool = False
 
 
 class AgentConfigLoader:
@@ -36,6 +37,7 @@ class AgentConfigLoader:
                 timeout=entry.get("timeout", 600),
                 context_budget=entry.get("context_budget", 4000),
                 reflection=entry.get("reflection", False),
+                planning=entry.get("planning", False),
             )
             agents[config.name] = config
         return agents

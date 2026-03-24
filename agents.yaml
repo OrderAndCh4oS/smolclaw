@@ -49,6 +49,7 @@ agents:
     memory_window: 30
     context_budget: 8000
     reflection: true
+    planning: true
     timeout: 900
 
   - name: coder

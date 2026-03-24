@@ -51,4 +51,5 @@ def build_agent_loop(
         memory_window=config.memory_window,
         smol_rag=smol_rag,
         reflection=config.reflection,
+        planning=config.planning,
     )
