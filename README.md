@@ -259,6 +259,27 @@ Tests use mock LLMs that return random embeddings, so they run without API keys.
 - CLI and gateway as dual interfaces
 - Docker support
 
+## How SmolClaw Compares to NanoClaw
+
+[NanoClaw](https://github.com/qwibitai/nanoclaw) is a lightweight alternative to OpenClaw built on Anthropic's Agents SDK. Both projects aim to be small, ownable agent systems, but they make different bets.
+
+**SmolClaw is a knowledge system.** Its core investment is in memory — a knowledge graph, vector search, and BM25 full-text retrieval working together with taxonomy-weighted scoring, promote/decay lifecycle, and contradiction detection. It has five query modes and budget-aware context assembly. It tracks every token spent and where.
+
+**NanoClaw is an integration hub.** Its core investment is in connectivity — WhatsApp, Telegram, Slack, Discord, and Gmail out of the box, with scheduled cron jobs and container-level security isolation per group. Memory is filesystem-based (`CLAUDE.md` per group), with semantic RAG being added.
+
+| | SmolClaw | NanoClaw |
+|---|---|---|
+| Memory depth | KG + vector + BM25 hybrid, 5 query modes, lifecycle | CLAUDE.md files, basic RAG (in progress) |
+| Messaging channels | CLI + WebSocket | WhatsApp, Telegram, Slack, Discord, Gmail |
+| Scheduled jobs | Not yet | Built-in cron with memory context |
+| Security model | Path-sandboxed tools | Linux container isolation per group |
+| Multi-user | Single-user | Multi-group with isolated filesystems |
+| Token tracking | Full audit trail, per-category breakdown | Not a focus |
+| LLM support | OpenAI + Anthropic (direct clients) | Anthropic Agents SDK |
+| Language | Python | Node.js |
+
+The gaps listed below map closely to NanoClaw's strengths.
+
 ## What's Missing
 
 - **Streaming responses** — gateway sends complete responses, not token-by-token
