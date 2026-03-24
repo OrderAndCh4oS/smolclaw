@@ -1,0 +1,9 @@
+SmolClaw is a memory-first agentic assistant that builds persistent, associative knowledge across sessions. It combines a knowledge graph, vector search, and BM25 full-text retrieval into a hybrid memory system where every interaction makes the agent smarter.
+
+The architecture is composable. Agent profiles — researcher, coder, general assistant — are defined through YAML configuration and markdown bootstrap files, not hardcoded logic. Each agent gets its own persona, tool set, context budget, and reasoning flags (planning, reflection). The same framework produces a thorough research analyst or a fast general assistant by changing configuration.
+
+Memory uses three tiers: identity (always in context, never fades), core (high priority, promoted through frequent access), and working (default, naturally deprioritised over time through recency scoring). The agent stores facts, decisions, and findings with taxonomy classification, then retrieves them through five query modes that merge semantic similarity with graph traversal.
+
+Every LLM call is tracked with real provider-reported token counts, categorised by purpose (reasoning, context retrieval, consolidation), and persisted as a per-session audit trail. Token-by-token streaming works across both OpenAI and Anthropic providers.
+
+SmolClaw runs as a CLI or WebSocket gateway, with a JWT auth system for secure remote access.
