@@ -1,6 +1,6 @@
 # SmolClaw
 
-SmolClaw is an agentic CLI with persistent, associative memory. It pairs a knowledge graph and vector retrieval backend (SmolRAG) with a tool-using agent loop that can search the web, read/write files, execute shell commands, and maintain long-term memory across sessions.
+SmolClaw is a memory-first agent with persistent, associative memory. It pairs a knowledge graph and vector retrieval backend (SmolRAG) with a tool-using agent loop that can search the web, read/write files, execute shell commands, and maintain long-term memory across sessions. Both a CLI and a WebSocket gateway are available as interfaces.
 
 ## How It Works
 
@@ -89,19 +89,75 @@ You'll be prompted for confirmation. Pass `--force` to skip it (useful for scrip
 python -m cli.main reset --force
 ```
 
-This deletes the SQLite database, vector and entity JSON files, the knowledge graph, and all files in `sessions/`, `memory/`, `logs/`, and `cache/`. After a reset, stores are recreated automatically the next time you run any command.
+This deletes the SQLite database, the knowledge graph, and all files in `sessions/`, `memory/`, `logs/`, and `cache/`. After a reset, stores are recreated automatically the next time you run any command.
+
+### Session Recall
+
+Search past sessions by topic or time range:
+
+```bash
+python -m cli.main recall "what did we discuss about auth?"
+python -m cli.main recall "last week" --mode temporal --days 7
+```
+
+### Session Indexing
+
+Index all past sessions into SmolRAG for retrieval:
+
+```bash
+python -m cli.main index-sessions
+```
+
+### Clear Logs
+
+Delete log files without touching data stores:
+
+```bash
+python -m cli.main clear-logs
+```
 
 ## Tools
 
 Every agent draws from a shared tool registry. The available tools cover four categories.
 
-**Memory** tools let agents search the knowledge graph with `memory_search` (hybrid vector and KG retrieval with optional memory type filtering), query specific entities and their relationships with `memory_graph_query`, store new memories with taxonomy classification via `memory_store`, and create explicit graph edges between entities with `memory_relate`.
+**Memory** tools let agents search the knowledge graph with `memory_search` (hybrid vector + KG retrieval with optional memory type filtering), query specific entities and their relationships with `memory_graph_query`, store new memories with taxonomy classification via `memory_store`, create explicit graph edges between entities with `memory_relate`, retrieve past sessions with `memory_recall`, and review contradictions with `contradiction_review`.
 
 **Filesystem** tools provide `read_file`, `write_file`, `edit_file`, and `list_dir` within a sandboxed workspace directory.
 
 **Web** tools include `web_search` for internet queries and `web_fetch` for retrieving and reading web page content.
 
-A shell execution tool (`exec`) is also available for running arbitrary commands.
+**Shell** execution via `exec` runs arbitrary commands with dangerous-pattern blocking and timeout.
+
+**Multi-agent** tools (`spawn_agent`, `get_result`, `await_result`) allow orchestrating sub-agents from within a conversation.
+
+Tools are extensible — implement the `Tool` base class (name, description, parameters, async execute), register in the factory, and add the name to `agents.yaml`. See `app/tools/base.py` for the interface.
+
+## Token Usage Tracking
+
+Every LLM API call is tracked with real provider-reported token counts and timing. Usage data is available in three ways:
+
+**Real-time** — the CLI shows `thinking...` when the LLM is working and `thought: 1,234 tokens (2.3s)` when it finishes, interleaved with tool activity.
+
+**Persisted** — each session writes a `{session_key}.usage.json` sidecar file with a full breakdown:
+
+```json
+{
+  "session_key": "default",
+  "started_at": 1711234567.89,
+  "ended_at": 1711234600.00,
+  "totals": { "prompt_tokens": 12500, "completion_tokens": 3200, "total_tokens": 15700, "duration_ms": 32450, "llm_calls": 8 },
+  "by_category": {
+    "agent_turn": { "prompt_tokens": 11000, "completion_tokens": 3000, "total_tokens": 14000, "count": 5, "duration_ms": 28000 },
+    "consolidation": { "...": "..." },
+    "context_retrieval": { "...": "..." }
+  },
+  "turns": [ { "iteration": 0, "total_tokens": 2800, "llm_duration_ms": 5600, "tool_duration_ms": 1200 } ]
+}
+```
+
+**WebSocket** — the gateway streams `agent.activity` events per LLM/tool call and includes the full usage summary in the lifecycle `phase: "end"` payload.
+
+Categories distinguish where tokens are spent: `agent_turn` (main LLM reasoning), `consolidation` (session memory compression), and `context_retrieval` (embeddings and queries triggered by tools).
 
 ## SmolRAG: The Memory Backend
 
@@ -145,22 +201,31 @@ app/
   graph_store.py       # NetworkX graph with async locking
   session.py           # JSONL session persistence
   subagent.py          # SubagentManager for multi-agent orchestration
-  lifecycle.py         # Memory lifecycle (promote, decay, consolidate)
-  context_assembly.py  # Budget-aware context builder with scoring
+  lifecycle.py         # Memory lifecycle (promote, decay)
+  lifecycle_hooks.py   # Decay and contradiction expiry hooks
+  context_assembly.py  # Budget-aware context builder with taxonomy-weighted scoring
   taxonomy.py          # Memory type classification
-  hooks.py             # Event hooks (session, turn, compaction, file change)
+  contradiction.py     # Contradiction detection between entities/relationships
+  hooks.py             # Event hooks (session start/end, before/after turn)
   journal.py           # Session reflection journal generation
+  session_export_hook.py # Auto-export sessions to memory on close
+  session_indexer.py   # Index sessions into SmolRAG
+  usage.py             # Token usage tracking, audit trail, persistence
   watcher.py           # File change detection and re-ingestion
   gateway.py           # WebSocket server
   tools/
-    memory_tools.py    # memory_search, memory_graph_query, memory_store, memory_relate
+    base.py            # Tool ABC (name, description, parameters, execute)
+    registry.py        # Tool registry with filtering
+    factory.py         # Mode-aware tool builder (direct/MCP)
+    memory_tools.py    # memory_search, memory_graph_query, memory_store, memory_relate, memory_recall, contradiction_review
     filesystem.py      # read_file, write_file, edit_file, list_dir
     web.py             # web_search, web_fetch
     shell.py           # exec
     spawn.py           # spawn_agent, get_result, await_result
+    mcp_tools.py       # MCP-delegating tool wrappers (gateway mode)
   reset.py             # Full store wipe (reset command)
 cli/
-  main.py              # Typer CLI (chat, ingest, watch, serve, recall, reset)
+  main.py              # Typer CLI (chat, ingest, watch, serve, recall, index-sessions, reset, clear-logs)
 store/                 # All persistent data (gitignored)
   smolclaw.db          # SQLite (vectors, excerpts, mappings, caches, BM25)
   kg_db.graphml        # NetworkX knowledge graph
@@ -179,4 +244,27 @@ AGENT.md               # Shared bootstrap (loaded by all agents)
 python -m pytest
 ```
 
-Tests use mock LLMs that return random embeddings, so they run without API keys.
+Tests use mock LLMs that return random embeddings, so they run without API keys. 504 tests, ~6 seconds.
+
+## What's Here
+
+- Agent loop with tool execution and LLM orchestration (OpenAI + Anthropic)
+- Persistent memory: knowledge graph (NetworkX), vector search (SQLite), BM25 full-text
+- Memory lifecycle: promote on access, decay on session end, contradiction detection
+- Session management with LLM-summarised consolidation
+- Multi-agent orchestration (spawn/await pattern)
+- WebSocket gateway for remote clients with authentication
+- Token usage tracking and audit trail across all LLM calls
+- Extensible tool system with 14 tools across 6 categories
+- CLI and gateway as dual interfaces
+- Docker support
+
+## What's Missing
+
+- **Streaming responses** — gateway sends complete responses, not token-by-token
+- **Cost controls** — tracks tokens but doesn't enforce budget limits or spend caps
+- **External integrations** — no Slack, email, calendar, or webhook tools
+- **Multi-user / multi-tenant** — single-user only, no auth beyond basic gateway token
+- **Observability dashboard** — usage data is persisted as JSON but there's no UI to view it
+- **Workflow orchestration** — no chains, DAGs, or conditional routing between agents
+- **Deployment** — Dockerfile exists but no CI/CD, health checks, or managed deployment story
