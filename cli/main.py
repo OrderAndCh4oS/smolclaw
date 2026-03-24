@@ -318,13 +318,12 @@ async def _chat_loop(
     agent.hook_runner.on(ON_SESSION_END, UsagePersistHook(SESSIONS_DIR))
 
     if auto_export:
-        from app.lifecycle_hooks import MemoryDecayHook, ContradictionExpiryHook
+        from app.lifecycle_hooks import ContradictionExpiryHook
 
         agent.hook_runner.on(
             ON_SESSION_END,
             session_export_hook,
         )
-        agent.hook_runner.on(ON_SESSION_END, MemoryDecayHook(smol_rag))
         if hasattr(smol_rag, 'contradiction_detector') and smol_rag.contradiction_detector:
             agent.hook_runner.on(
                 ON_SESSION_END,
