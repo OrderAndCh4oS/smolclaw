@@ -1,6 +1,6 @@
 import os
 
-COMPLETION_MODEL = os.getenv('COMPLETION_MODEL', 'gpt-4.1-mini')
+COMPLETION_MODEL = os.getenv('COMPLETION_MODEL', 'gpt-5.4-mini')
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
 
 # app/ package dir
