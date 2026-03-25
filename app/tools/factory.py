@@ -1,10 +1,13 @@
 """Unified tool registry factory for CLI and Gateway."""
 
+from typing import List
+
 from app.tools.memory_tools import (
     MemorySearchTool, MemoryGraphQueryTool, MemoryStoreTool,
     MemoryRelateTool, MemoryRecallTool, MemoryGetTool,
     ContradictionReviewTool,
 )
+from app.tools.middleware import MiddlewareFn, logging_middleware
 from app.tools.registry import ToolRegistry
 from app.utilities import ensure_dir
 
@@ -17,6 +20,7 @@ def build_tool_registry(
     mode: str = "direct",
     token_issuer_url: str = None,
     gateway_url: str = None,
+    middleware: List[MiddlewareFn] | None = None,
 ) -> ToolRegistry:
     """Build a tool registry with appropriate tools based on mode.
 
@@ -61,5 +65,10 @@ def build_tool_registry(
     # Contradiction review tool (only when detector is wired up)
     if hasattr(smol_rag, 'contradiction_detector') and smol_rag.contradiction_detector:
         registry.register(ContradictionReviewTool(smol_rag.contradiction_detector))
+
+    # Register middleware — logging by default, plus any caller-provided
+    registry.use(logging_middleware)
+    for mw in (middleware or []):
+        registry.use(mw)
 
     return registry

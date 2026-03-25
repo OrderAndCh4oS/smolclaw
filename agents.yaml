@@ -75,3 +75,24 @@ agents:
     context_budget: 6000
     reflection: true
     timeout: 600
+
+  - name: orchestrator
+    model: gpt-5.4-mini
+    persona: >
+      You are an orchestration coordinator. Delegate work to specialized agents.
+      Use sequential_pipeline for multi-step workflows, fanout_pipeline for parallel tasks,
+      and route for directing queries to the right specialist.
+      Combine results and present a unified response.
+    tools:
+      - memory_search
+      - memory_store
+      - sequential_pipeline
+      - fanout_pipeline
+      - route
+      - spawn_agent
+      - get_result
+      - await_result
+    max_iterations: 10
+    memory_window: 20
+    context_budget: 4000
+    timeout: 900

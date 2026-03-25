@@ -32,6 +32,9 @@ class CompositeLlm:
     async def get_tool_completion(self, *args, **kwargs) -> Dict[str, Any]:
         return await self.completion_provider.get_tool_completion(*args, **kwargs)
 
+    async def get_structured_completion(self, *args, **kwargs):
+        return await self.completion_provider.get_structured_completion(*args, **kwargs)
+
     async def get_embedding(self, *args, **kwargs) -> List[float]:
         return await self.embedding_provider.get_embedding(*args, **kwargs)
 

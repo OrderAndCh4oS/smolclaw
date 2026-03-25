@@ -14,9 +14,21 @@ class MemoryType(str, Enum):
 async def classify_chunk(content: str, llm) -> tuple[MemoryType, float]:
     """Use LLM to classify a chunk of content into a memory type with confidence."""
     from app.prompts import get_classify_memory_prompt
-    from app.utilities import extract_json_from_text
 
     prompt = get_classify_memory_prompt(content)
+
+    # Try structured output first
+    if hasattr(llm, "get_structured_completion"):
+        try:
+            from app.schemas import MemoryClassification
+            result = await llm.get_structured_completion(prompt, MemoryClassification, use_cache=True)
+            memory_type = MemoryType(result.memory_type)
+            return memory_type, result.confidence
+        except Exception:
+            pass  # Fall through to text-based parsing
+
+    # Fallback: text-based parsing
+    from app.utilities import extract_json_from_text
     response = await llm.get_completion(prompt, use_cache=True)
     parsed = extract_json_from_text(response)
 

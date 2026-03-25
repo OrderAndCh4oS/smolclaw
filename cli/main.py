@@ -91,6 +91,8 @@ SLASH_COMMANDS_HELP = "\n".join([
 
 @app.callback(invoke_without_command=True)
 def main(ctx: typer.Context):
+    from app.tracing import init_tracing
+    init_tracing()
     if ctx.invoked_subcommand is None:
         typer.echo(ctx.get_help())
         raise typer.Exit()

@@ -322,6 +322,18 @@ class ContradictionDetector:
         prompt = get_contradiction_adjudication_prompt(
             entity_or_edge, existing_descriptions, new_description,
         )
+
+        # Try structured output first (self.llm may be a raw callable or an LLM object)
+        llm_obj = getattr(self.llm, "__self__", None) if hasattr(self.llm, "__self__") else None
+        if llm_obj and hasattr(llm_obj, "get_structured_completion"):
+            try:
+                from app.schemas import ContradictionVerdict
+                result = await llm_obj.get_structured_completion(prompt, ContradictionVerdict)
+                return result.verdict, result.confidence, result.reasoning
+            except Exception:
+                pass  # Fall through to text-based
+
+        # Fallback: text-based parsing
         try:
             result = await self.llm(prompt)
             parsed = extract_json_from_text(result)

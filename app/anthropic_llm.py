@@ -66,19 +66,24 @@ class AnthropicLlm:
         if context:
             kwargs["system"] = context
 
+        from app.tracing import trace_llm_call
         try:
-            started = time.perf_counter()
-            response = self.client.messages.create(**kwargs)
-            duration_ms = int((time.perf_counter() - started) * 1000)
-            result = response.content[0].text
-            usage = getattr(response, "usage", None)
-            input_tokens = getattr(usage, "input_tokens", 0)
-            output_tokens = getattr(usage, "output_tokens", 0)
-            self._record_usage(
-                "completion", model,
-                input_tokens, output_tokens, input_tokens + output_tokens,
-                duration_ms,
-            )
+            with trace_llm_call("completion", model) as span:
+                started = time.perf_counter()
+                response = self.client.messages.create(**kwargs)
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                result = response.content[0].text
+                usage = getattr(response, "usage", None)
+                input_tokens = getattr(usage, "input_tokens", 0)
+                output_tokens = getattr(usage, "output_tokens", 0)
+                span.set_attribute("llm.prompt_tokens", input_tokens)
+                span.set_attribute("llm.completion_tokens", output_tokens)
+                span.set_attribute("llm.duration_ms", duration_ms)
+                self._record_usage(
+                    "completion", model,
+                    input_tokens, output_tokens, input_tokens + output_tokens,
+                    duration_ms,
+                )
         except Exception as e:
             logger.error(f"Error getting completion: {e}")
             raise
@@ -117,19 +122,24 @@ class AnthropicLlm:
         if stream and on_chunk:
             return await self._stream_tool_completion(kwargs, model, on_chunk)
 
+        from app.tracing import trace_llm_call
         try:
-            started = time.perf_counter()
-            response = self.client.messages.create(**kwargs)
-            duration_ms = int((time.perf_counter() - started) * 1000)
-            usage = getattr(response, "usage", None)
-            input_tokens = getattr(usage, "input_tokens", 0)
-            output_tokens = getattr(usage, "output_tokens", 0)
-            self._record_usage(
-                "tool_completion", model,
-                input_tokens, output_tokens, input_tokens + output_tokens,
-                duration_ms,
-            )
-            return self._normalize_response(response)
+            with trace_llm_call("tool_completion", model) as span:
+                started = time.perf_counter()
+                response = self.client.messages.create(**kwargs)
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                usage = getattr(response, "usage", None)
+                input_tokens = getattr(usage, "input_tokens", 0)
+                output_tokens = getattr(usage, "output_tokens", 0)
+                span.set_attribute("llm.prompt_tokens", input_tokens)
+                span.set_attribute("llm.completion_tokens", output_tokens)
+                span.set_attribute("llm.duration_ms", duration_ms)
+                self._record_usage(
+                    "tool_completion", model,
+                    input_tokens, output_tokens, input_tokens + output_tokens,
+                    duration_ms,
+                )
+                return self._normalize_response(response)
         except Exception as e:
             logger.error(f"Error getting tool completion: {e}")
             raise
@@ -157,6 +167,68 @@ class AnthropicLlm:
             return self._normalize_response(response)
         except Exception as e:
             logger.error(f"Error streaming tool completion: {e}")
+            raise
+
+    async def get_structured_completion(
+        self, query: str, response_model, model: Optional[str] = None, context: str = "",
+        use_cache: bool = True,
+    ):
+        """Get a completion parsed into a Pydantic model.
+
+        Anthropic lacks native structured output, so we inject the JSON schema
+        into the system prompt and validate the response with Pydantic.
+        """
+        from app.utilities import extract_json_from_text
+
+        model = model or self.completion_model
+        schema_json = json.dumps(response_model.model_json_schema(), indent=2)
+        schema_instruction = (
+            f"You must respond with ONLY valid JSON matching this schema:\n"
+            f"```json\n{schema_json}\n```\n"
+            f"Do not include any other text, markdown, or explanation."
+        )
+        full_context = f"{context}\n\n{schema_instruction}" if context else schema_instruction
+
+        query_hash = self._get_query_cache_key(
+            query=f"structured:{response_model.__name__}:{query}", model=model, context=full_context,
+        )
+        if use_cache and await self.query_cache_kv.has(query_hash):
+            logger.info("Structured query cache hit")
+            cache_data = await self.query_cache_kv.get_by_key(query_hash)
+            self._record_usage("structured_completion", model, 0, 0, 0, 0, cached=True)
+            return response_model.model_validate(cache_data["result"])
+
+        kwargs = {
+            "model": model,
+            "max_tokens": 4096,
+            "system": full_context,
+            "messages": [{"role": "user", "content": query}],
+        }
+
+        try:
+            started = time.perf_counter()
+            response = self.client.messages.create(**kwargs)
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            usage = getattr(response, "usage", None)
+            input_tokens = getattr(usage, "input_tokens", 0)
+            output_tokens = getattr(usage, "output_tokens", 0)
+            self._record_usage(
+                "structured_completion", model,
+                input_tokens, output_tokens, input_tokens + output_tokens,
+                duration_ms,
+            )
+            raw_text = response.content[0].text
+            parsed_json = extract_json_from_text(raw_text)
+            if parsed_json is None:
+                raise ValueError(f"No JSON found in Anthropic response: {raw_text[:200]}")
+            result = response_model.model_validate(parsed_json)
+            await self.query_cache_kv.add(query_hash, {
+                "query": query, "model": model, "context": full_context,
+                "result": result.model_dump(),
+            })
+            return result
+        except Exception as e:
+            logger.error(f"Error getting structured completion: {e}")
             raise
 
     async def get_embedding(self, content: Any, model: Optional[str] = None) -> List[float]:

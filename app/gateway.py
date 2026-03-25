@@ -258,6 +258,8 @@ class Gateway:
         return agent
 
     async def start(self):
+        from app.tracing import init_tracing
+        init_tracing()
         ensure_dir(SESSIONS_DIR)
         self._smol_rag = create_smol_rag()
         self._session_manager = SessionManager(SESSIONS_DIR)

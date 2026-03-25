@@ -125,6 +125,8 @@ class AgentLoop:
 
         tools = self.tool_registry.get_definitions() or None
 
+        from app.tracing import trace_agent_turn
+
         for iteration in range(self.max_iterations):
             if self._stop_after_current:
                 msg = "Stopped: time limit reached."

@@ -84,23 +84,26 @@ class OpenAiLlm:
         system_message = [{"role": "system", "content": context}] if context else []
         messages: List[Dict[str, str]] = [{"role": "user", "content": query}]
 
+        from app.tracing import trace_llm_call
         try:
-            started = time.perf_counter()
-            response = self.client.chat.completions.create(
-                model=model,
-                store=True,
-                messages=system_message + messages
-            )
-            duration_ms = int((time.perf_counter() - started) * 1000)
-            result = response.choices[0].message.content
-            usage = getattr(response, "usage", None)
-            self._record_usage(
-                "completion", model,
-                getattr(usage, "prompt_tokens", 0),
-                getattr(usage, "completion_tokens", 0),
-                getattr(usage, "total_tokens", 0),
-                duration_ms,
-            )
+            with trace_llm_call("completion", model) as span:
+                started = time.perf_counter()
+                response = self.client.chat.completions.create(
+                    model=model,
+                    store=True,
+                    messages=system_message + messages
+                )
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                result = response.choices[0].message.content
+                usage = getattr(response, "usage", None)
+                pt = getattr(usage, "prompt_tokens", 0)
+                ct = getattr(usage, "completion_tokens", 0)
+                tt = getattr(usage, "total_tokens", 0)
+                span.set_attribute("llm.prompt_tokens", pt)
+                span.set_attribute("llm.completion_tokens", ct)
+                span.set_attribute("llm.total_tokens", tt)
+                span.set_attribute("llm.duration_ms", duration_ms)
+                self._record_usage("completion", model, pt, ct, tt, duration_ms)
         except Exception as e:
             logger.error(f"Error getting completion: {e}")
             raise
@@ -140,32 +143,36 @@ class OpenAiLlm:
         if stream and on_chunk:
             return await self._stream_tool_completion(kwargs, model, on_chunk)
 
+        from app.tracing import trace_llm_call
         try:
-            started = time.perf_counter()
-            response = self.client.chat.completions.create(**kwargs)
-            duration_ms = int((time.perf_counter() - started) * 1000)
-            message = response.choices[0].message
-            tool_calls = message.tool_calls
-            usage = getattr(response, "usage", None)
-            self._record_usage(
-                "tool_completion", model,
-                getattr(usage, "prompt_tokens", 0),
-                getattr(usage, "completion_tokens", 0),
-                getattr(usage, "total_tokens", 0),
-                duration_ms,
-            )
-            return {
-                "content": message.content,
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "name": tc.function.name,
-                        "arguments": json.loads(tc.function.arguments),
-                    }
-                    for tc in (tool_calls or [])
-                ] or None,
-                "has_tool_calls": bool(tool_calls),
-            }
+            with trace_llm_call("tool_completion", model) as span:
+                started = time.perf_counter()
+                response = self.client.chat.completions.create(**kwargs)
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                message = response.choices[0].message
+                tool_calls = message.tool_calls
+                usage = getattr(response, "usage", None)
+                pt = getattr(usage, "prompt_tokens", 0)
+                ct = getattr(usage, "completion_tokens", 0)
+                tt = getattr(usage, "total_tokens", 0)
+                span.set_attribute("llm.prompt_tokens", pt)
+                span.set_attribute("llm.completion_tokens", ct)
+                span.set_attribute("llm.total_tokens", tt)
+                span.set_attribute("llm.duration_ms", duration_ms)
+                span.set_attribute("llm.has_tool_calls", bool(tool_calls))
+                self._record_usage("tool_completion", model, pt, ct, tt, duration_ms)
+                return {
+                    "content": message.content,
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "name": tc.function.name,
+                            "arguments": json.loads(tc.function.arguments),
+                        }
+                        for tc in (tool_calls or [])
+                    ] or None,
+                    "has_tool_calls": bool(tool_calls),
+                }
         except Exception as e:
             logger.error(f"Error getting tool completion: {e}")
             raise
@@ -245,6 +252,58 @@ class OpenAiLlm:
             }
         except Exception as e:
             logger.error(f"Error streaming tool completion: {e}")
+            raise
+
+    async def get_structured_completion(
+        self, query: str, response_model, model: Optional[str] = None, context: str = "",
+        use_cache: bool = True,
+    ):
+        """Get a completion parsed into a Pydantic model using OpenAI's structured output.
+
+        :param query: The prompt text.
+        :param response_model: A Pydantic BaseModel subclass.
+        :param model: Model override.
+        :param context: Optional system context.
+        :param use_cache: Whether to use cache.
+        :return: An instance of response_model.
+        """
+        model = model or self.completion_model
+        query_hash = self._get_query_cache_key(
+            query=f"structured:{response_model.__name__}:{query}", model=model, context=context,
+        )
+        if use_cache and await self.query_cache_kv.has(query_hash):
+            logger.info("Structured query cache hit")
+            cache_data = await self.query_cache_kv.get_by_key(query_hash)
+            self._record_usage("structured_completion", model, 0, 0, 0, 0, cached=True)
+            return response_model.model_validate(cache_data["result"])
+
+        system_message = [{"role": "system", "content": context}] if context else []
+        messages = system_message + [{"role": "user", "content": query}]
+
+        try:
+            started = time.perf_counter()
+            response = self.client.beta.chat.completions.parse(
+                model=model,
+                messages=messages,
+                response_format=response_model,
+            )
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            usage = getattr(response, "usage", None)
+            self._record_usage(
+                "structured_completion", model,
+                getattr(usage, "prompt_tokens", 0),
+                getattr(usage, "completion_tokens", 0),
+                getattr(usage, "total_tokens", 0),
+                duration_ms,
+            )
+            parsed = response.choices[0].message.parsed
+            await self.query_cache_kv.add(query_hash, {
+                "query": query, "model": model, "context": context,
+                "result": parsed.model_dump(),
+            })
+            return parsed
+        except Exception as e:
+            logger.error(f"Error getting structured completion: {e}")
             raise
 
     async def get_embedding(self, content: Any, model: Optional[str] = None) -> List[float]:

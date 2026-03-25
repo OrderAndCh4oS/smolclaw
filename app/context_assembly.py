@@ -127,13 +127,25 @@ class ContextAssembler(ContextBuilder):
 
         # 2. KG entity/relationship excerpts
         try:
-            from app.utilities import extract_json_from_text
             from app.prompts import get_high_low_level_keywords_prompt
             from app.definitions import KG_SEP
 
             prompt = get_high_low_level_keywords_prompt(query)
-            kw_result = await self.smol_rag.rate_limited_get_completion(prompt)
-            keyword_data = extract_json_from_text(kw_result) or {}
+
+            # Try structured output, fall back to text parsing
+            keyword_data = {}
+            llm = getattr(self.smol_rag, "llm", None)
+            if llm and hasattr(llm, "get_structured_completion"):
+                try:
+                    from app.schemas import HighLowKeywords
+                    result = await llm.get_structured_completion(prompt, HighLowKeywords)
+                    keyword_data = result.model_dump()
+                except Exception:
+                    pass
+            if not keyword_data:
+                from app.utilities import extract_json_from_text
+                kw_result = await self.smol_rag.rate_limited_get_completion(prompt)
+                keyword_data = extract_json_from_text(kw_result) or {}
 
             ll_dataset, ll_entity_excerpts, _ = await self.smol_rag._get_low_level_dataset(keyword_data)
             _, _, hl_entity_excerpts = await self.smol_rag._get_high_level_dataset(keyword_data)
@@ -169,8 +181,14 @@ class ContextAssembler(ContextBuilder):
         T0 (identity) memories are always included outside the token budget.
         T1/T2 memories are retrieved via vector + KG + BM25 and budget-filtered.
         """
+        from app.tracing import trace_retrieval
+
         manifest = AssemblyManifest(total_budget=self.token_budget, used_tokens=0)
 
+        with trace_retrieval(query) as retrieval_span:
+            return await self._retrieve_context_inner(query, top_k, manifest, retrieval_span)
+
+    async def _retrieve_context_inner(self, query, top_k, manifest, retrieval_span):
         # T0 memories: always in context (outside budget)
         t0_items = await self._gather_t0_items()
         t0_parts = []
@@ -226,6 +244,10 @@ class ContextAssembler(ContextBuilder):
         manifest.used_tokens = tokens_used
         self.last_manifest = manifest
         logger.info(manifest.summary())
+
+        retrieval_span.set_attribute("retrieval.included_count", len(manifest.included))
+        retrieval_span.set_attribute("retrieval.excluded_count", len(manifest.excluded))
+        retrieval_span.set_attribute("retrieval.tokens_used", tokens_used)
 
         return "\n\n---\n\n".join(context_parts), manifest
 
