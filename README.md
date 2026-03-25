@@ -130,7 +130,87 @@ Every agent draws from a shared tool registry. The available tools cover four ca
 
 **Multi-agent** tools (`spawn_agent`, `get_result`, `await_result`) allow orchestrating sub-agents from within a conversation.
 
+**Orchestration** tools provide higher-level patterns: `sequential_pipeline` chains agents so the output of one becomes the input of the next, `fanout_pipeline` runs agents in parallel on the same input, and `route` directs input to the best-matching agent via pattern matching or LLM classification.
+
 Tools are extensible — implement the `Tool` base class (name, description, parameters, async execute), register in the factory, and add the name to `agents.yaml`. See `app/tools/base.py` for the interface.
+
+### Tool Middleware
+
+All tool executions pass through a composable middleware chain. Middleware wraps `tool.execute()` in an onion model — each layer can inspect/modify arguments, short-circuit, retry, or add instrumentation.
+
+Built-in middleware:
+
+- **LoggingMiddleware** — logs tool name, args summary, duration, and success/failure (registered by default)
+- **RetryMiddleware** — retries when the result starts with `"Error:"` (configurable max retries and prefixes)
+- **TimeoutMiddleware** — wraps execution in `asyncio.wait_for()` with a configurable timeout
+- **CacheMiddleware** — in-memory cache with TTL, keyed on tool name + arguments
+- **TracingMiddleware** — creates OpenTelemetry spans for tool execution (see Observability below)
+
+Register middleware globally or per-tool:
+
+```python
+from app.tools.middleware import RetryMiddleware, CacheMiddleware
+
+registry.use(RetryMiddleware(max_retries=2))           # all tools
+registry.use_for("web_search", CacheMiddleware(ttl_seconds=600))  # specific tool
+```
+
+Filtered registries (via `filter_by_names`) inherit middleware from their parent.
+
+## Structured Output
+
+SmolClaw uses Pydantic models to enforce structured responses from LLMs where reliable parsing matters. Both LLM providers support `get_structured_completion()`:
+
+- **OpenAI** — uses native structured output via `response_format` (the model is constrained to match the schema)
+- **Anthropic** — injects the JSON schema into the system prompt and validates the response with Pydantic
+
+Structured output is used for memory classification, contradiction adjudication, and keyword extraction. All call sites include a text-parsing fallback so the system degrades gracefully if structured output fails.
+
+Schemas are defined in `app/schemas.py`: `MemoryClassification`, `ContradictionVerdict`, `HighLowKeywords`, `EntityExtractionResult`, and `RouteDecision`.
+
+## Observability
+
+SmolClaw has opt-in OpenTelemetry tracing. When OTEL packages are installed and an exporter endpoint is configured, spans are created for:
+
+| Span | Attributes |
+|------|-----------|
+| `llm.completion` / `llm.tool_completion` | model, prompt_tokens, completion_tokens, total_tokens, duration_ms |
+| `tool.{name}` | tool.name, tool.arguments, tool.success, tool.duration_ms |
+| `context.retrieval` | retrieval.included_count, retrieval.excluded_count, retrieval.tokens_used |
+
+### Jaeger Setup (Quickstart)
+
+```bash
+# Start Jaeger
+docker run -d --name jaeger -p 16686:16686 -p 4318:4318 jaegertracing/all-in-one:latest
+
+# Add to .env
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+
+# Run SmolClaw — traces are exported automatically
+python -m cli.main chat
+```
+
+Open http://localhost:16686 to view traces. Search for service `smolclaw`.
+
+### How It Works
+
+Tracing is initialized on startup in both the CLI (`cli/main.py`) and gateway (`app/gateway.py`). The `app/tracing.py` module provides:
+
+- `init_tracing()` — configures the OTEL SDK with an OTLP HTTP exporter. Reads `OTEL_EXPORTER_OTLP_ENDPOINT` from the environment.
+- `get_tracer()` — returns the real tracer or a zero-cost `NoOpTracer` if OTEL is not installed.
+- `trace_llm_call()`, `trace_agent_turn()`, `trace_retrieval()` — context managers for common span types.
+- `TracingMiddleware` — tool middleware that creates spans (registered via the tool factory).
+
+If the `opentelemetry-*` packages are not installed, all tracing is a no-op with zero overhead. No conditionals are scattered across the codebase — the no-op tracer handles it.
+
+### Other Exporters
+
+Any OTLP-compatible backend works. Set `OTEL_EXPORTER_OTLP_ENDPOINT` to your collector:
+
+- **Grafana Tempo** — `http://tempo:4318`
+- **Arize Phoenix** — `pip install arize-phoenix && phoenix serve` → `http://localhost:6006`
+- **Langfuse** — configure via their OTLP integration docs
 
 ## Token Usage Tracking
 
@@ -213,15 +293,20 @@ app/
   usage.py             # Token usage tracking, audit trail, persistence
   watcher.py           # File change detection and re-ingestion
   gateway.py           # WebSocket server
+  schemas.py           # Pydantic models for structured LLM responses
+  tracing.py           # OpenTelemetry tracing (opt-in, no-op fallback)
+  orchestration.py     # Pipeline and routing patterns (sequential, fanout, route)
   tools/
     base.py            # Tool ABC (name, description, parameters, execute)
-    registry.py        # Tool registry with filtering
+    registry.py        # Tool registry with filtering and middleware
     factory.py         # Mode-aware tool builder (direct/MCP)
+    middleware.py       # Composable tool middleware (logging, retry, timeout, cache, tracing)
     memory_tools.py    # memory_search, memory_graph_query, memory_store, memory_relate, memory_recall, contradiction_review
     filesystem.py      # read_file, write_file, edit_file, list_dir
     web.py             # web_search, web_fetch
     shell.py           # exec
     spawn.py           # spawn_agent, get_result, await_result
+    orchestration_tools.py  # sequential_pipeline, fanout_pipeline, route
     mcp_tools.py       # MCP-delegating tool wrappers (gateway mode)
   reset.py             # Full store wipe (reset command)
 cli/
@@ -244,7 +329,7 @@ AGENT.md               # Shared bootstrap (loaded by all agents)
 python -m pytest
 ```
 
-Tests use mock LLMs that return random embeddings, so they run without API keys. 504 tests, ~6 seconds.
+Tests use mock LLMs that return random embeddings, so they run without API keys. ~560 tests, ~6 seconds.
 
 ## What's Here
 
@@ -252,10 +337,13 @@ Tests use mock LLMs that return random embeddings, so they run without API keys.
 - Persistent memory: knowledge graph (NetworkX), vector search (SQLite), BM25 full-text
 - Memory lifecycle: promote on access, decay on session end, contradiction detection
 - Session management with LLM-summarised consolidation
-- Multi-agent orchestration (spawn/await pattern)
+- Multi-agent orchestration: spawn/await, sequential pipeline, fanout, routing
+- Structured output via Pydantic models (OpenAI native + Anthropic prompt-based)
+- Composable tool middleware: logging, retry, timeout, cache, tracing
+- OpenTelemetry tracing: opt-in spans on LLM calls, tools, and retrieval (Jaeger, Grafana, etc.)
 - WebSocket gateway for remote clients with authentication
 - Token usage tracking and audit trail across all LLM calls
-- Extensible tool system with 14 tools across 6 categories
+- Extensible tool system with 17 tools across 7 categories
 - CLI and gateway as dual interfaces
 - Docker support
 
@@ -286,6 +374,5 @@ The gaps listed below map closely to NanoClaw's strengths.
 - **Cost controls** — tracks tokens but doesn't enforce budget limits or spend caps
 - **External integrations** — no Slack, email, calendar, or webhook tools
 - **Multi-user / multi-tenant** — single-user only, no auth beyond basic gateway token
-- **Observability dashboard** — usage data is persisted as JSON but there's no UI to view it
-- **Workflow orchestration** — no chains, DAGs, or conditional routing between agents
+- **Observability dashboard** — OTEL traces go to Jaeger/Grafana, but no built-in UI for browsing memory state or sessions
 - **Deployment** — Dockerfile exists but no CI/CD, health checks, or managed deployment story
