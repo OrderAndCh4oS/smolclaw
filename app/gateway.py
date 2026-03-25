@@ -235,6 +235,8 @@ class Gateway:
             mode="mcp",
             token_issuer_url=self.token_issuer_url,
             gateway_url=self.gateway_url,
+            agent_configs=configs,
+            session_manager=self._session_manager,
         )
 
         agent = build_agent_loop(

@@ -163,13 +163,16 @@ def _print_usage_summary(console, session_usage):
             )
 
 
-def _build_cli_tool_registry(smol_rag: SmolRag, workspace: str, llm=None):
+def _build_cli_tool_registry(smol_rag: SmolRag, workspace: str, llm=None,
+                              agent_configs=None, session_manager=None):
     return build_tool_registry(
         smol_rag=smol_rag,
         memory_docs_dir=MEMORY_DOCS_DIR,
         workspace=workspace,
         llm=llm,
         mode="direct",
+        agent_configs=agent_configs,
+        session_manager=session_manager,
     )
 
 
@@ -193,7 +196,10 @@ def _build_multiagent(
         available = ", ".join(sorted(configs.keys()))
         raise typer.BadParameter(f"Unknown agent '{agent_name}'. Available: {available}")
 
-    master_registry = _build_cli_tool_registry(smol_rag, workspace)
+    master_registry = _build_cli_tool_registry(
+        smol_rag, workspace,
+        agent_configs=configs, session_manager=session_manager,
+    )
 
     memory_dir = ensure_dir(MEMORY_DOCS_DIR) if auto_export else None
 

@@ -1,13 +1,13 @@
 """Unified tool registry factory for CLI and Gateway."""
 
-from typing import List
+from typing import Dict, List, Optional
 
 from app.tools.memory_tools import (
     MemorySearchTool, MemoryGraphQueryTool, MemoryStoreTool,
     MemoryRelateTool, MemoryRecallTool, MemoryGetTool,
     ContradictionReviewTool,
 )
-from app.tools.middleware import MiddlewareFn, logging_middleware
+from app.tools.middleware import MiddlewareFn, TracingMiddleware, logging_middleware
 from app.tools.registry import ToolRegistry
 from app.utilities import ensure_dir
 
@@ -21,6 +21,8 @@ def build_tool_registry(
     token_issuer_url: str = None,
     gateway_url: str = None,
     middleware: List[MiddlewareFn] | None = None,
+    agent_configs: Optional[Dict] = None,
+    session_manager=None,
 ) -> ToolRegistry:
     """Build a tool registry with appropriate tools based on mode.
 
@@ -66,8 +68,18 @@ def build_tool_registry(
     if hasattr(smol_rag, 'contradiction_detector') and smol_rag.contradiction_detector:
         registry.register(ContradictionReviewTool(smol_rag.contradiction_detector))
 
-    # Register middleware — logging by default, plus any caller-provided
+    # Orchestration tools (when agent configs and session manager are provided)
+    if agent_configs and session_manager:
+        from app.tools.orchestration_tools import (
+            SequentialPipelineTool, FanoutPipelineTool, RouteTool,
+        )
+        registry.register(SequentialPipelineTool(agent_configs, registry, smol_rag, session_manager))
+        registry.register(FanoutPipelineTool(agent_configs, registry, smol_rag, session_manager))
+        registry.register(RouteTool(agent_configs, registry, smol_rag, session_manager))
+
+    # Register middleware — logging + tracing by default, plus any caller-provided
     registry.use(logging_middleware)
+    registry.use(TracingMiddleware())
     for mw in (middleware or []):
         registry.use(mw)
 

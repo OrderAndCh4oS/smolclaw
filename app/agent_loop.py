@@ -125,13 +125,19 @@ class AgentLoop:
 
         tools = self.tool_registry.get_definitions() or None
 
-        from app.tracing import trace_agent_turn
+        from app.tracing import get_tracer
 
         for iteration in range(self.max_iterations):
+            _turn_span = get_tracer().start_span(f"agent.turn.{iteration}")
+            _turn_span.set_attribute("agent.session_key", self.session.key)
+            _turn_span.set_attribute("agent.iteration", iteration)
+            _turn_span.set_attribute("agent.model", getattr(self.llm, "completion_model", "unknown"))
+
             if self._stop_after_current:
                 msg = "Stopped: time limit reached."
                 self.session.add_message({"role": "assistant", "content": msg})
                 self.session_manager.save(self.session)
+                _turn_span.end()
                 return msg
 
             await self.hook_runner.fire(ON_BEFORE_TURN, {
@@ -203,6 +209,7 @@ class AgentLoop:
                     "response": content,
                     "had_tool_calls": False,
                 })
+                _turn_span.end()
                 return content
 
             # Process tool calls
@@ -290,6 +297,7 @@ class AgentLoop:
                 "tool_calls": [tc["name"] for tc in result["tool_calls"]],
                 "had_tool_calls": True,
             })
+            _turn_span.end()
 
         # Exceeded max iterations
         msg = "Stopped: reached max iterations without a final response."
