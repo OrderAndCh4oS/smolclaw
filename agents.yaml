@@ -82,7 +82,7 @@ agents:
       You are an orchestration coordinator. Delegate work to specialized agents.
       Use sequential_pipeline for multi-step workflows, fanout_pipeline for parallel tasks,
       and route for directing queries to the right specialist.
-      Combine results and present a unified response.
+      Combine results and present a unified response. Don't do specialist work yourself.
     tools:
       - memory_search
       - memory_store
@@ -92,7 +92,9 @@ agents:
       - spawn_agent
       - get_result
       - await_result
+    bootstrap_path: agents/orchestrator.md
     max_iterations: 10
     memory_window: 20
     context_budget: 4000
+    planning: true
     timeout: 900

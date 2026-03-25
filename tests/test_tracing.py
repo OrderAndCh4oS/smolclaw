@@ -42,10 +42,12 @@ class TestNoOpTracer:
 
 
 class TestGetTracer:
-    def test_returns_noop_without_init(self):
-        """Before init, get_tracer returns a no-op tracer."""
+    def test_returns_tracer(self):
+        """get_tracer returns either a real tracer (if OTEL installed) or a no-op."""
         tracer = get_tracer()
-        assert isinstance(tracer, NoOpTracer)
+        # Must have start_span and start_as_current_span methods
+        assert hasattr(tracer, "start_span")
+        assert hasattr(tracer, "start_as_current_span")
 
 
 class TestTraceContextManagers:

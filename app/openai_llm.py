@@ -272,10 +272,14 @@ class OpenAiLlm:
             query=f"structured:{response_model.__name__}:{query}", model=model, context=context,
         )
         if use_cache and await self.query_cache_kv.has(query_hash):
-            logger.info("Structured query cache hit")
-            cache_data = await self.query_cache_kv.get_by_key(query_hash)
-            self._record_usage("structured_completion", model, 0, 0, 0, 0, cached=True)
-            return response_model.model_validate(cache_data["result"])
+            try:
+                cache_data = await self.query_cache_kv.get_by_key(query_hash)
+                result = response_model.model_validate(cache_data["result"])
+                logger.info("Structured query cache hit")
+                self._record_usage("structured_completion", model, 0, 0, 0, 0, cached=True)
+                return result
+            except Exception:
+                logger.warning("Structured cache entry invalid, fetching fresh")
 
         system_message = [{"role": "system", "content": context}] if context else []
         messages = system_message + [{"role": "user", "content": query}]
