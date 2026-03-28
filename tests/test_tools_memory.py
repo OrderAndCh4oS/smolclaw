@@ -13,6 +13,8 @@ from app.tools.memory_tools import (
     MemorySearchTool,
     MemoryGraphQueryTool,
     MemoryStoreTool,
+    MemoryGetTool,
+    ContradictionReviewTool,
     format_memory_content,
 )
 
@@ -291,3 +293,44 @@ class TestToolSchemas:
             assert "name" in schema["function"]
             assert "description" in schema["function"]
             assert "parameters" in schema["function"]
+
+
+class TestToolExamples:
+    """Verify all memory tools have well-formed usage examples."""
+
+    def _all_memory_tools(self, mock_smol_rag, temp_dir):
+        detector = MagicMock()
+        return [
+            MemorySearchTool(mock_smol_rag),
+            MemoryGraphQueryTool(mock_smol_rag),
+            MemoryStoreTool(mock_smol_rag, temp_dir),
+            MemoryRelateTool(mock_smol_rag),
+            MemoryRecallTool(mock_smol_rag),
+            MemoryGetTool(mock_smol_rag),
+            ContradictionReviewTool(detector),
+        ]
+
+    def test_each_memory_tool_has_examples(self, mock_smol_rag, temp_dir):
+        for tool in self._all_memory_tools(mock_smol_rag, temp_dir):
+            assert len(tool.examples) >= 1, f"{tool.name} should have at least 1 example"
+
+    def test_examples_have_required_keys(self, mock_smol_rag, temp_dir):
+        for tool in self._all_memory_tools(mock_smol_rag, temp_dir):
+            for ex in tool.examples:
+                assert "description" in ex, f"{tool.name} example missing 'description'"
+                assert "arguments" in ex, f"{tool.name} example missing 'arguments'"
+
+    def test_example_arguments_are_valid_params(self, mock_smol_rag, temp_dir):
+        for tool in self._all_memory_tools(mock_smol_rag, temp_dir):
+            valid_keys = set(tool.parameters.get("properties", {}).keys())
+            for ex in tool.examples:
+                arg_keys = set(ex["arguments"].keys())
+                assert arg_keys <= valid_keys, (
+                    f"{tool.name} example has invalid argument keys: {arg_keys - valid_keys}"
+                )
+
+    def test_examples_included_in_schema(self, mock_smol_rag, temp_dir):
+        for tool in self._all_memory_tools(mock_smol_rag, temp_dir):
+            schema = tool.to_schema()
+            assert "examples" in schema["function"], f"{tool.name} schema should include examples"
+            assert schema["function"]["examples"] == tool.examples

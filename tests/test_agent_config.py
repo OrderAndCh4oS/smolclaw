@@ -115,3 +115,67 @@ class TestAgentConfigLoader:
     def test_load_missing_file_raises(self):
         with pytest.raises(FileNotFoundError):
             AgentConfigLoader.load("/nonexistent/agents.yaml")
+
+
+class TestAgentConfigSkills:
+    def test_skills_default_empty(self):
+        config = AgentConfig(name="test", model="m", persona="p", tools=[])
+        assert config.skills == []
+
+    def test_load_with_skills(self, temp_dir):
+        yaml_path = os.path.join(temp_dir, "agents.yaml")
+        with open(yaml_path, "w") as f:
+            f.write(
+                "agents:\n"
+                "  - name: skilled\n"
+                "    model: gpt-5.4-mini\n"
+                "    persona: Skilled agent.\n"
+                "    skills:\n"
+                "      - memory-hygiene.md\n"
+                "      - code-review.md\n"
+            )
+        configs = AgentConfigLoader.load(yaml_path)
+        assert configs["skilled"].skills == ["memory-hygiene.md", "code-review.md"]
+
+    def test_load_without_skills_gets_empty(self, temp_dir):
+        yaml_path = os.path.join(temp_dir, "agents.yaml")
+        with open(yaml_path, "w") as f:
+            f.write(
+                "agents:\n"
+                "  - name: plain\n"
+                "    model: m\n"
+                "    persona: p\n"
+            )
+        configs = AgentConfigLoader.load(yaml_path)
+        assert configs["plain"].skills == []
+
+
+class TestAgentConfigPermissionMode:
+    def test_permission_mode_default_full(self):
+        config = AgentConfig(name="test", model="m", persona="p", tools=[])
+        assert config.permission_mode == "full"
+
+    def test_load_with_permission_mode(self, temp_dir):
+        yaml_path = os.path.join(temp_dir, "agents.yaml")
+        with open(yaml_path, "w") as f:
+            f.write(
+                "agents:\n"
+                "  - name: reader\n"
+                "    model: m\n"
+                "    persona: p\n"
+                "    permission_mode: plan\n"
+            )
+        configs = AgentConfigLoader.load(yaml_path)
+        assert configs["reader"].permission_mode == "plan"
+
+    def test_load_without_permission_mode_gets_full(self, temp_dir):
+        yaml_path = os.path.join(temp_dir, "agents.yaml")
+        with open(yaml_path, "w") as f:
+            f.write(
+                "agents:\n"
+                "  - name: agent\n"
+                "    model: m\n"
+                "    persona: p\n"
+            )
+        configs = AgentConfigLoader.load(yaml_path)
+        assert configs["agent"].permission_mode == "full"

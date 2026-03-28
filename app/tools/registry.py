@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Set
 
 from app.tools.base import Tool
 from app.tools.middleware import MiddlewareChain, MiddlewareFn
@@ -9,6 +9,7 @@ class ToolRegistry:
         self._tools: Dict[str, Tool] = {}
         self._middleware = MiddlewareChain()
         self._per_tool_middleware: Dict[str, MiddlewareChain] = {}
+        self._exposed: Set[str] = set()
 
     def register(self, tool: Tool):
         self._tools[tool.name] = tool
@@ -24,7 +25,28 @@ class ToolRegistry:
         self._per_tool_middleware[tool_name].use(mw)
 
     def get_definitions(self) -> List[dict]:
-        return [tool.to_schema() for tool in self._tools.values()]
+        """Return schemas for non-deferred tools (plus any dynamically exposed ones)."""
+        return [
+            tool.to_schema()
+            for tool in self._tools.values()
+            if not tool.deferred or tool.name in self._exposed
+        ]
+
+    def search_tools(self, query: str) -> List[dict]:
+        """Search deferred tools by case-insensitive substring match on name and description."""
+        query_lower = query.lower()
+        matches = []
+        for tool in self._tools.values():
+            if not tool.deferred or tool.name in self._exposed:
+                continue
+            if query_lower in tool.name.lower() or query_lower in tool.description.lower():
+                matches.append(tool.to_schema())
+        return matches
+
+    def expose_tool(self, name: str):
+        """Mark a deferred tool as visible in get_definitions()."""
+        if name in self._tools:
+            self._exposed.add(name)
 
     async def execute(self, name: str, arguments: Dict[str, Any]) -> str:
         if name not in self._tools:
@@ -48,8 +70,9 @@ class ToolRegistry:
         for name in names:
             if name in self._tools:
                 filtered._tools[name] = self._tools[name]
-        # Inherit middleware from parent registry
+        # Inherit middleware and exposed set from parent registry
         filtered._middleware = MiddlewareChain(list(self._middleware._middlewares))
+        filtered._exposed = set(self._exposed)
         for tool_name, chain in self._per_tool_middleware.items():
             if tool_name in filtered._tools:
                 filtered._per_tool_middleware[tool_name] = MiddlewareChain(

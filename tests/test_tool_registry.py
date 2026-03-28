@@ -126,6 +126,125 @@ class ThirdTool(Tool):
         return "third result"
 
 
+class ToolWithExamples(Tool):
+    @property
+    def name(self) -> str:
+        return "example_tool"
+
+    @property
+    def description(self) -> str:
+        return "A tool with examples"
+
+    @property
+    def parameters(self) -> dict:
+        return {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}
+
+    @property
+    def examples(self) -> list[dict]:
+        return [{"description": "Echo hello", "arguments": {"text": "hello"}}]
+
+    async def execute(self, **kwargs) -> str:
+        return f"echo: {kwargs['text']}"
+
+
+class TestToSchemaExamples:
+    def test_to_schema_includes_examples(self):
+        tool = ToolWithExamples()
+        schema = tool.to_schema()
+        assert "examples" in schema["function"]
+        assert len(schema["function"]["examples"]) == 1
+        assert schema["function"]["examples"][0]["arguments"]["text"] == "hello"
+
+    def test_to_schema_omits_examples_when_empty(self):
+        tool = DummyTool()
+        schema = tool.to_schema()
+        assert "examples" not in schema["function"]
+
+
+class DeferredDummyTool(Tool):
+    @property
+    def name(self) -> str:
+        return "deferred_dummy"
+
+    @property
+    def description(self) -> str:
+        return "A deferred tool for testing"
+
+    @property
+    def parameters(self) -> dict:
+        return {"type": "object", "properties": {}}
+
+    @property
+    def deferred(self) -> bool:
+        return True
+
+    async def execute(self, **kwargs) -> str:
+        return "deferred result"
+
+
+class TestDeferredTools:
+    def test_get_definitions_excludes_deferred(self):
+        registry = ToolRegistry()
+        registry.register(DummyTool())
+        registry.register(DeferredDummyTool())
+        defs = registry.get_definitions()
+        names = [d["function"]["name"] for d in defs]
+        assert "dummy" in names
+        assert "deferred_dummy" not in names
+
+    def test_search_tools_finds_by_name(self):
+        registry = ToolRegistry()
+        registry.register(DeferredDummyTool())
+        matches = registry.search_tools("deferred")
+        assert len(matches) == 1
+        assert matches[0]["function"]["name"] == "deferred_dummy"
+
+    def test_search_tools_finds_by_description(self):
+        registry = ToolRegistry()
+        registry.register(DeferredDummyTool())
+        matches = registry.search_tools("testing")
+        assert len(matches) == 1
+
+    def test_search_tools_no_match(self):
+        registry = ToolRegistry()
+        registry.register(DeferredDummyTool())
+        matches = registry.search_tools("nonexistent")
+        assert len(matches) == 0
+
+    def test_search_tools_ignores_already_exposed(self):
+        registry = ToolRegistry()
+        registry.register(DeferredDummyTool())
+        registry.expose_tool("deferred_dummy")
+        matches = registry.search_tools("deferred")
+        assert len(matches) == 0
+
+    def test_expose_tool_makes_deferred_visible(self):
+        registry = ToolRegistry()
+        registry.register(DeferredDummyTool())
+        assert len(registry.get_definitions()) == 0
+        registry.expose_tool("deferred_dummy")
+        defs = registry.get_definitions()
+        assert len(defs) == 1
+        assert defs[0]["function"]["name"] == "deferred_dummy"
+
+    def test_filter_by_names_carries_exposed(self):
+        registry = ToolRegistry()
+        registry.register(DummyTool())
+        registry.register(DeferredDummyTool())
+        registry.expose_tool("deferred_dummy")
+        filtered = registry.filter_by_names(["dummy", "deferred_dummy"])
+        defs = filtered.get_definitions()
+        names = [d["function"]["name"] for d in defs]
+        assert "deferred_dummy" in names
+
+    @pytest.mark.asyncio
+    async def test_deferred_tool_still_executable(self):
+        registry = ToolRegistry()
+        registry.register(DeferredDummyTool())
+        result = await registry.execute("deferred_dummy", {})
+        assert result == "deferred result"
+
+
 class TestFilterByNames:
     def test_filter_by_names_returns_subset(self):
         registry = ToolRegistry()

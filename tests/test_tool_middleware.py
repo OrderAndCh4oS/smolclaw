@@ -6,8 +6,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.tools.base import Tool
+from app.hooks import HookRunner, ON_BEFORE_TOOL, ON_AFTER_TOOL
 from app.tools.middleware import (
     CacheMiddleware,
+    HookFiringMiddleware,
     MiddlewareChain,
     RetryMiddleware,
     TimeoutMiddleware,
@@ -284,6 +286,57 @@ class TestCacheMiddleware:
 # ---------------------------------------------------------------------------
 # ToolRegistry middleware integration
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# HookFiringMiddleware
+# ---------------------------------------------------------------------------
+
+
+class TestHookFiringMiddleware:
+    @pytest.mark.asyncio
+    async def test_fires_before_and_after(self):
+        events = []
+        runner = HookRunner()
+        runner.on(ON_BEFORE_TOOL, lambda ctx: events.append(("before", ctx["tool_name"])))
+        runner.on(ON_AFTER_TOOL, lambda ctx: events.append(("after", ctx["tool_name"])))
+
+        chain = MiddlewareChain([HookFiringMiddleware(runner)])
+        tool = FakeTool(result="ok")
+        result = await chain.run(tool, {"q": "test"})
+        assert result == "ok"
+        assert events == [("before", "fake"), ("after", "fake")]
+
+    @pytest.mark.asyncio
+    async def test_after_includes_result_and_success(self):
+        captured = {}
+        runner = HookRunner()
+        runner.on(ON_AFTER_TOOL, lambda ctx: captured.update(ctx))
+
+        chain = MiddlewareChain([HookFiringMiddleware(runner)])
+        await chain.run(FakeTool(result="data"), {"q": "x"})
+        assert captured["result"] == "data"
+        assert captured["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_after_on_error_has_success_false(self):
+        captured = {}
+        runner = HookRunner()
+        runner.on(ON_AFTER_TOOL, lambda ctx: captured.update(ctx))
+
+        chain = MiddlewareChain([HookFiringMiddleware(runner)])
+        await chain.run(FakeTool(result="Error: something broke"), {})
+        assert captured["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_before_includes_arguments(self):
+        captured = {}
+        runner = HookRunner()
+        runner.on(ON_BEFORE_TOOL, lambda ctx: captured.update(ctx))
+
+        chain = MiddlewareChain([HookFiringMiddleware(runner)])
+        await chain.run(FakeTool(), {"query": "hello"})
+        assert captured["arguments"] == {"query": "hello"}
 
 
 class TestRegistryMiddleware:

@@ -135,6 +135,30 @@ class CacheMiddleware:
         return result
 
 
+class HookFiringMiddleware:
+    """Fires ON_BEFORE_TOOL and ON_AFTER_TOOL hook events around tool execution."""
+
+    def __init__(self, hook_runner):
+        from app.hooks import ON_BEFORE_TOOL, ON_AFTER_TOOL
+        self.hook_runner = hook_runner
+        self._before = ON_BEFORE_TOOL
+        self._after = ON_AFTER_TOOL
+
+    async def __call__(self, tool: Tool, kwargs: Dict[str, Any], next_fn: NextFn) -> str:
+        await self.hook_runner.fire(self._before, {
+            "tool_name": tool.name,
+            "arguments": kwargs,
+        })
+        result = await next_fn(tool, kwargs)
+        await self.hook_runner.fire(self._after, {
+            "tool_name": tool.name,
+            "arguments": kwargs,
+            "result": result,
+            "success": not result.startswith("Error:"),
+        })
+        return result
+
+
 class TracingMiddleware:
     """Creates OTEL spans for tool execution. No-op when tracing is disabled."""
 

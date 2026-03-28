@@ -20,7 +20,10 @@ agents:
       - exec
       - web_search
       - web_fetch
+      - tool_search
     bootstrap_path: agents/smolclaw.md
+    skills:
+      - memory-hygiene.md
     max_iterations: 15
     memory_window: 20
     context_budget: 8000
@@ -44,6 +47,7 @@ agents:
       - web_fetch
       - read_file
       - list_dir
+      - tool_search
     bootstrap_path: agents/researcher.md
     max_iterations: 20
     memory_window: 30
@@ -69,6 +73,7 @@ agents:
       - exec
       - web_search
       - web_fetch
+      - tool_search
     bootstrap_path: agents/coder.md
     max_iterations: 20
     memory_window: 20

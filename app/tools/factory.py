@@ -7,7 +7,9 @@ from app.tools.memory_tools import (
     MemoryRelateTool, MemoryRecallTool, MemoryGetTool,
     ContradictionReviewTool,
 )
-from app.tools.middleware import MiddlewareFn, TracingMiddleware, logging_middleware
+from app.tools.middleware import (
+    HookFiringMiddleware, MiddlewareFn, TracingMiddleware, logging_middleware,
+)
 from app.tools.registry import ToolRegistry
 from app.utilities import ensure_dir
 
@@ -23,6 +25,7 @@ def build_tool_registry(
     middleware: List[MiddlewareFn] | None = None,
     agent_configs: Optional[Dict] = None,
     session_manager=None,
+    hook_runner=None,
 ) -> ToolRegistry:
     """Build a tool registry with appropriate tools based on mode.
 
@@ -77,8 +80,14 @@ def build_tool_registry(
         registry.register(FanoutPipelineTool(agent_configs, registry, smol_rag, session_manager))
         registry.register(RouteTool(agent_configs, registry, smol_rag, session_manager))
 
-    # Register middleware — logging + tracing by default, plus any caller-provided
+    # Tool search meta-tool (must be registered before middleware so it's in the registry)
+    from app.tools.tool_search import ToolSearchTool
+    registry.register(ToolSearchTool(registry))
+
+    # Register middleware — logging + hooks + tracing by default, plus any caller-provided
     registry.use(logging_middleware)
+    if hook_runner:
+        registry.use(HookFiringMiddleware(hook_runner))
     registry.use(TracingMiddleware())
     for mw in (middleware or []):
         registry.use(mw)

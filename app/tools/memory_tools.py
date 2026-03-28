@@ -74,6 +74,13 @@ class MemoryRelateTool(Tool):
         )
 
     @property
+    def examples(self) -> list[dict]:
+        return [
+            {"description": "Connect two concepts", "arguments": {"source_entity": "SmolClaw", "target_entity": "SQLite", "relationship": "uses"}},
+            {"description": "Relate with description", "arguments": {"source_entity": "auth-service", "target_entity": "JWT", "relationship": "depends_on", "description": "Uses JWT for session tokens"}},
+        ]
+
+    @property
     def parameters(self) -> dict:
         return {
             "type": "object",
@@ -121,6 +128,14 @@ class MemorySearchTool(Tool):
         )
 
     @property
+    def examples(self) -> list[dict]:
+        return [
+            {"description": "Broad search across all memory types", "arguments": {"query": "Python web frameworks"}},
+            {"description": "Filter to decisions only", "arguments": {"query": "pricing strategy", "memory_type": "decision"}},
+            {"description": "Find preferences", "arguments": {"query": "coding style", "memory_type": "preference"}},
+        ]
+
+    @property
     def parameters(self) -> dict:
         return {
             "type": "object",
@@ -142,7 +157,6 @@ class MemorySearchTool(Tool):
         query = kwargs["query"]
         memory_type = kwargs.get("memory_type")
         result = await self.smol_rag.mix_query(query, memory_type=memory_type)
-        await _promote_accessed_excerpts(self.smol_rag, query)
         return result
 
 
@@ -158,6 +172,13 @@ class MemoryGraphQueryTool(Tool):
             "Use this when you know the exact entity name and want to explore its connections. "
             "For broader searches where you don't know the entity name, use memory_search instead."
         )
+
+    @property
+    def examples(self) -> list[dict]:
+        return [
+            {"description": "Look up a known entity", "arguments": {"entity": "SmolClaw"}},
+            {"description": "Explore a concept's connections", "arguments": {"entity": "pricing-engine"}},
+        ]
 
     @property
     def parameters(self) -> dict:
@@ -207,6 +228,14 @@ class MemoryStoreTool(Tool):
             "Classify with memory_type (fact, decision, preference, task, reference) and tags for better retrieval. "
             "If memory_type is omitted, it will be auto-classified."
         )
+
+    @property
+    def examples(self) -> list[dict]:
+        return [
+            {"description": "Store a fact with tags", "arguments": {"content": "The API rate limit is 100 req/s", "memory_type": "fact", "tags": ["api", "limits"]}},
+            {"description": "Store an identity-tier core memory", "arguments": {"content": "User prefers concise responses", "memory_type": "preference", "tier": 0}},
+            {"description": "Auto-classify with source", "arguments": {"content": "Decided to use PostgreSQL for the new service", "source_id": "meeting-2026-03-15"}},
+        ]
 
     @property
     def parameters(self) -> dict:
@@ -286,6 +315,12 @@ class MemoryGetTool(Tool):
         return "Retrieve a specific memory excerpt by its ID. Use when you have an exact excerpt ID from a previous search result."
 
     @property
+    def examples(self) -> list[dict]:
+        return [
+            {"description": "Retrieve by ID from a search result", "arguments": {"excerpt_id": "exc-a1b2c3d4"}},
+        ]
+
+    @property
     def parameters(self) -> dict:
         return {
             "type": "object",
@@ -328,6 +363,14 @@ class ContradictionReviewTool(Tool):
             "Use 'resolve' to apply a resolution (keep_existing, keep_new, merge, dismiss). "
             "Check this when you encounter conflicting information or after ingesting updated content."
         )
+
+    @property
+    def examples(self) -> list[dict]:
+        return [
+            {"description": "List pending contradictions", "arguments": {"action": "list"}},
+            {"description": "View full detail of a contradiction", "arguments": {"action": "detail", "contradiction_id": "ctr-abc123"}},
+            {"description": "Resolve by keeping the newer value", "arguments": {"action": "resolve", "contradiction_id": "ctr-abc123", "resolution": "keep_new", "note": "Updated info from latest meeting"}},
+        ]
 
     @property
     def parameters(self) -> dict:
@@ -429,6 +472,13 @@ class MemoryRecallTool(Tool):
         )
 
     @property
+    def examples(self) -> list[dict]:
+        return [
+            {"description": "Search past sessions by topic", "arguments": {"query": "database migration", "mode": "topic"}},
+            {"description": "Find recent memories from last 3 days", "arguments": {"query": "recent work", "mode": "temporal", "days": 3}},
+        ]
+
+    @property
     def parameters(self) -> dict:
         return {
             "type": "object",
@@ -459,7 +509,6 @@ class MemoryRecallTool(Tool):
             result = await self.smol_rag.mix_query(
                 query, memory_type="episode", include_bm25=True,
             )
-            await _promote_accessed_excerpts(self.smol_rag, query)
             return result
         elif mode == "temporal":
             return await self._temporal_query(days)

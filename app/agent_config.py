@@ -17,6 +17,8 @@ class AgentConfig:
     context_budget: int = 4000
     reflection: bool = False
     planning: bool = False
+    skills: List[str] = field(default_factory=list)
+    permission_mode: str = "full"
 
 
 class AgentConfigLoader:
@@ -38,6 +40,8 @@ class AgentConfigLoader:
                 context_budget=entry.get("context_budget", 4000),
                 reflection=entry.get("reflection", False),
                 planning=entry.get("planning", False),
+                skills=entry.get("skills", []),
+                permission_mode=entry.get("permission_mode", "full"),
             )
             agents[config.name] = config
         return agents

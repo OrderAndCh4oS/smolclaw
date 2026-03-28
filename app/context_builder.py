@@ -1,13 +1,20 @@
 import os
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 class ContextBuilder:
-    def __init__(self, bootstrap_path: str = None, persona: str = None, shared_bootstrap_path: str = None):
+    def __init__(
+        self,
+        bootstrap_path: str = None,
+        persona: str = None,
+        shared_bootstrap_path: str = None,
+        skills_paths: Optional[List[str]] = None,
+    ):
         self.bootstrap_path = bootstrap_path
         self.persona = persona
         self.shared_bootstrap_path = shared_bootstrap_path
+        self.skills_paths = skills_paths or []
 
     def _load_file(self, path: str) -> str | None:
         if path and os.path.exists(path):
@@ -38,6 +45,13 @@ class ContextBuilder:
             parts.append(f"\n--- Shared Bootstrap ---\n{shared}")
         if agent and agent != shared:
             parts.append(f"\n--- Agent Bootstrap ---\n{agent}")
+
+        # Inject preloaded skills as domain knowledge
+        for skill_path in self.skills_paths:
+            content = self._load_file(skill_path)
+            if content:
+                skill_name = os.path.splitext(os.path.basename(skill_path))[0]
+                parts.append(f"\n--- Skill: {skill_name} ---\n{content}")
 
         return "\n".join(parts)
 

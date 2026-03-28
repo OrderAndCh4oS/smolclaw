@@ -132,3 +132,46 @@ class TestContextBuilderSharedBootstrap:
         assert "Researcher" in prompt
         assert "Shared context here." in prompt
         assert "SmolClaw" not in prompt
+
+
+class TestContextBuilderSkills:
+    def test_skill_content_appears_in_prompt(self, temp_dir):
+        skill_path = os.path.join(temp_dir, "memory-hygiene.md")
+        with open(skill_path, "w") as f:
+            f.write("Always search before storing.")
+        builder = ContextBuilder(skills_paths=[skill_path])
+        prompt = builder.build_system_prompt()
+        assert "Always search before storing." in prompt
+        assert "Skill: memory-hygiene" in prompt
+
+    def test_missing_skill_ignored(self, temp_dir):
+        builder = ContextBuilder(skills_paths=[os.path.join(temp_dir, "missing.md")])
+        prompt = builder.build_system_prompt()
+        assert "Skill:" not in prompt
+        assert "SmolClaw" in prompt
+
+    def test_multiple_skills_all_included(self, temp_dir):
+        s1 = os.path.join(temp_dir, "skill-a.md")
+        s2 = os.path.join(temp_dir, "skill-b.md")
+        with open(s1, "w") as f:
+            f.write("Skill A content.")
+        with open(s2, "w") as f:
+            f.write("Skill B content.")
+        builder = ContextBuilder(skills_paths=[s1, s2])
+        prompt = builder.build_system_prompt()
+        assert "Skill A content." in prompt
+        assert "Skill B content." in prompt
+        assert "Skill: skill-a" in prompt
+        assert "Skill: skill-b" in prompt
+
+    def test_skills_with_bootstrap(self, temp_dir):
+        agent_md = os.path.join(temp_dir, "agent.md")
+        skill_md = os.path.join(temp_dir, "review.md")
+        with open(agent_md, "w") as f:
+            f.write("Agent bootstrap.")
+        with open(skill_md, "w") as f:
+            f.write("Review checklist.")
+        builder = ContextBuilder(bootstrap_path=agent_md, skills_paths=[skill_md])
+        prompt = builder.build_system_prompt()
+        assert "Agent bootstrap." in prompt
+        assert "Review checklist." in prompt

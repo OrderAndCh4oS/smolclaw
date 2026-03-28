@@ -61,11 +61,13 @@ class ContextAssembler(ContextBuilder):
         shared_bootstrap_path: str = None,
         decay_half_life_days: float = 30.0,
         type_weights: Optional[Dict[str, float]] = None,
+        skills_paths: Optional[List[str]] = None,
     ):
         super().__init__(
             bootstrap_path=bootstrap_path,
             persona=persona,
             shared_bootstrap_path=shared_bootstrap_path,
+            skills_paths=skills_paths,
         )
         self.smol_rag = smol_rag
         self.token_budget = token_budget
