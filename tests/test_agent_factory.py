@@ -445,12 +445,15 @@ class TestAgentFactory:
             master_registry=master_registry,
             smol_rag=mock_smol_rag,
             session_manager=SessionManager(sessions_dir),
-            parent_session_key="parent-session",
+            parent_session_key="parent:session/unsafe",
         )
 
         first = factory.make_session_key("worker", "spawn-sub-1")
         second = factory.make_session_key("worker", "spawn-sub-1")
 
         assert first != second
-        assert first.startswith("parent-session:worker:spawn_sub_1:")
-        assert second.startswith("parent-session:worker:spawn_sub_1:")
+        assert first.startswith("parent%3Asession%2Funsafe__worker__spawn_sub_1__")
+        assert second.startswith("parent%3Asession%2Funsafe__worker__spawn_sub_1__")
+        for ch in '<>:"/\\|?*':
+            assert ch not in first
+            assert ch not in second

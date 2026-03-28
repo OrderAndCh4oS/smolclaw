@@ -1,14 +1,29 @@
 """Permission modes for restricting tool access per agent."""
 
-from typing import Any, Dict, Set
+from typing import Any, Dict, Final, Set
 
 from app.tools.base import Tool
 from app.tools.middleware import NextFn
 
+DIRECT_MUTATION_TOOLS: Final[Set[str]] = {
+    "write_file",
+    "edit_file",
+    "exec",
+    "memory_store",
+    "memory_relate",
+}
+
+DELEGATION_TOOLS: Final[Set[str]] = {
+    "sequential_pipeline",
+    "fanout_pipeline",
+    "route",
+    "spawn_agent",
+}
+
 PERMISSION_BLOCKED: Dict[str, Set[str]] = {
     "full": set(),
-    "plan": {"write_file", "edit_file", "exec", "memory_store", "memory_relate"},
-    "execute": {"sequential_pipeline", "fanout_pipeline", "route", "spawn_agent"},
+    "plan": DIRECT_MUTATION_TOOLS | DELEGATION_TOOLS,
+    "execute": set(DELEGATION_TOOLS),
 }
 
 

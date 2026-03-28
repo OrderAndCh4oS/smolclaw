@@ -2,10 +2,22 @@
 import json
 import os
 import time
+from unittest.mock import MagicMock
 
 import pytest
 
+from app.agent_factory import ChildAgentFactory
 from app.usage import LlmUsageRecord, TurnUsage, SessionUsage, UsageCollector, UsagePersistHook
+
+
+def _make_child_session_key(parent_session_key: str = "parent:root") -> str:
+    factory = ChildAgentFactory(
+        master_registry=MagicMock(),
+        smol_rag=MagicMock(),
+        session_manager=MagicMock(),
+        parent_session_key=parent_session_key,
+    )
+    return factory.make_session_key("worker", "spawn-sub-1")
 
 
 def _make_record(category="agent_turn", prompt=100, completion=50, total=150, duration=500, cached=False):
@@ -175,3 +187,15 @@ class TestUsagePersistHook:
         hook = UsagePersistHook(temp_dir)
         await hook({"session_key": "test"})
         assert not os.path.exists(os.path.join(temp_dir, "test.usage.json"))
+
+    @pytest.mark.asyncio
+    async def test_saves_usage_json_for_generated_child_session_key(self, temp_dir):
+        hook = UsagePersistHook(temp_dir)
+        child_key = _make_child_session_key()
+        su = SessionUsage(session_key=child_key)
+
+        await hook({"session_key": child_key, "usage": su})
+
+        path = os.path.join(temp_dir, f"{child_key}.usage.json")
+        assert os.path.exists(path)
+        assert ":" not in os.path.basename(path)

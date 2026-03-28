@@ -4,6 +4,7 @@ import tempfile
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+from app.agent_factory import ChildAgentFactory
 from app.journal import generate_journal
 from app.session import Session
 
@@ -89,3 +90,22 @@ class TestGenerateJournal:
 
             assert sorted(os.listdir(td)) == ["journal-test-journal.md"]
             assert mock_smol_rag.remove_document_by_source.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_generated_child_session_key_writes_portable_filename(self, mock_journal_llm, mock_smol_rag):
+        factory = ChildAgentFactory(
+            master_registry=MagicMock(),
+            smol_rag=MagicMock(),
+            session_manager=MagicMock(),
+            parent_session_key="parent:root",
+        )
+        child_key = factory.make_session_key("worker", "spawn-sub-1")
+        session = Session(key=child_key)
+        session.add_message({"role": "user", "content": "Hello"})
+        session.add_message({"role": "assistant", "content": "Hi there"})
+
+        with tempfile.TemporaryDirectory() as td:
+            await generate_journal(session, mock_journal_llm, mock_smol_rag, td)
+            expected = f"journal-{child_key}.md"
+            assert sorted(os.listdir(td)) == [expected]
+            assert ":" not in expected

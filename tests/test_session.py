@@ -1,9 +1,21 @@
 import json
 import os
+from unittest.mock import MagicMock
 
 import pytest
 
+from app.agent_factory import ChildAgentFactory
 from app.session import Session, SessionManager
+
+
+def _make_child_session_key(parent_session_key: str = "parent:root") -> str:
+    factory = ChildAgentFactory(
+        master_registry=MagicMock(),
+        smol_rag=MagicMock(),
+        session_manager=MagicMock(),
+        parent_session_key=parent_session_key,
+    )
+    return factory.make_session_key("worker", "spawn-sub-1")
 
 
 class TestSession:
@@ -77,3 +89,20 @@ class TestSessionManager:
 
         loaded = manager.load("consol-test")
         assert loaded.last_consolidated == 1
+
+    def test_session_manager_save_and_load_generated_child_session_key(self, temp_dir):
+        manager = SessionManager(temp_dir)
+        child_key = _make_child_session_key()
+        session = Session(key=child_key)
+        session.add_message({"role": "user", "content": "remember child session"})
+
+        manager.save(session)
+
+        expected = os.path.join(temp_dir, f"{child_key}.jsonl")
+        assert os.path.exists(expected)
+        assert ":" not in os.path.basename(expected)
+
+        loaded = manager.load(child_key)
+        assert loaded is not None
+        assert loaded.key == child_key
+        assert loaded.messages[0]["content"] == "remember child session"

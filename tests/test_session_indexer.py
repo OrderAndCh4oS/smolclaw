@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.agent_factory import ChildAgentFactory
 from app.session import Session, SessionManager
 from app.session_indexer import (
     parse_session_content,
@@ -17,6 +18,16 @@ def _make_session(key="test-session", messages=None):
     for msg in (messages or []):
         s.add_message(msg)
     return s
+
+
+def _make_child_session_key(parent_session_key: str = "parent:root") -> str:
+    factory = ChildAgentFactory(
+        master_registry=MagicMock(),
+        smol_rag=MagicMock(),
+        session_manager=MagicMock(),
+        parent_session_key=parent_session_key,
+    )
+    return factory.make_session_key("worker", "spawn-sub-1")
 
 
 class TestParseSessionContent:
@@ -110,6 +121,24 @@ class TestIndexSession:
         ingested = mock_smol_rag.ingest_text.call_args[0][0]
         assert "#python" in ingested
         assert "#coding" in ingested
+
+    @pytest.mark.asyncio
+    async def test_writes_to_memory_dir_for_generated_child_session_key(self, mock_smol_rag, temp_dir):
+        mock_smol_rag.remove_document_by_source = AsyncMock()
+        child_key = _make_child_session_key()
+        session = _make_session(
+            key=child_key,
+            messages=[
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "world"},
+            ],
+        )
+
+        await index_session(session, mock_smol_rag, memory_dir=temp_dir)
+
+        expected = os.path.join(temp_dir, f"session-{child_key}.md")
+        assert os.path.exists(expected)
+        assert ":" not in os.path.basename(expected)
 
 
 class TestIndexAllSessions:

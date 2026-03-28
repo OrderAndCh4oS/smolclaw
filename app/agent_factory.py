@@ -3,6 +3,7 @@ import re
 from dataclasses import dataclass, field
 from itertools import count
 from typing import Callable, Optional
+from urllib.parse import quote
 
 from app.agent_config import AgentConfig
 from app.agent_loop import AgentLoop
@@ -44,12 +45,17 @@ class ChildAgentFactory:
         slug = re.sub(r"[^a-zA-Z0-9]+", "_", value or "")
         return slug.strip("_") or "child"
 
+    @staticmethod
+    def _encode_session_segment(value: str) -> str:
+        encoded = quote(value or "", safe="")
+        return encoded or "child"
+
     def make_session_key(self, agent_name: str, purpose: str) -> str:
         invocation_id = next(self._counter)
         return (
-            f"{self.parent_session_key}:"
-            f"{self._slugify(agent_name)}:"
-            f"{self._slugify(purpose)}:"
+            f"{self._encode_session_segment(self.parent_session_key)}__"
+            f"{self._slugify(agent_name)}__"
+            f"{self._slugify(purpose)}__"
             f"{invocation_id}"
         )
 

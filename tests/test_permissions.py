@@ -109,6 +109,34 @@ class TestPlanMode:
         result = await chain.run(FakeTool("web_search"), {})
         assert result == "web_search executed"
 
+    @pytest.mark.asyncio
+    async def test_blocks_spawn_agent(self):
+        mw = PermissionMiddleware("plan")
+        chain = MiddlewareChain([mw])
+        result = await chain.run(FakeTool("spawn_agent"), {})
+        assert result.startswith("Error:")
+
+    @pytest.mark.asyncio
+    async def test_blocks_sequential_pipeline(self):
+        mw = PermissionMiddleware("plan")
+        chain = MiddlewareChain([mw])
+        result = await chain.run(FakeTool("sequential_pipeline"), {})
+        assert result.startswith("Error:")
+
+    @pytest.mark.asyncio
+    async def test_blocks_fanout_pipeline(self):
+        mw = PermissionMiddleware("plan")
+        chain = MiddlewareChain([mw])
+        result = await chain.run(FakeTool("fanout_pipeline"), {})
+        assert result.startswith("Error:")
+
+    @pytest.mark.asyncio
+    async def test_blocks_route(self):
+        mw = PermissionMiddleware("plan")
+        chain = MiddlewareChain([mw])
+        result = await chain.run(FakeTool("route"), {})
+        assert result.startswith("Error:")
+
 
 class TestExecuteMode:
     @pytest.mark.asyncio
@@ -161,7 +189,17 @@ class TestPermissionBlockedMapping:
         assert PERMISSION_BLOCKED["full"] == set()
 
     def test_plan_blocks_expected_tools(self):
-        expected = {"write_file", "edit_file", "exec", "memory_store", "memory_relate"}
+        expected = {
+            "write_file",
+            "edit_file",
+            "exec",
+            "memory_store",
+            "memory_relate",
+            "sequential_pipeline",
+            "fanout_pipeline",
+            "route",
+            "spawn_agent",
+        }
         assert PERMISSION_BLOCKED["plan"] == expected
 
     def test_execute_blocks_expected_tools(self):
