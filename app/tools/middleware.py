@@ -149,7 +149,18 @@ class HookFiringMiddleware:
             "tool_name": tool.name,
             "arguments": kwargs,
         })
-        result = await next_fn(tool, kwargs)
+        try:
+            result = await next_fn(tool, kwargs)
+        except Exception as exc:
+            await self.hook_runner.fire(self._after, {
+                "tool_name": tool.name,
+                "arguments": kwargs,
+                "result": f"Error: {exc}",
+                "success": False,
+                "raised": True,
+                "error": str(exc),
+            })
+            raise
         await self.hook_runner.fire(self._after, {
             "tool_name": tool.name,
             "arguments": kwargs,

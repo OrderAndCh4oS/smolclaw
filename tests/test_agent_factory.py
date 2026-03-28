@@ -1,14 +1,16 @@
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.agent_config import AgentConfig
-from app.agent_factory import build_agent_loop
+from app.agent_factory import ChildAgentFactory, build_agent_loop
 from app.agent_loop import AgentLoop
 from app.session import SessionManager
 from app.tools.base import Tool
+from app.tools.factory import build_tool_registry
 from app.tools.registry import ToolRegistry
+from app.tools.tool_search import ToolSearchTool
 
 
 class StubToolA(Tool):
@@ -60,6 +62,52 @@ class StubToolC(Tool):
 
     async def execute(self, **kwargs) -> str:
         return "c"
+
+
+class DeferredHiddenTool(Tool):
+    @property
+    def name(self) -> str:
+        return "hidden_tool"
+
+    @property
+    def description(self) -> str:
+        return "A hidden runtime tool"
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+            "required": ["value"],
+        }
+
+    @property
+    def deferred(self) -> bool:
+        return True
+
+    async def execute(self, **kwargs) -> str:
+        return f"hidden:{kwargs['value']}"
+
+
+class EchoTool(Tool):
+    @property
+    def name(self) -> str:
+        return "echo"
+
+    @property
+    def description(self) -> str:
+        return "Echo input"
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        }
+
+    async def execute(self, **kwargs) -> str:
+        return kwargs["text"]
 
 
 @pytest.fixture
@@ -167,3 +215,242 @@ class TestAgentFactory:
             session_key="plain-session",
         )
         assert loop.session.key == "plain-session"
+
+    @pytest.mark.asyncio
+    async def test_build_agent_loop_refreshes_tool_definitions_after_tool_search(
+        self, mock_smol_rag, sessions_dir
+    ):
+        llm = MagicMock()
+        seen_tool_names = []
+
+        async def fake_tool_completion(**kwargs):
+            tool_names = [tool["function"]["name"] for tool in (kwargs.get("tools") or [])]
+            seen_tool_names.append(sorted(tool_names))
+            if len(seen_tool_names) == 1:
+                return {
+                    "content": None,
+                    "tool_calls": [{
+                        "id": "call-1",
+                        "name": "tool_search",
+                        "arguments": {"query": "hidden"},
+                    }],
+                    "has_tool_calls": True,
+                }
+            if len(seen_tool_names) == 2:
+                return {
+                    "content": None,
+                    "tool_calls": [{
+                        "id": "call-2",
+                        "name": "hidden_tool",
+                        "arguments": {"value": "ok"},
+                    }],
+                    "has_tool_calls": True,
+                }
+            return {
+                "content": "done",
+                "tool_calls": None,
+                "has_tool_calls": False,
+            }
+
+        llm.get_tool_completion = AsyncMock(side_effect=fake_tool_completion)
+        llm.completion_model = "gpt-test"
+
+        registry = ToolRegistry()
+        registry.register(DeferredHiddenTool())
+        registry.register(ToolSearchTool(registry))
+        config = AgentConfig(
+            name="researcher",
+            model="gpt-test",
+            persona="You are Researcher.",
+            tools=["tool_search", "hidden_tool"],
+        )
+
+        with patch("app.agent_factory.create_llm", return_value=llm):
+            loop = build_agent_loop(
+                config,
+                registry,
+                mock_smol_rag,
+                SessionManager(sessions_dir),
+            )
+            result = await loop.process("find the hidden tool")
+
+        assert result == "done"
+        assert seen_tool_names[0] == ["tool_search"]
+        assert seen_tool_names[1] == ["hidden_tool", "tool_search"]
+
+    @pytest.mark.asyncio
+    async def test_build_agent_loop_installs_tool_hooks_on_standard_builder(
+        self, mock_smol_rag, sessions_dir
+    ):
+        from app.hooks import HookRunner, ON_AFTER_TOOL, ON_BEFORE_TOOL
+
+        llm = MagicMock()
+        llm.get_tool_completion = AsyncMock(side_effect=[
+            {
+                "content": None,
+                "tool_calls": [{
+                    "id": "call-1",
+                    "name": "echo",
+                    "arguments": {"text": "hello"},
+                }],
+                "has_tool_calls": True,
+            },
+            {
+                "content": "done",
+                "tool_calls": None,
+                "has_tool_calls": False,
+            },
+        ])
+        llm.completion_model = "gpt-test"
+
+        registry = ToolRegistry()
+        registry.register(EchoTool())
+        config = AgentConfig(
+            name="researcher",
+            model="gpt-test",
+            persona="You are Researcher.",
+            tools=["echo"],
+        )
+        runner = HookRunner()
+        events = []
+        runner.on(ON_BEFORE_TOOL, lambda ctx: events.append(("before", ctx["tool_name"])))
+        runner.on(ON_AFTER_TOOL, lambda ctx: events.append(("after", ctx["tool_name"])))
+
+        with patch("app.agent_factory.create_llm", return_value=llm):
+            loop = build_agent_loop(
+                config,
+                registry,
+                mock_smol_rag,
+                SessionManager(sessions_dir),
+                hook_runner=runner,
+            )
+            result = await loop.process("echo hello")
+
+        assert result == "done"
+        assert events == [("before", "echo"), ("after", "echo")]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("tool_name", "arguments"),
+        [
+            ("memory_search", {"query": "pricing"}),
+            ("memory_recall", {"query": "pricing", "mode": "topic"}),
+        ],
+    )
+    async def test_build_agent_loop_promotes_accessed_memory_via_tool_hooks(
+        self, tool_name, arguments, mock_smol_rag, sessions_dir
+    ):
+        from app.tools.memory_tools import MemoryRecallTool, MemorySearchTool
+
+        llm = MagicMock()
+        llm.get_tool_completion = AsyncMock(side_effect=[
+            {
+                "content": None,
+                "tool_calls": [{
+                    "id": "call-1",
+                    "name": tool_name,
+                    "arguments": arguments,
+                }],
+                "has_tool_calls": True,
+            },
+            {
+                "content": "done",
+                "tool_calls": None,
+                "has_tool_calls": False,
+            },
+        ])
+        llm.completion_model = "gpt-test"
+        mock_smol_rag.mix_query = AsyncMock(return_value="results")
+
+        registry = ToolRegistry()
+        registry.register(MemorySearchTool(mock_smol_rag))
+        registry.register(MemoryRecallTool(mock_smol_rag))
+        config = AgentConfig(
+            name="researcher",
+            model="gpt-test",
+            persona="You are Researcher.",
+            tools=["memory_search", "memory_recall"],
+        )
+
+        with patch("app.agent_factory.create_llm", return_value=llm), \
+            patch("app.agent_factory._promote_accessed_excerpts", new=AsyncMock()) as mock_promote:
+            loop = build_agent_loop(
+                config,
+                registry,
+                mock_smol_rag,
+                SessionManager(sessions_dir),
+            )
+            result = await loop.process("use memory")
+
+        assert result == "done"
+        mock_promote.assert_awaited_once_with(mock_smol_rag, "pricing")
+
+    @pytest.mark.asyncio
+    async def test_memory_store_uses_runtime_bound_llm_for_auto_classification(
+        self, mock_smol_rag, sessions_dir, temp_dir
+    ):
+        from app.taxonomy import MemoryType
+
+        llm = MagicMock()
+        llm.completion_model = "gpt-test"
+        llm.get_tool_completion = AsyncMock(side_effect=[
+            {
+                "content": None,
+                "tool_calls": [{
+                    "id": "call-1",
+                    "name": "memory_store",
+                    "arguments": {"content": "store this"},
+                }],
+                "has_tool_calls": True,
+            },
+            {
+                "content": "done",
+                "tool_calls": None,
+                "has_tool_calls": False,
+            },
+        ])
+
+        registry = build_tool_registry(
+            smol_rag=mock_smol_rag,
+            memory_docs_dir=temp_dir,
+            workspace=temp_dir,
+            llm=None,
+            mode="direct",
+        )
+        config = AgentConfig(
+            name="researcher",
+            model="gpt-test",
+            persona="You are Researcher.",
+            tools=["memory_store"],
+        )
+
+        with patch("app.agent_factory.create_llm", return_value=llm), \
+            patch("app.taxonomy.classify_chunk", new=AsyncMock(return_value=(MemoryType.FACT, 0.9))) as mock_classify:
+            loop = build_agent_loop(
+                config,
+                registry,
+                mock_smol_rag,
+                SessionManager(sessions_dir),
+            )
+            result = await loop.process("store this without a type")
+
+        assert result == "done"
+        mock_classify.assert_awaited_once()
+        assert mock_classify.await_args.args[1] is llm
+
+    def test_child_agent_factory_generates_unique_isolated_session_keys(
+        self, master_registry, mock_smol_rag, sessions_dir
+    ):
+        factory = ChildAgentFactory(
+            master_registry=master_registry,
+            smol_rag=mock_smol_rag,
+            session_manager=SessionManager(sessions_dir),
+            parent_session_key="parent-session",
+        )
+
+        first = factory.make_session_key("worker", "spawn-sub-1")
+        second = factory.make_session_key("worker", "spawn-sub-1")
+
+        assert first != second
+        assert first.startswith("parent-session:worker:spawn_sub_1:")
+        assert second.startswith("parent-session:worker:spawn_sub_1:")

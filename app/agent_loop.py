@@ -123,8 +123,6 @@ class AgentLoop:
             user_content=user_content,
         )
 
-        tools = self.tool_registry.get_definitions() or None
-
         from app.tracing import get_tracer
 
         for iteration in range(self.max_iterations):
@@ -171,6 +169,8 @@ class AgentLoop:
                 streamed_content = True
                 if on_output:
                     await on_output(text)
+
+            tools = self.tool_registry.get_definitions() or None
 
             with self._usage_collector.category("agent_turn"):
                 llm_started = time.perf_counter()

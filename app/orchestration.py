@@ -6,11 +6,32 @@ import re
 from typing import Dict, List, Optional
 
 from app.agent_config import AgentConfig
+from app.agent_factory import ChildAgentFactory
 from app.agent_factory import build_agent_loop
 from app.session import SessionManager
 from app.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+
+def _build_child_loop(
+    agent_name: str,
+    config: AgentConfig,
+    purpose: str,
+    child_agent_factory: ChildAgentFactory | None,
+    master_registry: ToolRegistry,
+    smol_rag,
+    session_manager: SessionManager,
+):
+    if child_agent_factory is not None:
+        return child_agent_factory.build(config, purpose=f"{purpose}-{agent_name}")
+    return build_agent_loop(
+        config,
+        master_registry,
+        smol_rag,
+        session_manager,
+        session_key_prefix=purpose,
+    )
 
 
 async def sequential_pipeline(
@@ -20,6 +41,7 @@ async def sequential_pipeline(
     master_registry: ToolRegistry,
     smol_rag,
     session_manager: SessionManager,
+    child_agent_factory: ChildAgentFactory | None = None,
 ) -> str:
     """Chain agents in sequence: output of agent N becomes input of agent N+1.
 
@@ -33,9 +55,14 @@ async def sequential_pipeline(
         if agent_name not in configs:
             return f"Error: unknown agent '{agent_name}'"
 
-        loop = build_agent_loop(
-            configs[agent_name], master_registry, smol_rag,
-            session_manager, session_key_prefix=f"seq-{i}",
+        loop = _build_child_loop(
+            agent_name=agent_name,
+            config=configs[agent_name],
+            purpose=f"seq-{i}",
+            child_agent_factory=child_agent_factory,
+            master_registry=master_registry,
+            smol_rag=smol_rag,
+            session_manager=session_manager,
         )
         try:
             current_input = await loop.process(current_input)
@@ -53,6 +80,7 @@ async def fanout_pipeline(
     smol_rag,
     session_manager: SessionManager,
     timeout: float = 300,
+    child_agent_factory: ChildAgentFactory | None = None,
 ) -> List[str]:
     """Run multiple agents in parallel on the same input.
 
@@ -66,9 +94,14 @@ async def fanout_pipeline(
         if agent_name not in configs:
             loops.append(None)
             continue
-        loop = build_agent_loop(
-            configs[agent_name], master_registry, smol_rag,
-            session_manager, session_key_prefix=f"fan-{i}",
+        loop = _build_child_loop(
+            agent_name=agent_name,
+            config=configs[agent_name],
+            purpose=f"fan-{i}",
+            child_agent_factory=child_agent_factory,
+            master_registry=master_registry,
+            smol_rag=smol_rag,
+            session_manager=session_manager,
         )
         loops.append(loop)
 
@@ -105,6 +138,7 @@ async def route(
     smol_rag,
     session_manager: SessionManager,
     llm=None,
+    child_agent_factory: ChildAgentFactory | None = None,
 ) -> str:
     """Route input to a single agent based on pattern matching or LLM classification.
 
@@ -152,9 +186,14 @@ async def route(
     if selected_agent not in configs:
         return f"Error: unknown agent '{selected_agent}'"
 
-    loop = build_agent_loop(
-        configs[selected_agent], master_registry, smol_rag,
-        session_manager, session_key_prefix="route",
+    loop = _build_child_loop(
+        agent_name=selected_agent,
+        config=configs[selected_agent],
+        purpose="route",
+        child_agent_factory=child_agent_factory,
+        master_registry=master_registry,
+        smol_rag=smol_rag,
+        session_manager=session_manager,
     )
     try:
         return await loop.process(input_text)

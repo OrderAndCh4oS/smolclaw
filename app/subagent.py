@@ -1,28 +1,19 @@
 import asyncio
-from typing import Callable, Dict, Optional
+from typing import Dict
 
 from app.agent_config import AgentConfig
-from app.agent_loop import AgentLoop
-from app.agent_factory import build_agent_loop
-from app.session import SessionManager
-from app.tools.registry import ToolRegistry
+from app.agent_factory import ChildAgentFactory
 
 
 class SubagentManager:
     def __init__(
         self,
         configs: Dict[str, AgentConfig],
-        master_registry: ToolRegistry,
-        smol_rag,
-        session_manager: SessionManager,
-        session_end_hook_registrar: Optional[Callable[[AgentLoop], None]] = None,
+        child_agent_factory: ChildAgentFactory,
         max_concurrent: int = 5,
     ):
         self.configs = configs
-        self.master_registry = master_registry
-        self.smol_rag = smol_rag
-        self.session_manager = session_manager
-        self.session_end_hook_registrar = session_end_hook_registrar
+        self.child_agent_factory = child_agent_factory
         self.max_concurrent = max_concurrent
         self._tasks: Dict[str, asyncio.Task] = {}
         self._results: Dict[str, str] = {}
@@ -38,12 +29,10 @@ class SubagentManager:
         self._counter += 1
         task_id = f"sub-{self._counter}"
         config = self.configs[agent_name]
-        loop = build_agent_loop(
-            config, self.master_registry, self.smol_rag,
-            self.session_manager, session_key_prefix=task_id,
+        loop = self.child_agent_factory.build(
+            config,
+            purpose=f"spawn-{task_id}",
         )
-        if self.session_end_hook_registrar:
-            self.session_end_hook_registrar(loop)
         task = asyncio.create_task(self._run(task_id, loop, goal))
         self._tasks[task_id] = task
         return task_id

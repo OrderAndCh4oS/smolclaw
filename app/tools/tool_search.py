@@ -2,7 +2,7 @@
 
 import json
 
-from app.tools.base import Tool
+from app.tools.base import Tool, ToolRuntimeContext
 
 
 class ToolSearchTool(Tool):
@@ -10,6 +10,11 @@ class ToolSearchTool(Tool):
 
     def __init__(self, registry):
         self._registry = registry
+
+    def bind(self, runtime_ctx: ToolRuntimeContext) -> Tool:
+        if runtime_ctx.registry is None:
+            return self
+        return ToolSearchTool(runtime_ctx.registry)
 
     @property
     def name(self) -> str:

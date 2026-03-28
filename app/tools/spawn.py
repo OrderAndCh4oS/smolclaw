@@ -1,5 +1,32 @@
+from typing import Dict, Optional
+
+from app.agent_config import AgentConfig
 from app.subagent import SubagentManager
-from app.tools.base import Tool
+from app.tools.base import Tool, ToolRuntimeContext
+
+_RUNTIME_MANAGER_KEY = "subagent_manager"
+
+
+def _bind_manager(
+    runtime_ctx: ToolRuntimeContext,
+    configs: Dict[str, AgentConfig] | None,
+    manager: Optional[SubagentManager],
+    max_concurrent: int,
+) -> Optional[SubagentManager]:
+    if manager is not None:
+        return manager
+    if not configs or not runtime_ctx.child_agent_factory:
+        return None
+    bound_manager = runtime_ctx.shared_state.get(_RUNTIME_MANAGER_KEY)
+    if bound_manager is None:
+        bound_manager = SubagentManager(
+            configs=configs,
+            child_agent_factory=runtime_ctx.child_agent_factory,
+            max_concurrent=max_concurrent,
+        )
+        runtime_ctx.shared_state[_RUNTIME_MANAGER_KEY] = bound_manager
+        runtime_ctx.owned_resources.append(bound_manager)
+    return bound_manager
 
 
 class SpawnTool(Tool):
@@ -28,10 +55,27 @@ class SpawnTool(Tool):
             "required": ["agent_name", "goal"],
         }
 
-    def __init__(self, manager: SubagentManager):
+    def __init__(
+        self,
+        manager: Optional[SubagentManager] = None,
+        configs: Dict[str, AgentConfig] | None = None,
+        max_concurrent: int = 5,
+    ):
         self.manager = manager
+        self.configs = configs
+        self.max_concurrent = max_concurrent
+
+    def bind(self, runtime_ctx: ToolRuntimeContext) -> Tool:
+        manager = _bind_manager(runtime_ctx, self.configs, self.manager, self.max_concurrent)
+        return SpawnTool(
+            manager=manager,
+            configs=self.configs,
+            max_concurrent=self.max_concurrent,
+        )
 
     async def execute(self, **kwargs) -> str:
+        if self.manager is None:
+            return "Error: subagent manager is not available"
         return await self.manager.spawn(kwargs["agent_name"], kwargs["goal"])
 
 
@@ -57,10 +101,27 @@ class GetResultTool(Tool):
             "required": ["task_id"],
         }
 
-    def __init__(self, manager: SubagentManager):
+    def __init__(
+        self,
+        manager: Optional[SubagentManager] = None,
+        configs: Dict[str, AgentConfig] | None = None,
+        max_concurrent: int = 5,
+    ):
         self.manager = manager
+        self.configs = configs
+        self.max_concurrent = max_concurrent
+
+    def bind(self, runtime_ctx: ToolRuntimeContext) -> Tool:
+        manager = _bind_manager(runtime_ctx, self.configs, self.manager, self.max_concurrent)
+        return GetResultTool(
+            manager=manager,
+            configs=self.configs,
+            max_concurrent=self.max_concurrent,
+        )
 
     async def execute(self, **kwargs) -> str:
+        if self.manager is None:
+            return "Error: subagent manager is not available"
         return self.manager.get_result(kwargs["task_id"])
 
 
@@ -86,8 +147,25 @@ class AwaitResultTool(Tool):
             "required": ["task_id"],
         }
 
-    def __init__(self, manager: SubagentManager):
+    def __init__(
+        self,
+        manager: Optional[SubagentManager] = None,
+        configs: Dict[str, AgentConfig] | None = None,
+        max_concurrent: int = 5,
+    ):
         self.manager = manager
+        self.configs = configs
+        self.max_concurrent = max_concurrent
+
+    def bind(self, runtime_ctx: ToolRuntimeContext) -> Tool:
+        manager = _bind_manager(runtime_ctx, self.configs, self.manager, self.max_concurrent)
+        return AwaitResultTool(
+            manager=manager,
+            configs=self.configs,
+            max_concurrent=self.max_concurrent,
+        )
 
     async def execute(self, **kwargs) -> str:
+        if self.manager is None:
+            return "Error: subagent manager is not available"
         return await self.manager.await_result(kwargs["task_id"])

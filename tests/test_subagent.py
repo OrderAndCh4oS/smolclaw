@@ -1,11 +1,10 @@
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.agent_config import AgentConfig
 from app.subagent import SubagentManager
-from app.tools.registry import ToolRegistry
 
 
 @pytest.fixture
@@ -22,28 +21,26 @@ def subagent_config():
 
 class TestSubagentManager:
     @pytest.mark.asyncio
-    async def test_spawn_registers_session_end_hook(self, subagent_config):
-        session_manager = MagicMock()
-        registrar = MagicMock()
+    async def test_spawn_uses_child_agent_factory(self, subagent_config):
+        child_factory = MagicMock()
         loop = MagicMock()
         loop.process = AsyncMock(return_value="done")
         loop.close = AsyncMock()
+        child_factory.build.return_value = loop
 
         manager = SubagentManager(
             configs=subagent_config,
-            master_registry=ToolRegistry(),
-            smol_rag=MagicMock(),
-            session_manager=session_manager,
-            session_end_hook_registrar=registrar,
+            child_agent_factory=child_factory,
         )
 
-        with patch("app.subagent.build_agent_loop", return_value=loop):
-            task_id = await manager.spawn("worker", "finish task")
-
+        task_id = await manager.spawn("worker", "finish task")
         await manager._tasks[task_id]
 
         assert task_id == "sub-1"
-        registrar.assert_called_once_with(loop)
+        child_factory.build.assert_called_once_with(
+            subagent_config["worker"],
+            purpose="spawn-sub-1",
+        )
         assert manager._results[task_id] == "done"
         loop.close.assert_awaited_once()
 
@@ -51,9 +48,7 @@ class TestSubagentManager:
     async def test_run_calls_close_on_success(self, subagent_config):
         manager = SubagentManager(
             configs=subagent_config,
-            master_registry=ToolRegistry(),
-            smol_rag=MagicMock(),
-            session_manager=MagicMock(),
+            child_agent_factory=MagicMock(),
         )
         loop = MagicMock()
         loop.process = AsyncMock(return_value="done")
@@ -68,9 +63,7 @@ class TestSubagentManager:
     async def test_run_calls_close_on_failure(self, subagent_config):
         manager = SubagentManager(
             configs=subagent_config,
-            master_registry=ToolRegistry(),
-            smol_rag=MagicMock(),
-            session_manager=MagicMock(),
+            child_agent_factory=MagicMock(),
         )
         loop = MagicMock()
         loop.process = AsyncMock(side_effect=RuntimeError("boom"))
@@ -85,9 +78,7 @@ class TestSubagentManager:
     async def test_close_cancels_pending_tasks(self, subagent_config):
         manager = SubagentManager(
             configs=subagent_config,
-            master_registry=ToolRegistry(),
-            smol_rag=MagicMock(),
-            session_manager=MagicMock(),
+            child_agent_factory=MagicMock(),
         )
         loop = MagicMock()
 

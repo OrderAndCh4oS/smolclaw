@@ -2,7 +2,7 @@ import os
 import time
 from datetime import datetime, timezone
 
-from app.tools.base import Tool
+from app.tools.base import Tool, ToolRuntimeContext
 from app.utilities import make_hash
 
 from app.lifecycle import MemoryLifecycleManager
@@ -280,6 +280,13 @@ class MemoryStoreTool(Tool):
         self.memory_docs_dir = memory_docs_dir
         self.llm = llm
 
+    def bind(self, runtime_ctx: ToolRuntimeContext) -> Tool:
+        return MemoryStoreTool(
+            self.smol_rag,
+            self.memory_docs_dir,
+            llm=runtime_ctx.llm or self.llm,
+        )
+
     async def execute(self, **kwargs) -> str:
         content = kwargs["content"]
         source_id = kwargs.get("source_id")
@@ -537,5 +544,4 @@ class MemoryRecallTool(Tool):
             summary = data.get("summary", "")
             parts.append(f"## Excerpt\n{excerpt}\n\n## Summary\n{summary}")
         return "\n\n---\n\n".join(parts)
-
 

@@ -4,8 +4,9 @@ import json
 from typing import Dict
 
 from app.agent_config import AgentConfig
+from app.agent_factory import ChildAgentFactory
 from app.session import SessionManager
-from app.tools.base import Tool
+from app.tools.base import Tool, ToolRuntimeContext
 from app.tools.registry import ToolRegistry
 
 
@@ -45,11 +46,22 @@ class SequentialPipelineTool(Tool):
         master_registry: ToolRegistry,
         smol_rag,
         session_manager: SessionManager,
+        child_agent_factory: ChildAgentFactory | None = None,
     ):
         self.configs = configs
         self.master_registry = master_registry
         self.smol_rag = smol_rag
         self.session_manager = session_manager
+        self.child_agent_factory = child_agent_factory
+
+    def bind(self, runtime_ctx: ToolRuntimeContext) -> Tool:
+        return SequentialPipelineTool(
+            configs=self.configs,
+            master_registry=self.master_registry,
+            smol_rag=self.smol_rag,
+            session_manager=self.session_manager,
+            child_agent_factory=runtime_ctx.child_agent_factory or self.child_agent_factory,
+        )
 
     async def execute(self, **kwargs) -> str:
         from app.orchestration import sequential_pipeline
@@ -60,6 +72,7 @@ class SequentialPipelineTool(Tool):
             master_registry=self.master_registry,
             smol_rag=self.smol_rag,
             session_manager=self.session_manager,
+            child_agent_factory=self.child_agent_factory,
         )
 
 
@@ -99,11 +112,22 @@ class FanoutPipelineTool(Tool):
         master_registry: ToolRegistry,
         smol_rag,
         session_manager: SessionManager,
+        child_agent_factory: ChildAgentFactory | None = None,
     ):
         self.configs = configs
         self.master_registry = master_registry
         self.smol_rag = smol_rag
         self.session_manager = session_manager
+        self.child_agent_factory = child_agent_factory
+
+    def bind(self, runtime_ctx: ToolRuntimeContext) -> Tool:
+        return FanoutPipelineTool(
+            configs=self.configs,
+            master_registry=self.master_registry,
+            smol_rag=self.smol_rag,
+            session_manager=self.session_manager,
+            child_agent_factory=runtime_ctx.child_agent_factory or self.child_agent_factory,
+        )
 
     async def execute(self, **kwargs) -> str:
         from app.orchestration import fanout_pipeline
@@ -114,6 +138,7 @@ class FanoutPipelineTool(Tool):
             master_registry=self.master_registry,
             smol_rag=self.smol_rag,
             session_manager=self.session_manager,
+            child_agent_factory=self.child_agent_factory,
         )
         return json.dumps(results, indent=2)
 
@@ -154,11 +179,22 @@ class RouteTool(Tool):
         master_registry: ToolRegistry,
         smol_rag,
         session_manager: SessionManager,
+        child_agent_factory: ChildAgentFactory | None = None,
     ):
         self.configs = configs
         self.master_registry = master_registry
         self.smol_rag = smol_rag
         self.session_manager = session_manager
+        self.child_agent_factory = child_agent_factory
+
+    def bind(self, runtime_ctx: ToolRuntimeContext) -> Tool:
+        return RouteTool(
+            configs=self.configs,
+            master_registry=self.master_registry,
+            smol_rag=self.smol_rag,
+            session_manager=self.session_manager,
+            child_agent_factory=runtime_ctx.child_agent_factory or self.child_agent_factory,
+        )
 
     async def execute(self, **kwargs) -> str:
         from app.orchestration import route
@@ -169,4 +205,5 @@ class RouteTool(Tool):
             master_registry=self.master_registry,
             smol_rag=self.smol_rag,
             session_manager=self.session_manager,
+            child_agent_factory=self.child_agent_factory,
         )

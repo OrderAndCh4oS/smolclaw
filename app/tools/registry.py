@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Set
 
-from app.tools.base import Tool
+from app.tools.base import Tool, ToolRuntimeContext
 from app.tools.middleware import MiddlewareChain, MiddlewareFn
 
 
@@ -65,11 +65,18 @@ class ToolRegistry:
         except Exception as e:
             return f"Error: {e}"
 
-    def filter_by_names(self, names: List[str]) -> "ToolRegistry":
+    def filter_by_names(
+        self,
+        names: List[str],
+        runtime_ctx: ToolRuntimeContext | None = None,
+    ) -> "ToolRegistry":
         filtered = ToolRegistry()
+        if runtime_ctx is not None:
+            runtime_ctx.registry = filtered
         for name in names:
             if name in self._tools:
-                filtered._tools[name] = self._tools[name]
+                tool = self._tools[name]
+                filtered._tools[name] = tool.bind(runtime_ctx) if runtime_ctx else tool
         # Inherit middleware and exposed set from parent registry
         filtered._middleware = MiddlewareChain(list(self._middleware._middlewares))
         filtered._exposed = set(self._exposed)

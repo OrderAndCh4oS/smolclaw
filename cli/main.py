@@ -184,12 +184,11 @@ def _build_multiagent(
     workspace: str,
     session_manager: SessionManager,
     auto_export: bool,
+    child_loop_registrar=None,
 ) -> AgentLoop:
     from app.agent_config import AgentConfigLoader
     from app.agent_factory import build_agent_loop
-    from app.subagent import SubagentManager
     from app.tools.spawn import SpawnTool, GetResultTool, AwaitResultTool
-    from app.hooks import ON_SESSION_END
 
     configs = AgentConfigLoader.load(agents_config_path)
     if agent_name not in configs:
@@ -200,41 +199,18 @@ def _build_multiagent(
         smol_rag, workspace,
         agent_configs=configs, session_manager=session_manager,
     )
+    master_registry.register(SpawnTool(configs=configs))
+    master_registry.register(GetResultTool(configs=configs))
+    master_registry.register(AwaitResultTool(configs=configs))
 
-    memory_dir = ensure_dir(MEMORY_DOCS_DIR) if auto_export else None
-
-    def register_session_export(loop: AgentLoop):
-        if not auto_export or memory_dir is None:
-            return
-        loop.hook_runner.on(
-            ON_SESSION_END,
-            SessionExportHook(
-                smol_rag=smol_rag,
-                llm=loop.llm,
-                memory_dir=memory_dir,
-            ),
-        )
-
-    subagent_manager = SubagentManager(
-        configs=configs,
-        master_registry=master_registry,
-        smol_rag=smol_rag,
-        session_manager=session_manager,
-        session_end_hook_registrar=register_session_export if auto_export else None,
-    )
-    master_registry.register(SpawnTool(subagent_manager))
-    master_registry.register(GetResultTool(subagent_manager))
-    master_registry.register(AwaitResultTool(subagent_manager))
-
-    agent = build_agent_loop(
+    return build_agent_loop(
         config=configs[agent_name],
         master_registry=master_registry,
         smol_rag=smol_rag,
         session_manager=session_manager,
         session_key_prefix=session_key,
+        child_loop_registrar=child_loop_registrar,
     )
-    agent.add_owned_resource(subagent_manager)
-    return agent
 
 
 def _build_default_chat_agent(
@@ -244,6 +220,7 @@ def _build_default_chat_agent(
     smol_rag: SmolRag,
     workspace: str,
     session_manager: SessionManager,
+    child_loop_registrar=None,
 ) -> AgentLoop:
     from app.agent_config import AgentConfigLoader
     from app.agent_factory import build_agent_loop
@@ -262,6 +239,7 @@ def _build_default_chat_agent(
         smol_rag=smol_rag,
         session_manager=session_manager,
         session_key=session_key,
+        child_loop_registrar=child_loop_registrar,
     )
 
 
@@ -292,10 +270,40 @@ async def _chat_loop(
 
     smol_rag = create_smol_rag()
     session_manager = SessionManager(SESSIONS_DIR)
+    memory_dir = ensure_dir(MEMORY_DOCS_DIR)
+
+    from app.hooks import ON_SESSION_END
+    from app.usage import UsagePersistHook
+
+    def register_session_end_hooks(loop: AgentLoop):
+        loop.hook_runner.on(ON_SESSION_END, UsagePersistHook(SESSIONS_DIR))
+        if auto_export:
+            from app.lifecycle_hooks import ContradictionExpiryHook
+
+            loop.hook_runner.on(
+                ON_SESSION_END,
+                SessionExportHook(
+                    smol_rag=smol_rag,
+                    llm=loop.llm,
+                    memory_dir=memory_dir,
+                ),
+            )
+            if hasattr(smol_rag, 'contradiction_detector') and smol_rag.contradiction_detector:
+                loop.hook_runner.on(
+                    ON_SESSION_END,
+                    ContradictionExpiryHook(smol_rag.contradiction_detector),
+                )
 
     if agent_name:
         agent = _build_multiagent(
-            agent_name, agents_config, session_key, smol_rag, workspace, session_manager, auto_export,
+            agent_name,
+            agents_config,
+            session_key,
+            smol_rag,
+            workspace,
+            session_manager,
+            auto_export,
+            child_loop_registrar=register_session_end_hooks,
         )
         label = agent_name.capitalize()
     else:
@@ -306,37 +314,22 @@ async def _chat_loop(
             smol_rag=smol_rag,
             workspace=workspace,
             session_manager=session_manager,
+            child_loop_registrar=register_session_end_hooks,
         )
         label = "SmolClaw"
 
+    register_session_end_hooks(agent)
+
     memory_store_tool = MemoryStoreTool(
         smol_rag=smol_rag,
-        memory_docs_dir=ensure_dir(MEMORY_DOCS_DIR),
+        memory_docs_dir=memory_dir,
         llm=agent.llm,
     )
     session_export_hook = SessionExportHook(
         smol_rag=smol_rag,
         llm=agent.llm,
-        memory_dir=ensure_dir(MEMORY_DOCS_DIR),
+        memory_dir=memory_dir,
     )
-
-    from app.hooks import ON_SESSION_END
-    from app.usage import UsagePersistHook
-
-    agent.hook_runner.on(ON_SESSION_END, UsagePersistHook(SESSIONS_DIR))
-
-    if auto_export:
-        from app.lifecycle_hooks import ContradictionExpiryHook
-
-        agent.hook_runner.on(
-            ON_SESSION_END,
-            session_export_hook,
-        )
-        if hasattr(smol_rag, 'contradiction_detector') and smol_rag.contradiction_detector:
-            agent.hook_runner.on(
-                ON_SESSION_END,
-                ContradictionExpiryHook(smol_rag.contradiction_detector),
-            )
 
     history_file = os.path.join(SESSIONS_DIR, "prompt_history.txt")
     prompt_session = PromptSession(history=FileHistory(history_file))

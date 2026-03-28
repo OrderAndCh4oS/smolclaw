@@ -11,7 +11,7 @@ from app.tools.registry import ToolRegistry
 from cli.main import _build_default_chat_agent, _build_multiagent
 from app.hooks import ON_SESSION_END, HookRunner
 from app.session import SessionManager
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 
 @pytest.fixture
@@ -172,18 +172,17 @@ class TestCliMultiagent:
             assert "spawn_agent" in tool_names
             assert "get_result" in tool_names
 
-    def test_build_multiagent_passes_registrar_to_subagent_manager_when_enabled(self, agents_yaml, mock_smol_rag, sessions_dir):
+    def test_build_multiagent_passes_child_loop_registrar_when_provided(self, agents_yaml, mock_smol_rag, sessions_dir):
         sm = SessionManager(sessions_dir)
         fake_agent = MagicMock()
         fake_agent.llm = MagicMock()
         fake_agent.hook_runner = HookRunner()
-        fake_agent.add_owned_resource = MagicMock()
         from app.tools.registry import ToolRegistry
         registry = ToolRegistry()
+        registrar = MagicMock()
 
         with patch("cli.main._build_cli_tool_registry", return_value=registry), \
-            patch("app.subagent.SubagentManager") as mock_subagent_manager, \
-            patch("app.agent_factory.build_agent_loop", return_value=fake_agent):
+            patch("app.agent_factory.build_agent_loop", return_value=fake_agent) as mock_build_agent_loop:
             agent = _build_multiagent(
                 agent_name="researcher",
                 agents_config_path=agents_yaml,
@@ -192,29 +191,20 @@ class TestCliMultiagent:
                 workspace="/tmp",
                 session_manager=sm,
                 auto_export=True,
+                child_loop_registrar=registrar,
             )
 
         assert agent is fake_agent
-        registrar = mock_subagent_manager.call_args.kwargs["session_end_hook_registrar"]
-        assert callable(registrar)
-        fake_agent.add_owned_resource.assert_called_once_with(mock_subagent_manager.return_value)
+        assert mock_build_agent_loop.call_args.kwargs["child_loop_registrar"] is registrar
 
-        subagent_loop = MagicMock()
-        subagent_loop.llm = MagicMock()
-        subagent_loop.hook_runner = HookRunner()
-        registrar(subagent_loop)
-        assert ON_SESSION_END in subagent_loop.hook_runner.events
-
-    def test_build_multiagent_skips_registrar_when_disabled(self, agents_yaml, mock_smol_rag, sessions_dir):
+    def test_build_multiagent_defaults_child_loop_registrar_to_none(self, agents_yaml, mock_smol_rag, sessions_dir):
         sm = SessionManager(sessions_dir)
         fake_agent = MagicMock()
-        fake_agent.add_owned_resource = MagicMock()
         from app.tools.registry import ToolRegistry
         registry = ToolRegistry()
 
         with patch("cli.main._build_cli_tool_registry", return_value=registry), \
-            patch("app.subagent.SubagentManager") as mock_subagent_manager, \
-            patch("app.agent_factory.build_agent_loop", return_value=fake_agent):
+            patch("app.agent_factory.build_agent_loop", return_value=fake_agent) as mock_build_agent_loop:
             agent = _build_multiagent(
                 agent_name="researcher",
                 agents_config_path=agents_yaml,
@@ -226,8 +216,7 @@ class TestCliMultiagent:
             )
 
         assert agent is fake_agent
-        assert mock_subagent_manager.call_args.kwargs["session_end_hook_registrar"] is None
-        fake_agent.add_owned_resource.assert_called_once_with(mock_subagent_manager.return_value)
+        assert mock_build_agent_loop.call_args.kwargs["child_loop_registrar"] is None
 
     @pytest.mark.asyncio
     async def test_chat_loop_registers_export_hook_for_multiagent(self):
@@ -271,6 +260,7 @@ class TestCliMultiagent:
             "/tmp",
             session_manager,
             True,
+            child_loop_registrar=ANY,
         )
         assert ON_SESSION_END in fake_agent.hook_runner.events
         fake_agent.close.assert_awaited_once()
@@ -317,6 +307,7 @@ class TestCliMultiagent:
             "/tmp",
             session_manager,
             False,
+            child_loop_registrar=ANY,
         )
         # Usage persist hook is always registered; export hooks only when auto_export=True
         assert ON_SESSION_END in fake_agent.hook_runner.events
@@ -365,6 +356,7 @@ class TestCliMultiagent:
             smol_rag=smol_rag,
             workspace="/tmp",
             session_manager=session_manager,
+            child_loop_registrar=ANY,
         )
         assert ON_SESSION_END in fake_agent.hook_runner.events
         fake_agent.close.assert_awaited_once()

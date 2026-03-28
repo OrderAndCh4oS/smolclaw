@@ -239,23 +239,32 @@ class Gateway:
             session_manager=self._session_manager,
         )
 
+        memory_dir = ensure_dir(MEMORY_DOCS_DIR)
+
+        def register_session_end_hooks(loop):
+            from app.usage import UsagePersistHook
+
+            loop.hook_runner.on(ON_SESSION_END, UsagePersistHook(SESSIONS_DIR))
+            loop.hook_runner.on(ON_SESSION_END, SessionExportHook(
+                smol_rag=self._smol_rag,
+                llm=loop.llm,
+                memory_dir=memory_dir,
+            ))
+            if hasattr(self._smol_rag, 'contradiction_detector') and self._smol_rag.contradiction_detector:
+                loop.hook_runner.on(
+                    ON_SESSION_END,
+                    ContradictionExpiryHook(self._smol_rag.contradiction_detector),
+                )
+
         agent = build_agent_loop(
             config=config,
             master_registry=registry,
             smol_rag=self._smol_rag,
             session_manager=self._session_manager,
             session_key=session_key,
+            child_loop_registrar=register_session_end_hooks,
         )
-        from app.usage import UsagePersistHook
-        agent.hook_runner.on(ON_SESSION_END, UsagePersistHook(SESSIONS_DIR))
-        agent.hook_runner.on(ON_SESSION_END, SessionExportHook(
-            smol_rag=self._smol_rag, llm=agent.llm, memory_dir=ensure_dir(MEMORY_DOCS_DIR),
-        ))
-        if hasattr(self._smol_rag, 'contradiction_detector') and self._smol_rag.contradiction_detector:
-            agent.hook_runner.on(
-                ON_SESSION_END,
-                ContradictionExpiryHook(self._smol_rag.contradiction_detector),
-            )
+        register_session_end_hooks(agent)
         self._session_agents[session_key] = agent
         return agent
 

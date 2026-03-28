@@ -338,6 +338,25 @@ class TestHookFiringMiddleware:
         await chain.run(FakeTool(), {"query": "hello"})
         assert captured["arguments"] == {"query": "hello"}
 
+    @pytest.mark.asyncio
+    async def test_after_fires_when_tool_raises(self):
+        captured = {}
+        runner = HookRunner()
+        runner.on(ON_AFTER_TOOL, lambda ctx: captured.update(ctx))
+
+        tool = MagicMock(spec=Tool)
+        tool.name = "boom"
+        tool.execute = AsyncMock(side_effect=RuntimeError("kaboom"))
+        chain = MiddlewareChain([HookFiringMiddleware(runner)])
+
+        with pytest.raises(RuntimeError, match="kaboom"):
+            await chain.run(tool, {})
+
+        assert captured["tool_name"] == "boom"
+        assert captured["success"] is False
+        assert captured["raised"] is True
+        assert "kaboom" in captured["result"]
+
 
 class TestRegistryMiddleware:
     @pytest.mark.asyncio

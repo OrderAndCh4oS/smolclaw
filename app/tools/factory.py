@@ -8,7 +8,7 @@ from app.tools.memory_tools import (
     ContradictionReviewTool,
 )
 from app.tools.middleware import (
-    HookFiringMiddleware, MiddlewareFn, TracingMiddleware, logging_middleware,
+    MiddlewareFn, TracingMiddleware, logging_middleware,
 )
 from app.tools.registry import ToolRegistry
 from app.utilities import ensure_dir
@@ -80,14 +80,12 @@ def build_tool_registry(
         registry.register(FanoutPipelineTool(agent_configs, registry, smol_rag, session_manager))
         registry.register(RouteTool(agent_configs, registry, smol_rag, session_manager))
 
-    # Tool search meta-tool (must be registered before middleware so it's in the registry)
+    # Tool search meta-tool is bound to the per-agent filtered registry at loop build time.
     from app.tools.tool_search import ToolSearchTool
     registry.register(ToolSearchTool(registry))
 
-    # Register middleware — logging + hooks + tracing by default, plus any caller-provided
+    # Register catalog-wide middleware. Runtime-bound middleware is installed per agent loop.
     registry.use(logging_middleware)
-    if hook_runner:
-        registry.use(HookFiringMiddleware(hook_runner))
     registry.use(TracingMiddleware())
     for mw in (middleware or []):
         registry.use(mw)

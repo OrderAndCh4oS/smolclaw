@@ -1,5 +1,8 @@
 import os
-from typing import Optional
+import re
+from dataclasses import dataclass, field
+from itertools import count
+from typing import Callable, Optional
 
 from app.agent_config import AgentConfig
 from app.agent_loop import AgentLoop
@@ -8,6 +11,8 @@ from app.definitions import PROJECT_ROOT
 from app.hooks import HookRunner, ON_AFTER_TOOL
 from app.llm import create_llm
 from app.session import SessionManager
+from app.tools.base import ToolRuntimeContext
+from app.tools.middleware import HookFiringMiddleware
 from app.tools.memory_tools import _promote_accessed_excerpts
 from app.tools.registry import ToolRegistry
 
@@ -25,6 +30,43 @@ def _make_promote_hook(smol_rag):
     return _promote_hook
 
 
+@dataclass
+class ChildAgentFactory:
+    master_registry: ToolRegistry
+    smol_rag: object
+    session_manager: SessionManager
+    parent_session_key: str
+    loop_registrar: Optional[Callable[[AgentLoop], None]] = None
+    _counter: count = field(default_factory=lambda: count(1), init=False, repr=False)
+
+    @staticmethod
+    def _slugify(value: str) -> str:
+        slug = re.sub(r"[^a-zA-Z0-9]+", "_", value or "")
+        return slug.strip("_") or "child"
+
+    def make_session_key(self, agent_name: str, purpose: str) -> str:
+        invocation_id = next(self._counter)
+        return (
+            f"{self.parent_session_key}:"
+            f"{self._slugify(agent_name)}:"
+            f"{self._slugify(purpose)}:"
+            f"{invocation_id}"
+        )
+
+    def build(self, config: AgentConfig, purpose: str) -> AgentLoop:
+        loop = build_agent_loop(
+            config=config,
+            master_registry=self.master_registry,
+            smol_rag=self.smol_rag,
+            session_manager=self.session_manager,
+            session_key=self.make_session_key(config.name, purpose),
+            child_loop_registrar=self.loop_registrar,
+        )
+        if self.loop_registrar:
+            self.loop_registrar(loop)
+        return loop
+
+
 def build_agent_loop(
     config: AgentConfig,
     master_registry: ToolRegistry,
@@ -33,14 +75,9 @@ def build_agent_loop(
     session_key_prefix: str = "default",
     session_key: Optional[str] = None,
     hook_runner: Optional[HookRunner] = None,
+    child_loop_registrar: Optional[Callable[[AgentLoop], None]] = None,
 ) -> AgentLoop:
     llm = create_llm(completion_model=config.model)
-    filtered_registry = master_registry.filter_by_names(config.tools)
-
-    # Apply permission mode restrictions
-    if config.permission_mode != "full":
-        from app.tools.permissions import PermissionMiddleware
-        filtered_registry.use(PermissionMiddleware(config.permission_mode))
 
     # Shared hook runner for tool hooks + agent lifecycle hooks
     if hook_runner is None:
@@ -49,6 +86,30 @@ def build_agent_loop(
     # Wire promote-on-access hook for memory tools
     if smol_rag:
         hook_runner.on(ON_AFTER_TOOL, _make_promote_hook(smol_rag))
+
+    resolved_session_key = session_key or f"{config.name}-{session_key_prefix}"
+    runtime_ctx = ToolRuntimeContext(
+        llm=llm,
+        hook_runner=hook_runner,
+        session_manager=session_manager,
+        smol_rag=smol_rag,
+        session_key=resolved_session_key,
+        loop_registrar=child_loop_registrar,
+    )
+    runtime_ctx.child_agent_factory = ChildAgentFactory(
+        master_registry=master_registry,
+        smol_rag=smol_rag,
+        session_manager=session_manager,
+        parent_session_key=resolved_session_key,
+        loop_registrar=child_loop_registrar,
+    )
+    filtered_registry = master_registry.filter_by_names(config.tools, runtime_ctx=runtime_ctx)
+    filtered_registry.use(HookFiringMiddleware(hook_runner))
+
+    # Apply permission mode restrictions
+    if config.permission_mode != "full":
+        from app.tools.permissions import PermissionMiddleware
+        filtered_registry.use(PermissionMiddleware(config.permission_mode))
 
     # Resolve skill paths
     skills_paths = [
@@ -73,9 +134,8 @@ def build_agent_loop(
             skills_paths=skills_paths,
         )
 
-    resolved_session_key = session_key or f"{config.name}-{session_key_prefix}"
     session = session_manager.get_or_create(resolved_session_key)
-    return AgentLoop(
+    loop = AgentLoop(
         llm=llm,
         tool_registry=filtered_registry,
         context_builder=context_builder,
@@ -88,3 +148,6 @@ def build_agent_loop(
         reflection=config.reflection,
         planning=config.planning,
     )
+    for resource in runtime_ctx.owned_resources:
+        loop.add_owned_resource(resource)
+    return loop
