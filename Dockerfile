@@ -14,6 +14,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Download NLTK punkt tokenizer (needed by chunking.py)
 RUN python -c "import nltk; d='/usr/local/share/nltk_data'; nltk.download('punkt', download_dir=d, quiet=True); nltk.download('punkt_tab', download_dir=d, quiet=True); nltk.download('stopwords', download_dir=d, quiet=True)"
 
+# Pre-download tiktoken encodings (needed at runtime, no network in container)
+RUN python -c "import tiktoken; tiktoken.get_encoding('o200k_base'); tiktoken.get_encoding('cl100k_base')"
+
 # Copy application code
 COPY app/ app/
 COPY cli/ cli/
