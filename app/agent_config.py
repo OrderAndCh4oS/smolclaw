@@ -10,6 +10,8 @@ class AgentConfig:
     model: str
     persona: str
     tools: List[str] = field(default_factory=list)
+    modules: List[str] = field(default_factory=list)
+    behaviors: List[str] = field(default_factory=list)
     bootstrap_path: Optional[str] = None
     max_iterations: int = 15
     memory_window: int = 20
@@ -33,6 +35,8 @@ class AgentConfigLoader:
                 model=entry["model"],
                 persona=entry["persona"],
                 tools=entry.get("tools", []),
+                modules=entry.get("modules", []),
+                behaviors=entry.get("behaviors", []),
                 bootstrap_path=entry.get("bootstrap_path"),
                 max_iterations=entry.get("max_iterations", 15),
                 memory_window=entry.get("memory_window", 20),

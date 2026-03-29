@@ -7,6 +7,7 @@ from urllib.parse import quote
 
 from app.agent_config import AgentConfig
 from app.agent_loop import AgentLoop
+from app.behaviors import load_behaviors, resolve_behavior_names
 from app.context_builder import ContextBuilder
 from app.definitions import PROJECT_ROOT
 from app.hooks import HookRunner, ON_AFTER_TOOL
@@ -21,13 +22,20 @@ _SHARED_BOOTSTRAP_PATH = os.path.join(PROJECT_ROOT, "AGENT.md")
 
 
 def _make_promote_hook(smol_rag):
-    """Create a hook callback that promotes memory excerpts accessed via search/recall tools."""
     async def _promote_hook(ctx):
+        if not ctx.get("success"):
+            return
         tool_name = ctx.get("tool_name")
-        if tool_name in ("memory_search", "memory_recall"):
-            query = ctx.get("arguments", {}).get("query")
-            if query:
-                await _promote_accessed_excerpts(smol_rag, query)
+        arguments = ctx.get("arguments", {})
+        query = arguments.get("query")
+        if not query:
+            return
+        if tool_name == "memory_search":
+            await _promote_accessed_excerpts(smol_rag, query)
+            return
+        if tool_name == "memory_recall" and arguments.get("mode") == "topic":
+            await _promote_accessed_excerpts(smol_rag, query)
+
     return _promote_hook
 
 
@@ -38,6 +46,8 @@ class ChildAgentFactory:
     session_manager: SessionManager
     parent_session_key: str
     loop_registrar: Optional[Callable[[AgentLoop], None]] = None
+    context_builder_factory: Optional[Callable[[AgentConfig], ContextBuilder]] = None
+    hook_runner_configurers: tuple[Callable[[HookRunner], None], ...] = ()
     _counter: count = field(default_factory=lambda: count(1), init=False, repr=False)
 
     @staticmethod
@@ -67,6 +77,12 @@ class ChildAgentFactory:
             session_manager=self.session_manager,
             session_key=self.make_session_key(config.name, purpose),
             child_loop_registrar=self.loop_registrar,
+            context_builder=(
+                self.context_builder_factory(config)
+                if self.context_builder_factory is not None
+                else None
+            ),
+            hook_runner_configurers=self.hook_runner_configurers,
         )
         if self.loop_registrar:
             self.loop_registrar(loop)
@@ -82,16 +98,19 @@ def build_agent_loop(
     session_key: Optional[str] = None,
     hook_runner: Optional[HookRunner] = None,
     child_loop_registrar: Optional[Callable[[AgentLoop], None]] = None,
+    context_builder: Optional[ContextBuilder] = None,
+    context_builder_factory: Optional[Callable[[AgentConfig], ContextBuilder]] = None,
+    hook_runner_configurers: tuple[Callable[[HookRunner], None], ...] = (),
 ) -> AgentLoop:
     llm = create_llm(completion_model=config.model)
 
     # Shared hook runner for tool hooks + agent lifecycle hooks
     if hook_runner is None:
         hook_runner = HookRunner()
-
-    # Wire promote-on-access hook for memory tools
-    if smol_rag:
+    if not hook_runner_configurers and smol_rag:
         hook_runner.on(ON_AFTER_TOOL, _make_promote_hook(smol_rag))
+    for configure_hook_runner in hook_runner_configurers:
+        configure_hook_runner(hook_runner)
 
     resolved_session_key = session_key or f"{config.name}-{session_key_prefix}"
     runtime_ctx = ToolRuntimeContext(
@@ -108,6 +127,8 @@ def build_agent_loop(
         session_manager=session_manager,
         parent_session_key=resolved_session_key,
         loop_registrar=child_loop_registrar,
+        context_builder_factory=context_builder_factory,
+        hook_runner_configurers=hook_runner_configurers,
     )
     filtered_registry = master_registry.filter_by_names(config.tools, runtime_ctx=runtime_ctx)
     filtered_registry.use(HookFiringMiddleware(hook_runner))
@@ -122,7 +143,7 @@ def build_agent_loop(
         os.path.join(PROJECT_ROOT, "skills", s) for s in config.skills
     ]
 
-    if smol_rag:
+    if context_builder is None and smol_rag:
         from app.context_assembly import ContextAssembler
         context_builder = ContextAssembler(
             smol_rag=smol_rag,
@@ -132,7 +153,7 @@ def build_agent_loop(
             shared_bootstrap_path=_SHARED_BOOTSTRAP_PATH,
             skills_paths=skills_paths,
         )
-    else:
+    elif context_builder is None:
         context_builder = ContextBuilder(
             bootstrap_path=config.bootstrap_path,
             persona=config.persona,
@@ -153,6 +174,7 @@ def build_agent_loop(
         hook_runner=hook_runner,
         reflection=config.reflection,
         planning=config.planning,
+        behaviors=load_behaviors(resolve_behavior_names(config)),
     )
     for resource in runtime_ctx.owned_resources:
         loop.add_owned_resource(resource)

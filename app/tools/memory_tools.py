@@ -2,7 +2,7 @@ import os
 import time
 from datetime import datetime, timezone
 
-from app.tools.base import Tool, ToolRuntimeContext
+from app.tools.base import Tool, ToolCallPolicy, ToolRuntimeContext
 from app.utilities import make_hash
 
 from app.lifecycle import MemoryLifecycleManager
@@ -62,6 +62,10 @@ def format_memory_content(
 
 
 class MemoryRelateTool(Tool):
+    @property
+    def default_call_policy(self) -> ToolCallPolicy:
+        return ToolCallPolicy(mutates_state=True, tags=frozenset({"memory"}))
+
     @property
     def name(self) -> str:
         return "memory_relate"
@@ -217,6 +221,10 @@ class MemoryGraphQueryTool(Tool):
 
 class MemoryStoreTool(Tool):
     @property
+    def default_call_policy(self) -> ToolCallPolicy:
+        return ToolCallPolicy(mutates_state=True, tags=frozenset({"memory"}))
+
+    @property
     def name(self) -> str:
         return "memory_store"
 
@@ -357,6 +365,12 @@ class MemoryGetTool(Tool):
 
 
 class ContradictionReviewTool(Tool):
+    def get_call_policy(self, arguments: dict | None = None) -> ToolCallPolicy:
+        action = (arguments or {}).get("action")
+        if action == "resolve":
+            return ToolCallPolicy(mutates_state=True, tags=frozenset({"memory", "contradiction"}))
+        return ToolCallPolicy(tags=frozenset({"memory", "contradiction"}))
+
     @property
     def name(self) -> str:
         return "contradiction_review"
@@ -544,4 +558,3 @@ class MemoryRecallTool(Tool):
             summary = data.get("summary", "")
             parts.append(f"## Excerpt\n{excerpt}\n\n## Summary\n{summary}")
         return "\n\n---\n\n".join(parts)
-

@@ -1,5 +1,4 @@
 import asyncio
-from dataclasses import replace
 import inspect
 import logging
 import os
@@ -23,8 +22,8 @@ from app.definitions import (
 from app.logger import clear_logs
 from app.session_export_hook import SessionExportHook
 from app.session import SessionManager
+from app.runtime import RuntimeEnvironment, build_configured_agent, build_master_registry
 from app.smol_rag import SmolRag, create_smol_rag
-from app.tools.factory import build_tool_registry
 from app.tools.memory_tools import MemoryRecallTool, MemoryStoreTool
 from app.utilities import ensure_dir
 
@@ -164,16 +163,18 @@ def _print_usage_summary(console, session_usage):
 
 
 def _build_cli_tool_registry(smol_rag: SmolRag, workspace: str, llm=None,
-                              agent_configs=None, session_manager=None):
-    return build_tool_registry(
+                              agent_configs=None, session_manager=None, enable_subagents: bool = False):
+    env = RuntimeEnvironment(
         smol_rag=smol_rag,
+        session_manager=session_manager,
         memory_docs_dir=MEMORY_DOCS_DIR,
         workspace=workspace,
-        llm=llm,
-        mode="direct",
+        transport="direct",
         agent_configs=agent_configs,
-        session_manager=session_manager,
+        enable_subagents=enable_subagents,
+        llm=llm,
     )
+    return build_master_registry(env)
 
 
 def _build_multiagent(
@@ -187,27 +188,24 @@ def _build_multiagent(
     child_loop_registrar=None,
 ) -> AgentLoop:
     from app.agent_config import AgentConfigLoader
-    from app.agent_factory import build_agent_loop
-    from app.tools.spawn import SpawnTool, GetResultTool, AwaitResultTool
 
     configs = AgentConfigLoader.load(agents_config_path)
     if agent_name not in configs:
         available = ", ".join(sorted(configs.keys()))
         raise typer.BadParameter(f"Unknown agent '{agent_name}'. Available: {available}")
 
-    master_registry = _build_cli_tool_registry(
-        smol_rag, workspace,
-        agent_configs=configs, session_manager=session_manager,
-    )
-    master_registry.register(SpawnTool(configs=configs))
-    master_registry.register(GetResultTool(configs=configs))
-    master_registry.register(AwaitResultTool(configs=configs))
-
-    return build_agent_loop(
-        config=configs[agent_name],
-        master_registry=master_registry,
+    env = RuntimeEnvironment(
         smol_rag=smol_rag,
         session_manager=session_manager,
+        memory_docs_dir=MEMORY_DOCS_DIR,
+        workspace=workspace,
+        transport="direct",
+        agent_configs=configs,
+        enable_subagents=True,
+    )
+    return build_configured_agent(
+        config=configs[agent_name],
+        env=env,
         session_key_prefix=session_key,
         child_loop_registrar=child_loop_registrar,
     )
@@ -223,7 +221,6 @@ def _build_default_chat_agent(
     child_loop_registrar=None,
 ) -> AgentLoop:
     from app.agent_config import AgentConfigLoader
-    from app.agent_factory import build_agent_loop
 
     configs = AgentConfigLoader.load(agents_config_path)
     if "default" not in configs:
@@ -231,14 +228,18 @@ def _build_default_chat_agent(
             f"Agents config '{agents_config_path}' must define a 'default' agent for chat."
         )
 
-    config = replace(configs["default"], model=model)
-    registry = _build_cli_tool_registry(smol_rag, workspace)
-    return build_agent_loop(
-        config=config,
-        master_registry=registry,
+    env = RuntimeEnvironment(
         smol_rag=smol_rag,
         session_manager=session_manager,
+        memory_docs_dir=MEMORY_DOCS_DIR,
+        workspace=workspace,
+        transport="direct",
+    )
+    return build_configured_agent(
+        config=configs["default"],
+        env=env,
         session_key=session_key,
+        model_override=model,
         child_loop_registrar=child_loop_registrar,
     )
 

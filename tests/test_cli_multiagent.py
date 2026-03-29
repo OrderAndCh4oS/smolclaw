@@ -8,7 +8,7 @@ from typer.testing import CliRunner
 from app.agent_config import AgentConfigLoader
 from app.agent_loop import AgentLoop
 from app.tools.registry import ToolRegistry
-from cli.main import _build_default_chat_agent, _build_multiagent
+from cli.main import _build_cli_tool_registry, _build_default_chat_agent, _build_multiagent
 from app.hooks import ON_SESSION_END, HookRunner
 from app.session import SessionManager
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
@@ -154,35 +154,25 @@ class TestCliMultiagent:
 
     def test_multiagent_registers_spawn_tools(self, agents_yaml, mock_smol_rag, sessions_dir):
         sm = SessionManager(sessions_dir)
-        from app.tools.registry import ToolRegistry
-        registry = ToolRegistry()
-        with patch("cli.main._build_cli_tool_registry", return_value=registry):
+        configs = AgentConfigLoader.load(agents_yaml)
+        registry = _build_cli_tool_registry(
+            mock_smol_rag,
+            "/tmp",
+            agent_configs=configs,
+            session_manager=sm,
+            enable_subagents=True,
+        )
 
-            agent = _build_multiagent(
-                agent_name="researcher",
-                agents_config_path=agents_yaml,
-                session_key="default",
-                smol_rag=mock_smol_rag,
-                workspace="/tmp",
-                session_manager=sm,
-                auto_export=True,
-            )
-            # The master registry should have spawn_agent and get_result
-            tool_names = [d["function"]["name"] for d in registry.get_definitions()]
-            assert "spawn_agent" in tool_names
-            assert "get_result" in tool_names
+        tool_names = [d["function"]["name"] for d in registry.get_definitions()]
+        assert "spawn_agent" in tool_names
+        assert "get_result" in tool_names
 
     def test_build_multiagent_passes_child_loop_registrar_when_provided(self, agents_yaml, mock_smol_rag, sessions_dir):
         sm = SessionManager(sessions_dir)
         fake_agent = MagicMock()
-        fake_agent.llm = MagicMock()
-        fake_agent.hook_runner = HookRunner()
-        from app.tools.registry import ToolRegistry
-        registry = ToolRegistry()
         registrar = MagicMock()
 
-        with patch("cli.main._build_cli_tool_registry", return_value=registry), \
-            patch("app.agent_factory.build_agent_loop", return_value=fake_agent) as mock_build_agent_loop:
+        with patch("cli.main.build_configured_agent", return_value=fake_agent) as mock_build_configured_agent:
             agent = _build_multiagent(
                 agent_name="researcher",
                 agents_config_path=agents_yaml,
@@ -195,16 +185,14 @@ class TestCliMultiagent:
             )
 
         assert agent is fake_agent
-        assert mock_build_agent_loop.call_args.kwargs["child_loop_registrar"] is registrar
+        assert mock_build_configured_agent.call_args.kwargs["child_loop_registrar"] is registrar
+        assert mock_build_configured_agent.call_args.kwargs["env"].enable_subagents is True
 
     def test_build_multiagent_defaults_child_loop_registrar_to_none(self, agents_yaml, mock_smol_rag, sessions_dir):
         sm = SessionManager(sessions_dir)
         fake_agent = MagicMock()
-        from app.tools.registry import ToolRegistry
-        registry = ToolRegistry()
 
-        with patch("cli.main._build_cli_tool_registry", return_value=registry), \
-            patch("app.agent_factory.build_agent_loop", return_value=fake_agent) as mock_build_agent_loop:
+        with patch("cli.main.build_configured_agent", return_value=fake_agent) as mock_build_configured_agent:
             agent = _build_multiagent(
                 agent_name="researcher",
                 agents_config_path=agents_yaml,
@@ -216,7 +204,7 @@ class TestCliMultiagent:
             )
 
         assert agent is fake_agent
-        assert mock_build_agent_loop.call_args.kwargs["child_loop_registrar"] is None
+        assert mock_build_configured_agent.call_args.kwargs["child_loop_registrar"] is None
 
     @pytest.mark.asyncio
     async def test_chat_loop_registers_export_hook_for_multiagent(self):

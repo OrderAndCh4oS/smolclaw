@@ -2,14 +2,14 @@ import json
 from typing import Any, Dict
 
 from app.mcp_client import McpClient, McpDeniedException
-from app.tools.base import Tool
+from app.tools.base import Tool, ToolCallPolicy
 
 
 class McpToolBase(Tool):
     """Base class for MCP-delegating tools."""
 
-    def __init__(self, token_issuer_url: str):
-        self._client = McpClient(token_issuer_url)
+    def __init__(self, token_issuer_url: str, gateway_url: str | None = None):
+        self._client = McpClient(token_issuer_url, gateway_url=gateway_url)
 
     @property
     def _mcp_tool_name(self) -> str:
@@ -61,6 +61,10 @@ class McpFileReadTool(McpToolBase):
 
 class McpFileWriteTool(McpToolBase):
     @property
+    def default_call_policy(self) -> ToolCallPolicy:
+        return ToolCallPolicy(mutates_state=True, tags=frozenset({"filesystem", "write"}))
+
+    @property
     def name(self) -> str:
         return "write_file"
 
@@ -88,6 +92,10 @@ class McpFileWriteTool(McpToolBase):
 
 
 class McpShellExecTool(McpToolBase):
+    @property
+    def default_call_policy(self) -> ToolCallPolicy:
+        return ToolCallPolicy(mutates_state=True, tags=frozenset({"shell"}))
+
     @property
     def name(self) -> str:
         return "exec"

@@ -20,14 +20,14 @@ agents:
       - exec
       - web_search
       - web_fetch
-      - tool_search
     bootstrap_path: agents/smolclaw.md
     skills:
       - memory-hygiene.md
+    behaviors:
+      - reflect
     max_iterations: 15
     memory_window: 20
     context_budget: 8000
-    reflection: true
     timeout: 600
 
   - name: researcher
@@ -47,13 +47,13 @@ agents:
       - web_fetch
       - read_file
       - list_dir
-      - tool_search
     bootstrap_path: agents/researcher.md
+    behaviors:
+      - plan
+      - reflect
     max_iterations: 20
     memory_window: 30
     context_budget: 8000
-    reflection: true
-    planning: true
     timeout: 900
 
   - name: coder
@@ -73,12 +73,12 @@ agents:
       - exec
       - web_search
       - web_fetch
-      - tool_search
     bootstrap_path: agents/coder.md
+    behaviors:
+      - reflect
     max_iterations: 20
     memory_window: 20
     context_budget: 6000
-    reflection: true
     timeout: 600
 
   - name: orchestrator
@@ -98,8 +98,9 @@ agents:
       - get_result
       - await_result
     bootstrap_path: agents/orchestrator.md
+    behaviors:
+      - plan
     max_iterations: 10
     memory_window: 20
     context_budget: 4000
-    planning: true
     timeout: 900

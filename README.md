@@ -132,7 +132,7 @@ Every agent draws from a shared tool registry. The available tools cover four ca
 
 **Orchestration** tools provide higher-level patterns: `sequential_pipeline` chains agents so the output of one becomes the input of the next, `fanout_pipeline` runs agents in parallel on the same input, and `route` directs input to the best-matching agent via pattern matching or LLM classification.
 
-Tools are extensible — implement the `Tool` base class (name, description, parameters, async execute), register in the factory, and add the name to `agents.yaml`. See `app/tools/base.py` for the interface.
+Tools are extensible at two levels. For a single capability, implement the `Tool` base class and declare its per-call policy (`mutates_state`, `delegates`) plus optional deferred exposure. For a reusable bundle, add a runtime module to the shared registry factory so the capability can be enabled, replaced, or omitted cleanly by environment. Agent configs can now opt into higher-level loop behavior with `behaviors` in `agents.yaml` (`plan`, `reflect`) without hardcoding those prompts into the loop itself.
 
 ### Tool Middleware
 

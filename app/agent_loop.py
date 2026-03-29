@@ -3,11 +3,13 @@ import json
 import time
 from typing import Awaitable, Callable, Optional
 
+from app.behaviors import LoopBehavior, load_behaviors
 from app.context_builder import ContextBuilder
 from app.definitions import MAX_ITERATIONS, MEMORY_WINDOW
 from app.hooks import HookRunner, ON_SESSION_START, ON_BEFORE_TURN, ON_AFTER_TURN, ON_SESSION_END
 from app.logger import logger
 from app.session import Session, SessionManager
+from app.tools.base import ToolResult, normalize_tool_result
 from app.tools.registry import ToolRegistry
 from app.usage import UsageCollector, SessionUsage, TurnUsage
 
@@ -26,6 +28,7 @@ class AgentLoop:
         hook_runner: Optional[HookRunner] = None,
         reflection: bool = False,
         planning: bool = False,
+        behaviors: Optional[list[LoopBehavior]] = None,
     ):
         self.llm = llm
         self.tool_registry = tool_registry
@@ -37,6 +40,14 @@ class AgentLoop:
         self.smol_rag = smol_rag
         self.reflection = reflection
         self.planning = planning
+        self.behaviors = list(behaviors or [])
+        if not self.behaviors:
+            legacy_behavior_names = []
+            if planning:
+                legacy_behavior_names.append("plan")
+            if reflection:
+                legacy_behavior_names.append("reflect")
+            self.behaviors = load_behaviors(legacy_behavior_names)
         self.hook_runner = hook_runner or HookRunner()
         self._stop_after_current = False
         self._session_started = False
@@ -92,6 +103,14 @@ class AgentLoop:
         except Exception as exc:
             logger.warning("Failed to emit agent event: %s", exc)
 
+    async def _invoke_tool(self, name: str, arguments: dict) -> ToolResult:
+        invoke = getattr(self.tool_registry, "invoke", None)
+        if callable(invoke):
+            maybe_result = invoke(name, arguments)
+            if inspect.isawaitable(maybe_result):
+                return normalize_tool_result(await maybe_result)
+        return normalize_tool_result(await self.tool_registry.execute(name, arguments))
+
     async def process(
         self,
         user_content: str,
@@ -146,17 +165,13 @@ class AgentLoop:
 
             turn = TurnUsage(iteration=iteration)
 
-            # Planning prompt: nudge the agent to think before acting (first iteration only)
-            if self.planning and iteration == 0:
-                messages.append({
-                    "role": "system",
-                    "content": (
-                        "Before acting, think through your approach: "
-                        "What is the user asking for? What information do you need? "
-                        "What's the best sequence of steps? Which tools should you use and in what order? "
-                        "State your plan briefly, then execute it."
-                    ),
-                })
+            if iteration == 0:
+                for behavior in self.behaviors:
+                    if behavior.before_first_llm_prompt:
+                        messages.append({
+                            "role": "system",
+                            "content": behavior.before_first_llm_prompt,
+                        })
 
             await self._emit_event(on_event, {
                 "type": "llm", "phase": "start", "iteration": iteration,
@@ -243,10 +258,10 @@ class AgentLoop:
 
                 started_at = time.perf_counter()
                 with self._usage_collector.category("context_retrieval"):
-                    tool_result = await self.tool_registry.execute(name, arguments)
+                    tool_result = await self._invoke_tool(name, arguments)
                 tool_duration_ms = int((time.perf_counter() - started_at) * 1000)
                 turn.tool_duration_ms += tool_duration_ms
-                ok = not str(tool_result).startswith("Error:")
+                ok = tool_result.ok
                 await self._emit_event(on_event, {
                     "type": "tool",
                     "phase": "end",
@@ -256,38 +271,25 @@ class AgentLoop:
                     "summary": summary,
                     "ok": ok,
                     "duration_ms": tool_duration_ms,
-                    "result_preview": self.summarize_tool_result(tool_result),
+                    "status": tool_result.status,
+                    "result_preview": self.summarize_tool_result(tool_result.content),
                 })
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call["id"],
-                    "content": tool_result,
+                    "content": tool_result.content,
                 })
 
             # Drain any usage from tool-initiated LLM calls (e.g. memory search context retrieval)
             tool_llm_records = self._usage_collector.drain()
             turn.llm_calls.extend(tool_llm_records)
 
-            # Observation prompt: nudge the agent to interpret tool results
-            if self.planning:
-                messages.append({
-                    "role": "system",
-                    "content": (
-                        "Review the tool results above. What did you learn? "
-                        "Does this change your approach? Do you need more information or can you answer now?"
-                    ),
-                })
-
-            # Reflection prompt: encourage self-assessment before next LLM call
-            if self.reflection:
-                messages.append({
-                    "role": "system",
-                    "content": (
-                        "Before continuing, assess: Have you gathered enough information to answer completely? "
-                        "Are your findings verified against sources? Is anything missing or uncertain? "
-                        "If incomplete, continue working. If complete, provide your final answer."
-                    ),
-                })
+            for behavior in self.behaviors:
+                if behavior.after_tools_prompt:
+                    messages.append({
+                        "role": "system",
+                        "content": behavior.after_tools_prompt,
+                    })
 
             self.session_usage.turns.append(turn)
 

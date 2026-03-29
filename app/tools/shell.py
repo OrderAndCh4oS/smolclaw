@@ -1,7 +1,7 @@
 import asyncio
 import re
 
-from app.tools.base import Tool
+from app.tools.base import Tool, ToolCallPolicy
 
 BLOCKED_PATTERNS = [
     re.compile(r"\brm\s+-rf\s+/"),
@@ -15,6 +15,10 @@ MAX_OUTPUT = 10000
 
 
 class ExecTool(Tool):
+    @property
+    def default_call_policy(self) -> ToolCallPolicy:
+        return ToolCallPolicy(mutates_state=True, tags=frozenset({"shell"}))
+
     @property
     def name(self) -> str:
         return "exec"

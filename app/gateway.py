@@ -9,14 +9,13 @@ from typing import Optional
 import websockets
 
 from app.agent_config import AgentConfigLoader
-from app.agent_factory import build_agent_loop
 from app.definitions import PROJECT_ROOT, SESSIONS_DIR, MEMORY_DOCS_DIR, WORKSPACE_DIR
 from app.hooks import ON_SESSION_END
 from app.lifecycle_hooks import ContradictionExpiryHook
+from app.runtime import RuntimeEnvironment, build_configured_agent
 from app.session import SessionManager
 from app.session_export_hook import SessionExportHook
 from app.smol_rag import SmolRag, create_smol_rag
-from app.tools.factory import build_tool_registry
 from app.utilities import ensure_dir
 
 logger = logging.getLogger("smolclaw.gateway")
@@ -228,17 +227,6 @@ class Gateway:
         configs = AgentConfigLoader.load(self.agents_config)
         config = configs["default"]
 
-        registry = build_tool_registry(
-            smol_rag=self._smol_rag,
-            memory_docs_dir=MEMORY_DOCS_DIR,
-            workspace=WORKSPACE_DIR,
-            mode="mcp",
-            token_issuer_url=self.token_issuer_url,
-            gateway_url=self.gateway_url,
-            agent_configs=configs,
-            session_manager=self._session_manager,
-        )
-
         memory_dir = ensure_dir(MEMORY_DOCS_DIR)
 
         def register_session_end_hooks(loop):
@@ -256,11 +244,19 @@ class Gateway:
                     ContradictionExpiryHook(self._smol_rag.contradiction_detector),
                 )
 
-        agent = build_agent_loop(
-            config=config,
-            master_registry=registry,
+        env = RuntimeEnvironment(
             smol_rag=self._smol_rag,
             session_manager=self._session_manager,
+            memory_docs_dir=MEMORY_DOCS_DIR,
+            workspace=WORKSPACE_DIR,
+            transport="mcp",
+            token_issuer_url=self.token_issuer_url,
+            gateway_url=self.gateway_url,
+            agent_configs=configs,
+        )
+        agent = build_configured_agent(
+            config=config,
+            env=env,
             session_key=session_key,
             child_loop_registrar=register_session_end_hooks,
         )

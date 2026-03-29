@@ -2,7 +2,7 @@ from typing import Dict, Optional
 
 from app.agent_config import AgentConfig
 from app.subagent import SubagentManager
-from app.tools.base import Tool, ToolRuntimeContext
+from app.tools.base import Tool, ToolCallPolicy, ToolRuntimeContext
 
 _RUNTIME_MANAGER_KEY = "subagent_manager"
 
@@ -30,6 +30,10 @@ def _bind_manager(
 
 
 class SpawnTool(Tool):
+    @property
+    def default_call_policy(self) -> ToolCallPolicy:
+        return ToolCallPolicy(delegates=True, tags=frozenset({"subagent"}))
+
     @property
     def name(self) -> str:
         return "spawn_agent"

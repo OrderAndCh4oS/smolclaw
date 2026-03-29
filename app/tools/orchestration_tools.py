@@ -6,11 +6,15 @@ from typing import Dict
 from app.agent_config import AgentConfig
 from app.agent_factory import ChildAgentFactory
 from app.session import SessionManager
-from app.tools.base import Tool, ToolRuntimeContext
+from app.tools.base import Tool, ToolCallPolicy, ToolRuntimeContext
 from app.tools.registry import ToolRegistry
 
 
 class SequentialPipelineTool(Tool):
+    @property
+    def default_call_policy(self) -> ToolCallPolicy:
+        return ToolCallPolicy(delegates=True, tags=frozenset({"orchestration"}))
+
     @property
     def name(self) -> str:
         return "sequential_pipeline"
@@ -78,6 +82,10 @@ class SequentialPipelineTool(Tool):
 
 class FanoutPipelineTool(Tool):
     @property
+    def default_call_policy(self) -> ToolCallPolicy:
+        return ToolCallPolicy(delegates=True, tags=frozenset({"orchestration"}))
+
+    @property
     def name(self) -> str:
         return "fanout_pipeline"
 
@@ -144,6 +152,10 @@ class FanoutPipelineTool(Tool):
 
 
 class RouteTool(Tool):
+    @property
+    def default_call_policy(self) -> ToolCallPolicy:
+        return ToolCallPolicy(delegates=True, tags=frozenset({"orchestration"}))
+
     @property
     def name(self) -> str:
         return "route"

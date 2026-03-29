@@ -1,6 +1,6 @@
 import os
 
-from app.tools.base import Tool
+from app.tools.base import Tool, ToolCallPolicy
 
 
 class ReadFileTool(Tool):
@@ -47,6 +47,10 @@ class ReadFileTool(Tool):
 
 class WriteFileTool(Tool):
     @property
+    def default_call_policy(self) -> ToolCallPolicy:
+        return ToolCallPolicy(mutates_state=True, tags=frozenset({"filesystem", "write"}))
+
+    @property
     def name(self) -> str:
         return "write_file"
 
@@ -90,6 +94,10 @@ class WriteFileTool(Tool):
 
 
 class EditFileTool(Tool):
+    @property
+    def default_call_policy(self) -> ToolCallPolicy:
+        return ToolCallPolicy(mutates_state=True, tags=frozenset({"filesystem", "write"}))
+
     @property
     def name(self) -> str:
         return "edit_file"

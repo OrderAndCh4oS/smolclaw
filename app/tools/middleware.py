@@ -5,15 +5,15 @@ import logging
 import time
 from typing import Any, Awaitable, Callable, Dict, List
 
-from app.tools.base import Tool
+from app.tools.base import Tool, ToolOutcome, normalize_tool_result
 
 logger = logging.getLogger(__name__)
 
 # next_fn: given (tool, kwargs), returns the tool result string
-NextFn = Callable[[Tool, Dict[str, Any]], Awaitable[str]]
+NextFn = Callable[[Tool, Dict[str, Any]], Awaitable[ToolOutcome]]
 
 # middleware: given (tool, kwargs, next_fn), returns result string
-MiddlewareFn = Callable[[Tool, Dict[str, Any], NextFn], Awaitable[str]]
+MiddlewareFn = Callable[[Tool, Dict[str, Any], NextFn], Awaitable[ToolOutcome]]
 
 
 class MiddlewareChain:
@@ -25,11 +25,11 @@ class MiddlewareChain:
     def use(self, mw: MiddlewareFn):
         self._middlewares.append(mw)
 
-    async def run(self, tool: Tool, kwargs: Dict[str, Any]) -> str:
+    async def run(self, tool: Tool, kwargs: Dict[str, Any]) -> ToolOutcome:
         if not self._middlewares:
             return await tool.execute(**kwargs)
 
-        async def core(t: Tool, kw: Dict[str, Any]) -> str:
+        async def core(t: Tool, kw: Dict[str, Any]) -> ToolOutcome:
             return await t.execute(**kw)
 
         handler = core
@@ -39,7 +39,7 @@ class MiddlewareChain:
 
 
 def _wrap(mw: MiddlewareFn, next_fn: NextFn) -> NextFn:
-    async def wrapped(tool: Tool, kwargs: Dict[str, Any]) -> str:
+    async def wrapped(tool: Tool, kwargs: Dict[str, Any]) -> ToolOutcome:
         return await mw(tool, kwargs, next_fn)
     return wrapped
 
@@ -49,14 +49,14 @@ def _wrap(mw: MiddlewareFn, next_fn: NextFn) -> NextFn:
 # ---------------------------------------------------------------------------
 
 
-async def logging_middleware(tool: Tool, kwargs: Dict[str, Any], next_fn: NextFn) -> str:
+async def logging_middleware(tool: Tool, kwargs: Dict[str, Any], next_fn: NextFn) -> ToolOutcome:
     args_summary = ", ".join(f"{k}={repr(v)[:60]}" for k, v in kwargs.items())
     logger.info("tool.start %s(%s)", tool.name, args_summary)
     started = time.perf_counter()
     try:
         result = await next_fn(tool, kwargs)
         duration_ms = int((time.perf_counter() - started) * 1000)
-        success = not result.startswith("Error:")
+        success = normalize_tool_result(result).ok
         logger.info(
             "tool.end %s duration=%dms success=%s",
             tool.name, duration_ms, success,
@@ -75,16 +75,21 @@ class RetryMiddleware:
         self.max_retries = max_retries
         self.retry_on = retry_on
 
-    async def __call__(self, tool: Tool, kwargs: Dict[str, Any], next_fn: NextFn) -> str:
-        last_result = ""
+    async def __call__(self, tool: Tool, kwargs: Dict[str, Any], next_fn: NextFn) -> ToolOutcome:
+        last_result: ToolOutcome = ""
         for attempt in range(1 + self.max_retries):
             last_result = await next_fn(tool, kwargs)
-            if not any(last_result.startswith(prefix) for prefix in self.retry_on):
+            if not any(
+                normalize_tool_result(last_result).content.startswith(prefix)
+                for prefix in self.retry_on
+            ):
                 return last_result
             if attempt < self.max_retries:
                 logger.warning(
                     "tool.retry %s attempt=%d result=%s",
-                    tool.name, attempt + 1, last_result[:100],
+                    tool.name,
+                    attempt + 1,
+                    normalize_tool_result(last_result).content[:100],
                 )
         return last_result
 
@@ -95,7 +100,7 @@ class TimeoutMiddleware:
     def __init__(self, timeout_seconds: float = 30):
         self.timeout_seconds = timeout_seconds
 
-    async def __call__(self, tool: Tool, kwargs: Dict[str, Any], next_fn: NextFn) -> str:
+    async def __call__(self, tool: Tool, kwargs: Dict[str, Any], next_fn: NextFn) -> ToolOutcome:
         try:
             return await asyncio.wait_for(
                 next_fn(tool, kwargs), timeout=self.timeout_seconds,
@@ -109,7 +114,7 @@ class CacheMiddleware:
 
     def __init__(self, ttl_seconds: float = 300):
         self.ttl_seconds = ttl_seconds
-        self._cache: Dict[tuple, tuple[float, str]] = {}
+        self._cache: Dict[tuple, tuple[float, ToolOutcome]] = {}
 
     def _make_key(self, tool: Tool, kwargs: Dict[str, Any]) -> tuple:
         try:
@@ -117,7 +122,7 @@ class CacheMiddleware:
         except TypeError:
             return None  # unhashable kwargs — skip cache
 
-    async def __call__(self, tool: Tool, kwargs: Dict[str, Any], next_fn: NextFn) -> str:
+    async def __call__(self, tool: Tool, kwargs: Dict[str, Any], next_fn: NextFn) -> ToolOutcome:
         key = self._make_key(tool, kwargs)
         if key is not None:
             cached = self._cache.get(key)
@@ -129,7 +134,7 @@ class CacheMiddleware:
 
         result = await next_fn(tool, kwargs)
 
-        if key is not None and not result.startswith("Error:"):
+        if key is not None and normalize_tool_result(result).ok:
             self._cache[key] = (time.time(), result)
 
         return result
@@ -144,7 +149,7 @@ class HookFiringMiddleware:
         self._before = ON_BEFORE_TOOL
         self._after = ON_AFTER_TOOL
 
-    async def __call__(self, tool: Tool, kwargs: Dict[str, Any], next_fn: NextFn) -> str:
+    async def __call__(self, tool: Tool, kwargs: Dict[str, Any], next_fn: NextFn) -> ToolOutcome:
         await self.hook_runner.fire(self._before, {
             "tool_name": tool.name,
             "arguments": kwargs,
@@ -161,11 +166,13 @@ class HookFiringMiddleware:
                 "error": str(exc),
             })
             raise
+        normalized = normalize_tool_result(result)
         await self.hook_runner.fire(self._after, {
             "tool_name": tool.name,
             "arguments": kwargs,
             "result": result,
-            "success": not result.startswith("Error:"),
+            "success": normalized.ok,
+            "status": normalized.status,
         })
         return result
 
@@ -173,7 +180,7 @@ class HookFiringMiddleware:
 class TracingMiddleware:
     """Creates OTEL spans for tool execution. No-op when tracing is disabled."""
 
-    async def __call__(self, tool: Tool, kwargs: Dict[str, Any], next_fn: NextFn) -> str:
+    async def __call__(self, tool: Tool, kwargs: Dict[str, Any], next_fn: NextFn) -> ToolOutcome:
         from app.tracing import get_tracer
 
         tracer = get_tracer()
@@ -185,7 +192,7 @@ class TracingMiddleware:
             try:
                 result = await next_fn(tool, kwargs)
                 duration_ms = int((time.perf_counter() - started) * 1000)
-                span.set_attribute("tool.success", not result.startswith("Error:"))
+                span.set_attribute("tool.success", normalize_tool_result(result).ok)
                 span.set_attribute("tool.duration_ms", duration_ms)
                 return result
             except Exception as e:

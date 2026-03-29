@@ -1,6 +1,13 @@
 from typing import Any, Dict, List, Set
 
-from app.tools.base import Tool, ToolRuntimeContext
+from app.tools.base import (
+    Tool,
+    ToolOutcome,
+    ToolResult,
+    ToolRuntimeContext,
+    normalize_tool_result,
+    render_tool_result,
+)
 from app.tools.middleware import MiddlewareChain, MiddlewareFn
 
 
@@ -13,6 +20,12 @@ class ToolRegistry:
 
     def register(self, tool: Tool):
         self._tools[tool.name] = tool
+
+    def values(self) -> List[Tool]:
+        return list(self._tools.values())
+
+    def has_deferred_tools(self) -> bool:
+        return any(tool.deferred for tool in self._tools.values())
 
     def use(self, mw: MiddlewareFn):
         """Register global middleware applied to all tool executions."""
@@ -48,9 +61,9 @@ class ToolRegistry:
         if name in self._tools:
             self._exposed.add(name)
 
-    async def execute(self, name: str, arguments: Dict[str, Any]) -> str:
+    async def invoke(self, name: str, arguments: Dict[str, Any]) -> ToolResult:
         if name not in self._tools:
-            return f"Error: unknown tool '{name}'"
+            return ToolResult(status="error", content=f"Error: unknown tool '{name}'")
         tool = self._tools[name]
         try:
             # Per-tool middleware runs inside global middleware
@@ -61,9 +74,13 @@ class ToolRegistry:
                 )
             else:
                 chain = self._middleware
-            return await chain.run(tool, arguments)
+            result: ToolOutcome = await chain.run(tool, arguments)
+            return normalize_tool_result(result)
         except Exception as e:
-            return f"Error: {e}"
+            return ToolResult(status="error", content=f"Error: {e}")
+
+    async def execute(self, name: str, arguments: Dict[str, Any]) -> str:
+        return render_tool_result(await self.invoke(name, arguments))
 
     def filter_by_names(
         self,
