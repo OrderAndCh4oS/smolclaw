@@ -568,13 +568,23 @@ class SmolRag:
 
         return context
 
+    @staticmethod
+    def _attach_excerpt_id(excerpt_id: str, excerpt_data: dict | None) -> dict | None:
+        if excerpt_data is None or "excerpt" not in excerpt_data:
+            return None
+        return {**excerpt_data, "excerpt_id": excerpt_id}
+
     async def _get_query_excerpts(self, text):
         embedding = await self.rate_limited_get_embedding(text)
         embedding_array = np.array(embedding)
         results = await self.embeddings_db.query(query=embedding_array, top_k=5, better_than_threshold=0.02)
-        excerpts = [self.excerpt_kv.get_by_key(result["__id__"]) for result in results]
-        excerpts = await asyncio.gather(*excerpts)
-        excerpts = [excerpt for excerpt in excerpts if excerpt is not None and "excerpt" in excerpt]
+        excerpt_ids = [result["__id__"] for result in results]
+        excerpts = await asyncio.gather(*[self.excerpt_kv.get_by_key(excerpt_id) for excerpt_id in excerpt_ids])
+        excerpts = [
+            self._attach_excerpt_id(excerpt_id, excerpt)
+            for excerpt_id, excerpt in zip(excerpt_ids, excerpts)
+        ]
+        excerpts = [excerpt for excerpt in excerpts if excerpt is not None]
         excerpts = truncate_list_by_token_size(excerpts, get_text_for_row=lambda x: x["excerpt"], max_token_size=4000)
         return excerpts
 
@@ -629,8 +639,16 @@ class SmolRag:
     async def bm25_query(self, text: str, top_k: int = 10) -> list[dict]:
         """Pure BM25 keyword search over excerpts."""
         results = await self.bm25_store.query(text, top_k=top_k)
-        fetched = await asyncio.gather(*[self.excerpt_kv.get_by_key(r["doc_id"]) for r in results])
-        return [data for data in fetched if data and "excerpt" in data]
+        excerpt_ids = [result["doc_id"] for result in results]
+        fetched = await asyncio.gather(*[self.excerpt_kv.get_by_key(excerpt_id) for excerpt_id in excerpt_ids])
+        return [
+            excerpt
+            for excerpt in (
+                self._attach_excerpt_id(excerpt_id, data)
+                for excerpt_id, data in zip(excerpt_ids, fetched)
+            )
+            if excerpt is not None
+        ]
 
     @staticmethod
     def _filter_excerpts_by_memory_type(excerpts: list[dict], memory_type: str) -> list[dict]:
@@ -641,7 +659,25 @@ class SmolRag:
                 filtered.append(excerpt)
         return filtered
 
-    async def mix_query(self, text, memory_type: str | None = None, include_bm25: bool = False):
+    @staticmethod
+    def _collect_excerpt_ids(excerpts: list[dict]) -> list[str]:
+        excerpt_ids = []
+        seen = set()
+        for excerpt in excerpts:
+            excerpt_id = excerpt.get("excerpt_id")
+            if not excerpt_id or excerpt_id in seen:
+                continue
+            seen.add(excerpt_id)
+            excerpt_ids.append(excerpt_id)
+        return excerpt_ids
+
+    async def mix_query(
+        self,
+        text,
+        memory_type: str | None = None,
+        include_bm25: bool = False,
+        return_metadata: bool = False,
+    ):
         prompt = get_high_low_level_keywords_prompt(text)
         result = await self.rate_limited_get_completion(prompt)
         keyword_data = extract_json_from_text(result) or {}
@@ -677,10 +713,14 @@ class SmolRag:
             kg_excerpts = self._filter_excerpts_by_memory_type(kg_excerpts, memory_type)
             query_excerpts = self._filter_excerpts_by_memory_type(query_excerpts, memory_type)
 
+        excerpt_ids = self._collect_excerpt_ids(query_excerpts + kg_excerpts)
         kg_context = self._get_kg_query_context(kg_entities, kg_excerpts, kg_relations)
         excerpt_context = self._get_excerpt_context(query_excerpts)
         system_prompt = get_mix_system_prompt(excerpt_context, kg_context)
-        return await self.rate_limited_get_completion(text, context=system_prompt.strip(), use_cache=True)
+        content = await self.rate_limited_get_completion(text, context=system_prompt.strip(), use_cache=True)
+        if return_metadata:
+            return {"content": content, "excerpt_ids": excerpt_ids}
+        return content
 
     def _get_kg_query_context(self, entities, excerpts, relations):
         entity_csv = [["entity", "type", "description", "rank"]]
@@ -822,7 +862,8 @@ class SmolRag:
                             sibling_name]:
                             relation_counts += 1
                 excerpt_data = await self.excerpt_kv.get_by_key(excerpt_id)
-                if excerpt_data is not None and "excerpt" in excerpt_data:
+                excerpt_data = self._attach_excerpt_id(excerpt_id, excerpt_data)
+                if excerpt_data is not None:
                     all_excerpt_data_lookup[excerpt_id] = {
                         "data": excerpt_data,
                         "order": index,
@@ -892,7 +933,10 @@ class SmolRag:
             for excerpt_id in excerpt_ids:
                 if excerpt_id not in all_excerpts_lookup:
                     all_excerpts_lookup[excerpt_id] = {
-                        "data": await self.excerpt_kv.get_by_key(excerpt_id),
+                        "data": self._attach_excerpt_id(
+                            excerpt_id,
+                            await self.excerpt_kv.get_by_key(excerpt_id),
+                        ),
                         "order": index,
                     }
 

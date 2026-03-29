@@ -6,6 +6,7 @@ import pytest
 import yaml
 
 from app.obsidian import parse_tags
+from app.tools.base import ToolResult
 from app.tools.memory_tools import (
     MEMORY_TYPES,
     MemoryRelateTool,
@@ -32,14 +33,23 @@ class TestMemorySearchTool:
     async def test_memory_search_calls_mix_query(self, mock_smol_rag):
         tool = MemorySearchTool(mock_smol_rag)
         await tool.execute(query="test query")
-        mock_smol_rag.mix_query.assert_called_once_with("test query", memory_type=None)
+        mock_smol_rag.mix_query.assert_called_once_with(
+            "test query",
+            memory_type=None,
+            return_metadata=True,
+        )
 
     @pytest.mark.asyncio
     async def test_memory_search_returns_result(self, mock_smol_rag):
-        mock_smol_rag.mix_query = AsyncMock(return_value="found X")
+        mock_smol_rag.mix_query = AsyncMock(return_value={
+            "content": "found X",
+            "excerpt_ids": ["exc-1"],
+        })
         tool = MemorySearchTool(mock_smol_rag)
         result = await tool.execute(query="test")
-        assert result == "found X"
+        assert isinstance(result, ToolResult)
+        assert result.content == "found X"
+        assert result.metadata["accessed_excerpt_ids"] == ["exc-1"]
 
 
 class TestMemoryRecallTool:
@@ -51,7 +61,22 @@ class TestMemoryRecallTool:
             "session summary",
             memory_type="episode",
             include_bm25=True,
+            return_metadata=True,
         )
+
+    @pytest.mark.asyncio
+    async def test_topic_mode_returns_accessed_excerpt_ids(self, mock_smol_rag):
+        mock_smol_rag.mix_query = AsyncMock(return_value={
+            "content": "remembered",
+            "excerpt_ids": ["exc-episode-1"],
+        })
+        tool = MemoryRecallTool(mock_smol_rag)
+
+        result = await tool.execute(query="session summary", mode="topic")
+
+        assert isinstance(result, ToolResult)
+        assert result.content == "remembered"
+        assert result.metadata["accessed_excerpt_ids"] == ["exc-episode-1"]
 
 
 class TestMemoryGraphQueryTool:
@@ -264,13 +289,21 @@ class TestMemorySearchFiltered:
     async def test_search_passes_memory_type(self, mock_smol_rag):
         tool = MemorySearchTool(mock_smol_rag)
         await tool.execute(query="pricing", memory_type="fact")
-        mock_smol_rag.mix_query.assert_called_once_with("pricing", memory_type="fact")
+        mock_smol_rag.mix_query.assert_called_once_with(
+            "pricing",
+            memory_type="fact",
+            return_metadata=True,
+        )
 
     @pytest.mark.asyncio
     async def test_search_without_type_passes_none(self, mock_smol_rag):
         tool = MemorySearchTool(mock_smol_rag)
         await tool.execute(query="pricing")
-        mock_smol_rag.mix_query.assert_called_once_with("pricing", memory_type=None)
+        mock_smol_rag.mix_query.assert_called_once_with(
+            "pricing",
+            memory_type=None,
+            return_metadata=True,
+        )
 
     def test_search_schema_has_memory_type_enum(self, mock_smol_rag):
         tool = MemorySearchTool(mock_smol_rag)

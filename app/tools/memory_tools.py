@@ -2,7 +2,7 @@ import os
 import time
 from datetime import datetime, timezone
 
-from app.tools.base import Tool, ToolCallPolicy, ToolRuntimeContext
+from app.tools.base import Tool, ToolCallPolicy, ToolResult, ToolRuntimeContext
 from app.utilities import make_hash
 
 from app.lifecycle import MemoryLifecycleManager
@@ -10,19 +10,42 @@ from app.lifecycle import MemoryLifecycleManager
 MEMORY_TYPES = ["fact", "decision", "preference", "episode", "task", "journal", "reference"]
 
 
-async def _promote_accessed_excerpts(smol_rag, query: str, boost: float = 0.05, top_k: int = 5):
-    """Promote excerpts returned by a search to reinforce frequently accessed memories."""
+async def _promote_accessed_excerpts(smol_rag, excerpt_ids: list[str], boost: float = 0.05):
+    """Promote the excerpts a memory tool actually surfaced to the agent."""
     try:
         mgr = MemoryLifecycleManager(smol_rag)
-        embedding = await smol_rag.rate_limited_get_embedding(query)
-        results = await smol_rag.embeddings_db.query(embedding, top_k=top_k)
-        for r in results:
-            excerpt_id = r.get("__id__")
-            if excerpt_id:
-                await mgr.promote(excerpt_id, boost=boost)
+        seen = set()
+        for excerpt_id in excerpt_ids:
+            if not excerpt_id or excerpt_id in seen:
+                continue
+            seen.add(excerpt_id)
+            await mgr.promote(excerpt_id, boost=boost)
     except Exception:
         pass  # Promotion is best-effort
+
+
 RECALL_MODES = ["topic", "temporal"]
+
+
+def _memory_query_result(result: str | dict) -> ToolResult:
+    if isinstance(result, dict):
+        excerpt_ids = []
+        seen = set()
+        for excerpt_id in result.get("excerpt_ids", []):
+            if not excerpt_id or excerpt_id in seen:
+                continue
+            seen.add(excerpt_id)
+            excerpt_ids.append(excerpt_id)
+        return ToolResult(
+            status="ok",
+            content=result.get("content", ""),
+            metadata={"accessed_excerpt_ids": excerpt_ids},
+        )
+    return ToolResult(
+        status="ok",
+        content=str(result),
+        metadata={"accessed_excerpt_ids": []},
+    )
 
 
 def format_memory_content(
@@ -100,7 +123,7 @@ class MemoryRelateTool(Tool):
     def __init__(self, smol_rag):
         self.smol_rag = smol_rag
 
-    async def execute(self, **kwargs) -> str:
+    async def execute(self, **kwargs) -> ToolResult:
         source = kwargs["source_entity"]
         target = kwargs["target_entity"]
         relationship = kwargs["relationship"]
@@ -157,11 +180,15 @@ class MemorySearchTool(Tool):
     def __init__(self, smol_rag):
         self.smol_rag = smol_rag
 
-    async def execute(self, **kwargs) -> str:
+    async def execute(self, **kwargs) -> ToolResult:
         query = kwargs["query"]
         memory_type = kwargs.get("memory_type")
-        result = await self.smol_rag.mix_query(query, memory_type=memory_type)
-        return result
+        result = await self.smol_rag.mix_query(
+            query,
+            memory_type=memory_type,
+            return_metadata=True,
+        )
+        return _memory_query_result(result)
 
 
 class MemoryGraphQueryTool(Tool):
@@ -197,7 +224,7 @@ class MemoryGraphQueryTool(Tool):
     def __init__(self, smol_rag):
         self.smol_rag = smol_rag
 
-    async def execute(self, **kwargs) -> str:
+    async def execute(self, **kwargs) -> ToolResult | str:
         entity = kwargs["entity"]
         graph = self.smol_rag.graph
         node = graph.get_node(entity)
@@ -528,14 +555,17 @@ class MemoryRecallTool(Tool):
 
         if mode == "topic":
             result = await self.smol_rag.mix_query(
-                query, memory_type="episode", include_bm25=True,
+                query,
+                memory_type="episode",
+                include_bm25=True,
+                return_metadata=True,
             )
-            return result
+            return _memory_query_result(result)
         elif mode == "temporal":
             return await self._temporal_query(days)
         return "Unknown recall mode."
 
-    async def _temporal_query(self, days: float) -> str:
+    async def _temporal_query(self, days: float) -> ToolResult:
         cutoff = time.time() - (days * 86400)
         all_excerpts = await self.smol_rag.excerpt_kv.get_all()
         matches = []
@@ -546,15 +576,25 @@ class MemoryRecallTool(Tool):
                 continue
             indexed_at = data.get("indexed_at", 0)
             if indexed_at >= cutoff:
-                matches.append((indexed_at, data))
+                matches.append((indexed_at, excerpt_id, data))
 
         if not matches:
-            return "No recent session memories found."
+            return ToolResult(
+                status="ok",
+                content="No recent session memories found.",
+                metadata={"accessed_excerpt_ids": []},
+            )
 
         matches.sort(key=lambda x: x[0], reverse=True)
         parts = []
-        for _, data in matches[:20]:
+        excerpt_ids = []
+        for _, excerpt_id, data in matches[:20]:
+            excerpt_ids.append(excerpt_id)
             excerpt = data.get("excerpt", "")
             summary = data.get("summary", "")
             parts.append(f"## Excerpt\n{excerpt}\n\n## Summary\n{summary}")
-        return "\n\n---\n\n".join(parts)
+        return ToolResult(
+            status="ok",
+            content="\n\n---\n\n".join(parts),
+            metadata={"accessed_excerpt_ids": excerpt_ids},
+        )

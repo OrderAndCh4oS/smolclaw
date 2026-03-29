@@ -360,7 +360,10 @@ class TestAgentFactory:
             },
         ])
         llm.completion_model = "gpt-test"
-        mock_smol_rag.mix_query = AsyncMock(return_value="results")
+        mock_smol_rag.mix_query = AsyncMock(return_value={
+            "content": "results",
+            "excerpt_ids": ["exc-1", "exc-2"],
+        })
 
         registry = ToolRegistry()
         registry.register(MemorySearchTool(mock_smol_rag))
@@ -383,7 +386,7 @@ class TestAgentFactory:
             result = await loop.process("use memory")
 
         assert result == "done"
-        mock_promote.assert_awaited_once_with(mock_smol_rag, "pricing")
+        mock_promote.assert_awaited_once_with(mock_smol_rag, ["exc-1", "exc-2"])
 
     @pytest.mark.asyncio
     async def test_memory_store_uses_runtime_bound_llm_for_auto_classification(

@@ -249,6 +249,31 @@ class TestRuntimeRegressions:
         await rag.close()
 
     @pytest.mark.asyncio
+    async def test_mix_query_return_metadata_uses_filtered_excerpt_ids(self, temp_dir, mock_openai_llm):
+        rag = _build_rag(temp_dir=temp_dir, llm=mock_openai_llm)
+        rag.rate_limited_get_completion = AsyncMock(side_effect=["{}", "final response"])
+        rag._get_low_level_dataset = AsyncMock(return_value=([], [
+            {"excerpt_id": "exc-low-episode", "excerpt": "low episode", "summary": "low", "memory_type": "episode"},
+            {"excerpt_id": "exc-low-decision", "excerpt": "low decision", "summary": "low", "memory_type": "decision"},
+        ], []))
+        rag._get_high_level_dataset = AsyncMock(return_value=([], [], [
+            {"excerpt_id": "exc-shared", "excerpt": "shared episode", "summary": "shared", "memory_type": "episode"},
+        ]))
+        rag._get_query_excerpts = AsyncMock(return_value=[
+            {"excerpt_id": "exc-query-episode", "excerpt": "query episode", "summary": "query", "memory_type": "episode"},
+            {"excerpt_id": "exc-query-decision", "excerpt": "query decision", "summary": "query", "memory_type": "decision"},
+            {"excerpt_id": "exc-shared", "excerpt": "shared episode", "summary": "shared", "memory_type": "episode"},
+        ])
+
+        result = await rag.mix_query("what did we do?", memory_type="episode", return_metadata=True)
+
+        assert result == {
+            "content": "final response",
+            "excerpt_ids": ["exc-query-episode", "exc-shared", "exc-low-episode"],
+        }
+        await rag.close()
+
+    @pytest.mark.asyncio
     async def test_remove_document_removes_orphaned_kg_entries(self, temp_dir, mock_openai_llm):
         rag = _build_rag(temp_dir=temp_dir, llm=mock_openai_llm)
         doc_id = "doc-orphan"

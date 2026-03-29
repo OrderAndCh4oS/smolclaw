@@ -61,6 +61,23 @@ class OpenAiLlm:
         }
         return make_hash(json.dumps(key_payload, sort_keys=True), "emb-")
 
+    @staticmethod
+    def _sanitize_tools(tools: List[dict]) -> List[dict]:
+        """Drop function fields unsupported by OpenAI chat.completions."""
+        sanitized = []
+        for tool in tools:
+            if tool.get("type") != "function":
+                sanitized.append(tool)
+                continue
+            function = tool.get("function", {})
+            clean_function = {
+                key: function[key]
+                for key in ("name", "description", "parameters", "strict")
+                if key in function
+            }
+            sanitized.append({"type": "function", "function": clean_function})
+        return sanitized
+
     async def get_completion(self, query: str, model: Optional[str] = None, context: str = "",
                              use_cache: bool = True) -> str:
         """
@@ -138,7 +155,7 @@ class OpenAiLlm:
         model = model or self.completion_model
         kwargs = {"model": model, "messages": messages}
         if tools:
-            kwargs["tools"] = tools
+            kwargs["tools"] = self._sanitize_tools(tools)
 
         if stream and on_chunk:
             return await self._stream_tool_completion(kwargs, model, on_chunk)

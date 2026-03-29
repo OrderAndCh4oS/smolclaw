@@ -86,6 +86,40 @@ class TestGetToolCompletion:
             assert call_kwargs.kwargs["model"] == "gpt-4o"
 
     @pytest.mark.asyncio
+    async def test_get_tool_completion_sanitizes_unsupported_function_fields(self):
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = MagicMock(return_value=_make_mock_response("ok"))
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "memory_search",
+                "description": "Search memory",
+                "parameters": {"type": "object", "properties": {}},
+                "strict": True,
+                "examples": [{"description": "Search pricing", "arguments": {"query": "pricing"}}],
+                "x-extra": "ignored",
+            },
+        }]
+        with patch("app.openai_llm.OpenAI", return_value=mock_client):
+            llm = OpenAiLlm(openai_api_key="test-key")
+            await llm.get_tool_completion(
+                messages=[{"role": "user", "content": "hi"}],
+                tools=tools,
+            )
+
+        sent_tools = mock_client.chat.completions.create.call_args.kwargs["tools"]
+        assert sent_tools == [{
+            "type": "function",
+            "function": {
+                "name": "memory_search",
+                "description": "Search memory",
+                "parameters": {"type": "object", "properties": {}},
+                "strict": True,
+            },
+        }]
+        assert "examples" in tools[0]["function"]
+
+    @pytest.mark.asyncio
     async def test_get_tool_completion_error_handling(self):
         mock_client = MagicMock()
         mock_client.chat.completions.create = MagicMock(side_effect=RuntimeError("API error"))

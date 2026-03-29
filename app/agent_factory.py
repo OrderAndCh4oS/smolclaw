@@ -13,7 +13,7 @@ from app.definitions import PROJECT_ROOT
 from app.hooks import HookRunner, ON_AFTER_TOOL
 from app.llm import create_llm
 from app.session import SessionManager
-from app.tools.base import ToolRuntimeContext
+from app.tools.base import ToolRuntimeContext, normalize_tool_result
 from app.tools.middleware import HookFiringMiddleware
 from app.tools.memory_tools import _promote_accessed_excerpts
 from app.tools.registry import ToolRegistry
@@ -27,14 +27,15 @@ def _make_promote_hook(smol_rag):
             return
         tool_name = ctx.get("tool_name")
         arguments = ctx.get("arguments", {})
-        query = arguments.get("query")
-        if not query:
+        result = normalize_tool_result(ctx.get("result"))
+        excerpt_ids = result.metadata.get("accessed_excerpt_ids") or []
+        if not excerpt_ids:
             return
         if tool_name == "memory_search":
-            await _promote_accessed_excerpts(smol_rag, query)
+            await _promote_accessed_excerpts(smol_rag, excerpt_ids)
             return
         if tool_name == "memory_recall" and arguments.get("mode") == "topic":
-            await _promote_accessed_excerpts(smol_rag, query)
+            await _promote_accessed_excerpts(smol_rag, excerpt_ids)
 
     return _promote_hook
 
