@@ -352,6 +352,22 @@ class TestAgentFactory:
         names = [d["function"]["name"] for d in defs]
         assert "tool_search" in names
 
+    def test_build_tool_registry_registers_tool_search_for_explicit_module_lists(
+        self, mock_smol_rag, temp_dir
+    ):
+        registry = build_tool_registry(
+            smol_rag=mock_smol_rag,
+            memory_docs_dir=temp_dir,
+            workspace=temp_dir,
+            llm=None,
+            mode="direct",
+            module_names=["transport.direct", "memory"],
+        )
+
+        defs = registry.get_definitions()
+        names = [d["function"]["name"] for d in defs]
+        assert "tool_search" in names
+
     @pytest.mark.asyncio
     async def test_build_agent_loop_installs_tool_hooks_on_standard_builder(
         self, mock_smol_rag, sessions_dir
@@ -534,3 +550,59 @@ class TestAgentFactory:
         for ch in '<>:"/\\|?*':
             assert ch not in first
             assert ch not in second
+
+    @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
+    def test_child_agent_factory_resolves_memory_per_child_config(
+        self, _mock_create, master_registry, mock_smol_rag, sessions_dir
+    ):
+        from app.hooks import ON_AFTER_TOOL
+
+        async def _noop(_ctx):
+            return None
+
+        def resolve_smol_rag(config: AgentConfig):
+            return mock_smol_rag if "memory" in config.modules else None
+
+        def resolve_hook_runner_configurers(config: AgentConfig):
+            if "memory" not in config.modules:
+                return ()
+
+            def _configure(hook_runner):
+                hook_runner.on(ON_AFTER_TOOL, _noop)
+
+            return (_configure,)
+
+        factory = ChildAgentFactory(
+            master_registry=master_registry,
+            smol_rag=mock_smol_rag,
+            session_manager=SessionManager(sessions_dir),
+            parent_session_key="parent",
+            smol_rag_resolver=resolve_smol_rag,
+            hook_runner_configurers_resolver=resolve_hook_runner_configurers,
+        )
+
+        memoryless = factory.build(
+            AgentConfig(
+                name="reader",
+                model="gpt-test",
+                persona="You are Reader.",
+                tools=["tool_a"],
+                modules=["transport.direct"],
+            ),
+            purpose="spawn",
+        )
+        memory_enabled = factory.build(
+            AgentConfig(
+                name="researcher",
+                model="gpt-test",
+                persona="You are Researcher.",
+                tools=["tool_a"],
+                modules=["transport.direct", "memory"],
+            ),
+            purpose="spawn",
+        )
+
+        assert memoryless.smol_rag is None
+        assert ON_AFTER_TOOL not in memoryless.hook_runner.events
+        assert memory_enabled.smol_rag is mock_smol_rag
+        assert ON_AFTER_TOOL in memory_enabled.hook_runner.events

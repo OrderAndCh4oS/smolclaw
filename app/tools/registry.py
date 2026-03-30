@@ -71,6 +71,14 @@ class ToolRegistry:
         if name not in self._tools:
             return ToolResult(status="error", content=f"Error: unknown tool '{name}'")
         tool = self._tools[name]
+        if tool.deferred and name not in self._exposed:
+            return ToolResult(
+                status="error",
+                content=(
+                    f"Error: tool '{name}' is not currently exposed. "
+                    "Use 'tool_search' to discover and expose it first."
+                ),
+            )
         try:
             # Per-tool middleware runs inside global middleware
             per_tool = self._per_tool_middleware.get(name)

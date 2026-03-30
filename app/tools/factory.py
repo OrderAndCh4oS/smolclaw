@@ -30,7 +30,6 @@ def build_tool_registry(
     mode="mcp": MCP-delegating wrappers for gateway
     """
     registry = ToolRegistry()
-    tool_discovery_requested = False
 
     if module_names is None:
         module_names = [f"transport.{mode}"]
@@ -97,9 +96,12 @@ def build_tool_registry(
             registry.register(GetResultTool(configs=agent_configs))
             registry.register(AwaitResultTool(configs=agent_configs))
         elif module_name == "tool_discovery":
-            tool_discovery_requested = True
+            # Backward-compatible no-op alias. Deferred tools are always searchable.
+            continue
 
-    if tool_discovery_requested and registry.has_deferred_tools():
+    if registry.has_deferred_tools() and not any(
+        tool.name == "tool_search" for tool in registry.values()
+    ):
         from app.tools.tool_search import ToolSearchTool
 
         registry.register(ToolSearchTool(registry))

@@ -259,9 +259,18 @@ class TestDeferredTools:
         assert "deferred_dummy" in names
 
     @pytest.mark.asyncio
-    async def test_deferred_tool_still_executable(self):
+    async def test_deferred_tool_requires_exposure_to_execute(self):
         registry = ToolRegistry()
         registry.register(DeferredDummyTool())
+        result = await registry.execute("deferred_dummy", {})
+        assert result.startswith("Error:")
+        assert "tool_search" in result
+
+    @pytest.mark.asyncio
+    async def test_exposed_deferred_tool_executes(self):
+        registry = ToolRegistry()
+        registry.register(DeferredDummyTool())
+        registry.expose_tool("deferred_dummy")
         result = await registry.execute("deferred_dummy", {})
         assert result == "deferred result"
 
@@ -292,6 +301,18 @@ class TestProjectForAgent:
         defs = projected.get_definitions()
         names = [d["function"]["name"] for d in defs]
         assert names == ["deferred_dummy"]
+
+    @pytest.mark.asyncio
+    async def test_hidden_deferred_tools_are_not_invocable_until_exposed(self):
+        registry = ToolRegistry()
+        registry.register(DeferredDummyTool())
+        registry.register(SearchTool())
+
+        projected = registry.project_for_agent(["tool_search"])
+
+        result = await projected.execute("deferred_dummy", {})
+        assert result.startswith("Error:")
+        assert "tool_search" in result
 
     @pytest.mark.asyncio
     async def test_excludes_unlisted_immediate_tools(self):

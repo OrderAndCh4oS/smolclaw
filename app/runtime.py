@@ -51,12 +51,42 @@ def resolve_module_names(config: AgentConfig, env: RuntimeEnvironment) -> list[s
     return module_names
 
 
+def memory_enabled_for_config(
+    config: AgentConfig,
+    env: RuntimeEnvironment,
+    module_names: Optional[Sequence[str]] = None,
+) -> bool:
+    names = list(module_names) if module_names is not None else resolve_module_names(config, env)
+    return env.smol_rag is not None and "memory" in names
+
+
+def resolve_agent_smol_rag(
+    config: AgentConfig,
+    env: RuntimeEnvironment,
+    module_names: Optional[Sequence[str]] = None,
+):
+    if not memory_enabled_for_config(config, env, module_names=module_names):
+        return None
+    return env.smol_rag
+
+
+def resolve_hook_runner_configurers(
+    config: AgentConfig,
+    env: RuntimeEnvironment,
+    module_names: Optional[Sequence[str]] = None,
+) -> tuple[Callable[[HookRunner], None], ...]:
+    if not memory_enabled_for_config(config, env, module_names=module_names):
+        return ()
+    return configure_memory_hooks(env)
+
+
 def build_context_builder_factory(env: RuntimeEnvironment):
     def _build(config: AgentConfig) -> ContextBuilder:
         skills_paths = [f"{PROJECT_ROOT}/skills/{skill}" for skill in config.skills]
-        if env.smol_rag and "memory" in resolve_module_names(config, env):
+        agent_smol_rag = resolve_agent_smol_rag(config, env)
+        if agent_smol_rag is not None:
             return ContextAssembler(
-                smol_rag=env.smol_rag,
+                smol_rag=agent_smol_rag,
                 token_budget=config.context_budget,
                 bootstrap_path=config.bootstrap_path,
                 persona=config.persona,
@@ -105,10 +135,15 @@ def build_configured_agent(
         config = replace(config, model=model_override)
 
     module_names = resolve_module_names(config, env)
+    agent_smol_rag = resolve_agent_smol_rag(config, env, module_names=module_names)
     registry = build_master_registry(env, module_names=module_names)
     context_builder_factory = build_context_builder_factory(env)
     context_builder = context_builder_factory(config)
-    hook_runner_configurers = configure_memory_hooks(env) if "memory" in module_names else ()
+    hook_runner_configurers = resolve_hook_runner_configurers(
+        config,
+        env,
+        module_names=module_names,
+    )
     registry_factory = lambda agent_config: build_master_registry(
         env,
         module_names=resolve_module_names(agent_config, env),
@@ -117,7 +152,7 @@ def build_configured_agent(
     return build_agent_loop(
         config=config,
         master_registry=registry,
-        smol_rag=env.smol_rag,
+        smol_rag=agent_smol_rag,
         session_manager=env.session_manager,
         session_key_prefix=session_key_prefix,
         session_key=session_key,
@@ -127,4 +162,6 @@ def build_configured_agent(
         context_builder_factory=context_builder_factory,
         registry_factory=registry_factory,
         hook_runner_configurers=hook_runner_configurers,
+        child_smol_rag_resolver=lambda agent_config: resolve_agent_smol_rag(agent_config, env),
+        child_hook_runner_configurers_resolver=lambda agent_config: resolve_hook_runner_configurers(agent_config, env),
     )

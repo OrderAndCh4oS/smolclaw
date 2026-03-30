@@ -19,6 +19,10 @@ from app.tools.memory_tools import _promote_accessed_excerpts
 from app.tools.registry import ToolRegistry
 
 _SHARED_BOOTSTRAP_PATH = os.path.join(PROJECT_ROOT, "AGENT.md")
+HookRunnerConfigurer = Callable[[HookRunner], None]
+HookRunnerConfigurers = tuple[HookRunnerConfigurer, ...]
+SmolRagResolver = Callable[[AgentConfig], object | None]
+HookRunnerConfigurersResolver = Callable[[AgentConfig], HookRunnerConfigurers]
 
 
 def _make_promote_hook(smol_rag):
@@ -49,7 +53,9 @@ class ChildAgentFactory:
     registry_factory: Optional[Callable[[AgentConfig], ToolRegistry]] = None
     loop_registrar: Optional[Callable[[AgentLoop], None]] = None
     context_builder_factory: Optional[Callable[[AgentConfig], ContextBuilder]] = None
-    hook_runner_configurers: tuple[Callable[[HookRunner], None], ...] = ()
+    hook_runner_configurers: HookRunnerConfigurers = ()
+    smol_rag_resolver: Optional[SmolRagResolver] = None
+    hook_runner_configurers_resolver: Optional[HookRunnerConfigurersResolver] = None
     _counter: count = field(default_factory=lambda: count(1), init=False, repr=False)
 
     @staticmethod
@@ -77,10 +83,20 @@ class ChildAgentFactory:
             if self.registry_factory is not None
             else self.master_registry
         )
+        smol_rag = (
+            self.smol_rag_resolver(config)
+            if self.smol_rag_resolver is not None
+            else self.smol_rag
+        )
+        hook_runner_configurers = (
+            self.hook_runner_configurers_resolver(config)
+            if self.hook_runner_configurers_resolver is not None
+            else self.hook_runner_configurers
+        )
         loop = build_agent_loop(
             config=config,
             master_registry=master_registry,
-            smol_rag=self.smol_rag,
+            smol_rag=smol_rag,
             session_manager=self.session_manager,
             session_key=self.make_session_key(config.name, purpose),
             child_loop_registrar=self.loop_registrar,
@@ -89,7 +105,9 @@ class ChildAgentFactory:
                 if self.context_builder_factory is not None
                 else None
             ),
-            hook_runner_configurers=self.hook_runner_configurers,
+            hook_runner_configurers=hook_runner_configurers,
+            child_smol_rag_resolver=self.smol_rag_resolver,
+            child_hook_runner_configurers_resolver=self.hook_runner_configurers_resolver,
         )
         if self.loop_registrar:
             self.loop_registrar(loop)
@@ -108,15 +126,20 @@ def build_agent_loop(
     context_builder: Optional[ContextBuilder] = None,
     context_builder_factory: Optional[Callable[[AgentConfig], ContextBuilder]] = None,
     registry_factory: Optional[Callable[[AgentConfig], ToolRegistry]] = None,
-    hook_runner_configurers: tuple[Callable[[HookRunner], None], ...] = (),
+    hook_runner_configurers: HookRunnerConfigurers = (),
+    child_smol_rag_resolver: Optional[SmolRagResolver] = None,
+    child_hook_runner_configurers_resolver: Optional[HookRunnerConfigurersResolver] = None,
 ) -> AgentLoop:
     llm = create_llm(completion_model=config.model)
+    agent_smol_rag = smol_rag
+    if config.modules and "memory" not in config.modules:
+        agent_smol_rag = None
 
     # Shared hook runner for tool hooks + agent lifecycle hooks
     if hook_runner is None:
         hook_runner = HookRunner()
-    if not hook_runner_configurers and smol_rag:
-        hook_runner.on(ON_AFTER_TOOL, _make_promote_hook(smol_rag))
+    if not hook_runner_configurers and agent_smol_rag:
+        hook_runner.on(ON_AFTER_TOOL, _make_promote_hook(agent_smol_rag))
     for configure_hook_runner in hook_runner_configurers:
         configure_hook_runner(hook_runner)
 
@@ -125,19 +148,21 @@ def build_agent_loop(
         llm=llm,
         hook_runner=hook_runner,
         session_manager=session_manager,
-        smol_rag=smol_rag,
+        smol_rag=agent_smol_rag,
         session_key=resolved_session_key,
         loop_registrar=child_loop_registrar,
     )
     runtime_ctx.child_agent_factory = ChildAgentFactory(
         master_registry=master_registry,
         registry_factory=registry_factory,
-        smol_rag=smol_rag,
+        smol_rag=agent_smol_rag,
         session_manager=session_manager,
         parent_session_key=resolved_session_key,
         loop_registrar=child_loop_registrar,
         context_builder_factory=context_builder_factory,
         hook_runner_configurers=hook_runner_configurers,
+        smol_rag_resolver=child_smol_rag_resolver,
+        hook_runner_configurers_resolver=child_hook_runner_configurers_resolver,
     )
     filtered_registry = master_registry.project_for_agent(
         config.tools,
@@ -155,10 +180,10 @@ def build_agent_loop(
         os.path.join(PROJECT_ROOT, "skills", s) for s in config.skills
     ]
 
-    if context_builder is None and smol_rag:
+    if context_builder is None and agent_smol_rag:
         from app.context_assembly import ContextAssembler
         context_builder = ContextAssembler(
-            smol_rag=smol_rag,
+            smol_rag=agent_smol_rag,
             token_budget=config.context_budget,
             bootstrap_path=config.bootstrap_path,
             persona=config.persona,
@@ -182,7 +207,7 @@ def build_agent_loop(
         session_manager=session_manager,
         max_iterations=config.max_iterations,
         memory_window=config.memory_window,
-        smol_rag=smol_rag,
+        smol_rag=agent_smol_rag,
         hook_runner=hook_runner,
         reflection=config.reflection,
         planning=config.planning,
