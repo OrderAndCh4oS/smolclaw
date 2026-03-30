@@ -349,6 +349,10 @@ class MemoryStoreTool(Tool):
 
 class MemoryGetTool(Tool):
     @property
+    def exposure(self) -> str:
+        return "deferred"
+
+    @property
     def name(self) -> str:
         return "memory_get"
 

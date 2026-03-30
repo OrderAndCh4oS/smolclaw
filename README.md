@@ -120,7 +120,7 @@ python -m cli.main clear-logs
 
 Every agent draws from a shared tool registry. The available tools cover four categories.
 
-**Memory** tools let agents search the knowledge graph with `memory_search` (hybrid vector + KG retrieval with optional memory type filtering), query specific entities and their relationships with `memory_graph_query`, store new memories with taxonomy classification via `memory_store`, create explicit graph edges between entities with `memory_relate`, retrieve past sessions with `memory_recall`, and review contradictions with `contradiction_review`.
+**Memory** tools let agents search the knowledge graph with `memory_search` (hybrid vector + KG retrieval with optional memory type filtering), query specific entities and their relationships with `memory_graph_query`, store new memories with taxonomy classification via `memory_store`, create explicit graph edges between entities with `memory_relate`, retrieve past sessions with `memory_recall`, fetch a specific excerpt with `memory_get`, and review contradictions with `contradiction_review`.
 
 **Filesystem** tools provide `read_file`, `write_file`, `edit_file`, and `list_dir` within a sandboxed workspace directory.
 
@@ -132,7 +132,7 @@ Every agent draws from a shared tool registry. The available tools cover four ca
 
 **Orchestration** tools provide higher-level patterns: `sequential_pipeline` chains agents so the output of one becomes the input of the next, `fanout_pipeline` runs agents in parallel on the same input, and `route` directs input to the best-matching agent via pattern matching or LLM classification.
 
-Tools are extensible at two levels. For a single capability, implement the `Tool` base class and declare its per-call policy (`mutates_state`, `delegates`) plus optional deferred exposure. For a reusable bundle, add a runtime module to the shared registry factory so the capability can be enabled, replaced, or omitted cleanly by environment. Agent configs can now opt into higher-level loop behavior with `behaviors` in `agents.yaml` (`plan`, `reflect`) without hardcoding those prompts into the loop itself.
+Tools are extensible at two levels. For a single capability, implement the `Tool` base class and declare its per-call policy (`mutates_state`, `delegates`) plus optional deferred exposure. For a reusable bundle, add a runtime module to the shared registry factory so the capability can be enabled, replaced, or omitted cleanly by environment. `modules` define the supply boundary for an agent, while `tools` define which immediate tools are exposed at startup. Deferred tools from enabled modules stay discoverable at runtime, and `tool_search` is exposed automatically when an agent has hidden deferred tools to discover. Agent configs can now opt into higher-level loop behavior with `behaviors` in `agents.yaml` (`plan`, `reflect`) without hardcoding those prompts into the loop itself.
 
 ### Tool Middleware
 

@@ -46,6 +46,7 @@ class ChildAgentFactory:
     smol_rag: object
     session_manager: SessionManager
     parent_session_key: str
+    registry_factory: Optional[Callable[[AgentConfig], ToolRegistry]] = None
     loop_registrar: Optional[Callable[[AgentLoop], None]] = None
     context_builder_factory: Optional[Callable[[AgentConfig], ContextBuilder]] = None
     hook_runner_configurers: tuple[Callable[[HookRunner], None], ...] = ()
@@ -71,9 +72,14 @@ class ChildAgentFactory:
         )
 
     def build(self, config: AgentConfig, purpose: str) -> AgentLoop:
+        master_registry = (
+            self.registry_factory(config)
+            if self.registry_factory is not None
+            else self.master_registry
+        )
         loop = build_agent_loop(
             config=config,
-            master_registry=self.master_registry,
+            master_registry=master_registry,
             smol_rag=self.smol_rag,
             session_manager=self.session_manager,
             session_key=self.make_session_key(config.name, purpose),
@@ -101,6 +107,7 @@ def build_agent_loop(
     child_loop_registrar: Optional[Callable[[AgentLoop], None]] = None,
     context_builder: Optional[ContextBuilder] = None,
     context_builder_factory: Optional[Callable[[AgentConfig], ContextBuilder]] = None,
+    registry_factory: Optional[Callable[[AgentConfig], ToolRegistry]] = None,
     hook_runner_configurers: tuple[Callable[[HookRunner], None], ...] = (),
 ) -> AgentLoop:
     llm = create_llm(completion_model=config.model)
@@ -124,6 +131,7 @@ def build_agent_loop(
     )
     runtime_ctx.child_agent_factory = ChildAgentFactory(
         master_registry=master_registry,
+        registry_factory=registry_factory,
         smol_rag=smol_rag,
         session_manager=session_manager,
         parent_session_key=resolved_session_key,
@@ -131,7 +139,10 @@ def build_agent_loop(
         context_builder_factory=context_builder_factory,
         hook_runner_configurers=hook_runner_configurers,
     )
-    filtered_registry = master_registry.filter_by_names(config.tools, runtime_ctx=runtime_ctx)
+    filtered_registry = master_registry.project_for_agent(
+        config.tools,
+        runtime_ctx=runtime_ctx,
+    )
     filtered_registry.use(HookFiringMiddleware(hook_runner))
 
     # Apply permission mode restrictions

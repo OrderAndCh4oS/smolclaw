@@ -182,6 +182,27 @@ class DeferredDummyTool(Tool):
         return "deferred result"
 
 
+class SearchTool(Tool):
+    @property
+    def name(self) -> str:
+        return "tool_search"
+
+    @property
+    def description(self) -> str:
+        return "Search for additional tools"
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        }
+
+    async def execute(self, **kwargs) -> str:
+        return "search"
+
+
 class TestDeferredTools:
     def test_get_definitions_excludes_deferred(self):
         registry = ToolRegistry()
@@ -243,6 +264,49 @@ class TestDeferredTools:
         registry.register(DeferredDummyTool())
         result = await registry.execute("deferred_dummy", {})
         assert result == "deferred result"
+
+
+class TestProjectForAgent:
+    def test_preserves_hidden_deferred_tools_for_runtime_discovery(self):
+        registry = ToolRegistry()
+        registry.register(DummyTool())
+        registry.register(DeferredDummyTool())
+        registry.register(SearchTool())
+
+        projected = registry.project_for_agent(["tool_search"])
+
+        defs = projected.get_definitions()
+        names = [d["function"]["name"] for d in defs]
+        assert names == ["tool_search"]
+        matches = projected.search_tools("deferred")
+        assert len(matches) == 1
+        assert matches[0]["function"]["name"] == "deferred_dummy"
+
+    def test_exposes_listed_deferred_tools_immediately(self):
+        registry = ToolRegistry()
+        registry.register(DeferredDummyTool())
+        registry.register(SearchTool())
+
+        projected = registry.project_for_agent(["deferred_dummy"])
+
+        defs = projected.get_definitions()
+        names = [d["function"]["name"] for d in defs]
+        assert names == ["deferred_dummy"]
+
+    @pytest.mark.asyncio
+    async def test_excludes_unlisted_immediate_tools(self):
+        registry = ToolRegistry()
+        registry.register(DummyTool())
+        registry.register(DeferredDummyTool())
+        registry.register(SearchTool())
+
+        projected = registry.project_for_agent(["tool_search"])
+
+        defs = projected.get_definitions()
+        names = [d["function"]["name"] for d in defs]
+        assert "dummy" not in names
+        result = await projected.execute("dummy", {"text": "hello"})
+        assert result.startswith("Error:")
 
 
 class TestFilterByNames:

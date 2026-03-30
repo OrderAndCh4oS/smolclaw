@@ -262,7 +262,7 @@ class TestAgentFactory:
             name="researcher",
             model="gpt-test",
             persona="You are Researcher.",
-            tools=["tool_search", "hidden_tool"],
+            tools=["tool_search"],
         )
 
         with patch("app.agent_factory.create_llm", return_value=llm):
@@ -277,6 +277,80 @@ class TestAgentFactory:
         assert result == "done"
         assert seen_tool_names[0] == ["tool_search"]
         assert seen_tool_names[1] == ["hidden_tool", "tool_search"]
+
+    @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
+    def test_child_agent_factory_uses_registry_factory_for_child_config(
+        self, _mock_create, master_registry, mock_smol_rag, sessions_dir
+    ):
+        child_registry = ToolRegistry()
+        child_registry.register(StubToolC())
+        child_config = AgentConfig(
+            name="writer",
+            model="gpt-5.2-pro",
+            persona="You are Writer.",
+            tools=["tool_c"],
+            modules=["child"],
+        )
+        factory = ChildAgentFactory(
+            master_registry=master_registry,
+            registry_factory=lambda config: child_registry if config.modules == ["child"] else master_registry,
+            smol_rag=mock_smol_rag,
+            session_manager=SessionManager(sessions_dir),
+            parent_session_key="parent",
+        )
+
+        loop = factory.build(child_config, purpose="spawn")
+
+        defs = loop.tool_registry.get_definitions()
+        names = [d["function"]["name"] for d in defs]
+        assert names == ["tool_c"]
+
+    @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
+    def test_build_agent_loop_auto_exposes_tool_search_for_hidden_deferred_tools(
+        self, _mock_create, mock_smol_rag, sessions_dir, temp_dir
+    ):
+        registry = build_tool_registry(
+            smol_rag=mock_smol_rag,
+            memory_docs_dir=temp_dir,
+            workspace=temp_dir,
+            llm=None,
+            mode="direct",
+        )
+        config = AgentConfig(
+            name="researcher",
+            model="gpt-test",
+            persona="You are Researcher.",
+            tools=["memory_search"],
+        )
+
+        loop = build_agent_loop(
+            config,
+            registry,
+            mock_smol_rag,
+            SessionManager(sessions_dir),
+        )
+
+        defs = loop.tool_registry.get_definitions()
+        names = sorted(d["function"]["name"] for d in defs)
+        assert "memory_get" not in names
+        assert "memory_search" in names
+        assert "tool_search" in names
+
+    def test_build_tool_registry_registers_tool_search_independent_of_module_order(
+        self, mock_smol_rag, temp_dir
+    ):
+        registry = build_tool_registry(
+            smol_rag=mock_smol_rag,
+            memory_docs_dir=temp_dir,
+            workspace=temp_dir,
+            llm=None,
+            mode="direct",
+            module_names=["tool_discovery", "memory", "transport.direct"],
+        )
+
+        defs = registry.get_definitions()
+        names = [d["function"]["name"] for d in defs]
+        assert "tool_search" in names
 
     @pytest.mark.asyncio
     async def test_build_agent_loop_installs_tool_hooks_on_standard_builder(

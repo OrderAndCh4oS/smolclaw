@@ -109,6 +109,10 @@ def build_configured_agent(
     context_builder_factory = build_context_builder_factory(env)
     context_builder = context_builder_factory(config)
     hook_runner_configurers = configure_memory_hooks(env) if "memory" in module_names else ()
+    registry_factory = lambda agent_config: build_master_registry(
+        env,
+        module_names=resolve_module_names(agent_config, env),
+    )
 
     return build_agent_loop(
         config=config,
@@ -121,5 +125,6 @@ def build_configured_agent(
         child_loop_registrar=child_loop_registrar,
         context_builder=context_builder,
         context_builder_factory=context_builder_factory,
+        registry_factory=registry_factory,
         hook_runner_configurers=hook_runner_configurers,
     )

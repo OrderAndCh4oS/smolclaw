@@ -30,6 +30,7 @@ def build_tool_registry(
     mode="mcp": MCP-delegating wrappers for gateway
     """
     registry = ToolRegistry()
+    tool_discovery_requested = False
 
     if module_names is None:
         module_names = [f"transport.{mode}"]
@@ -95,10 +96,13 @@ def build_tool_registry(
             registry.register(SpawnTool(configs=agent_configs))
             registry.register(GetResultTool(configs=agent_configs))
             registry.register(AwaitResultTool(configs=agent_configs))
-        elif module_name == "tool_discovery" and registry.has_deferred_tools():
-            from app.tools.tool_search import ToolSearchTool
+        elif module_name == "tool_discovery":
+            tool_discovery_requested = True
 
-            registry.register(ToolSearchTool(registry))
+    if tool_discovery_requested and registry.has_deferred_tools():
+        from app.tools.tool_search import ToolSearchTool
+
+        registry.register(ToolSearchTool(registry))
 
     # Register catalog-wide middleware. Runtime-bound middleware is installed per agent loop.
     registry.use(logging_middleware)

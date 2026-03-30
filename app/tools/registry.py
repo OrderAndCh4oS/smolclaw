@@ -61,6 +61,12 @@ class ToolRegistry:
         if name in self._tools:
             self._exposed.add(name)
 
+    def has_hidden_deferred_tools(self) -> bool:
+        return any(
+            tool.deferred and name not in self._exposed
+            for name, tool in self._tools.items()
+        )
+
     async def invoke(self, name: str, arguments: Dict[str, Any]) -> ToolResult:
         if name not in self._tools:
             return ToolResult(status="error", content=f"Error: unknown tool '{name}'")
@@ -103,3 +109,44 @@ class ToolRegistry:
                     list(chain._middlewares),
                 )
         return filtered
+
+    def project_for_agent(
+        self,
+        enabled_names: List[str],
+        runtime_ctx: ToolRuntimeContext | None = None,
+    ) -> "ToolRegistry":
+        projected = ToolRegistry()
+        if runtime_ctx is not None:
+            runtime_ctx.registry = projected
+
+        enabled = set(enabled_names)
+
+        for name, tool in self._tools.items():
+            if name == "tool_search":
+                continue
+            if tool.deferred or name in enabled:
+                projected._tools[name] = tool.bind(runtime_ctx) if runtime_ctx else tool
+
+        projected._exposed = {
+            name for name in self._exposed if name in projected._tools
+        }
+        projected._exposed.update(
+            name
+            for name in enabled
+            if name in projected._tools and projected._tools[name].deferred
+        )
+
+        if projected.has_hidden_deferred_tools() and "tool_search" in self._tools:
+            tool_search = self._tools["tool_search"]
+            projected._tools["tool_search"] = (
+                tool_search.bind(runtime_ctx) if runtime_ctx else tool_search
+            )
+
+        projected._middleware = MiddlewareChain(list(self._middleware._middlewares))
+        for tool_name, chain in self._per_tool_middleware.items():
+            if tool_name in projected._tools:
+                projected._per_tool_middleware[tool_name] = MiddlewareChain(
+                    list(chain._middlewares),
+                )
+
+        return projected
