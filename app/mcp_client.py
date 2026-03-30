@@ -12,11 +12,9 @@ class McpDeniedException(Exception):
 
 
 class McpClient:
-    """Client for the JWT auth proxy.
+    """Client for MCP auth issuers.
 
-    Uses the proxy-execution model: sends a tool request to the token issuer,
-    which handles approval, token minting, and gateway execution internally.
-    The agent never sees the JWT token.
+    Supports both legacy one-hop proxy execution and token+gateway flows.
     """
 
     def __init__(
@@ -29,7 +27,7 @@ class McpClient:
         self.gateway_url = gateway_url
         self.timeout = timeout
 
-    async def request_token(self, tool: str, params: Dict[str, Any]) -> str:
+    async def _request_execution(self, tool: str, params: Dict[str, Any]) -> Dict[str, Any]:
         payload = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -49,9 +47,15 @@ class McpClient:
             error_msg = result["error"].get("message", "Tool execution denied")
             raise McpDeniedException(error_msg)
 
-        token = result.get("result", {}).get("token")
+        return result.get("result", {})
+
+    async def request_token(self, tool: str, params: Dict[str, Any]) -> str:
+        result = await self._request_execution(tool, params)
+        token = result.get("token")
         if not token:
-            raise McpDeniedException("Tool execution denied")
+            raise RuntimeError(
+                "Token issuer returned a direct tool result instead of a token."
+            )
         return token
 
     async def call_tool(self, tool: str, params: Dict[str, Any], token: str) -> Dict[str, Any]:
@@ -83,28 +87,9 @@ class McpClient:
         return result.get("result", {})
 
     async def execute(self, tool: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute a tool via the auth proxy or the token+gateway compatibility flow."""
-        if self.gateway_url:
-            token = await self.request_token(tool, params)
+        """Execute a tool via the issuer, optionally following with a gateway call."""
+        result = await self._request_execution(tool, params)
+        token = result.get("token")
+        if token:
             return await self.call_tool(tool, params, token)
-
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "request_token",
-            "params": {"tool": tool, "arguments": params},
-        }
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                self.token_issuer_url,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-            )
-            response.raise_for_status()
-            result = response.json()
-
-        if "error" in result:
-            error_msg = result["error"].get("message", "Tool execution denied")
-            raise McpDeniedException(error_msg)
-
-        return result.get("result", {})
+        return result

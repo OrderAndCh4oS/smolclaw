@@ -97,3 +97,25 @@ class TestMcpClient:
 
             result = await mcp_client.execute("file-read", {"path": "/tmp/test"})
             assert "content" in result
+
+    @pytest.mark.asyncio
+    async def test_execute_uses_direct_proxy_result_when_gateway_url_is_set(self, mcp_client):
+        proxy_response = _FakeResponse({
+            "result": {"content": [{"type": "text", "text": "proxied output"}]}
+        })
+
+        with patch("app.mcp_client.httpx.AsyncClient", return_value=_FakeAsyncClient([proxy_response])):
+
+            result = await mcp_client.execute("file-read", {"path": "/tmp/test"})
+            assert result == {"content": [{"type": "text", "text": "proxied output"}]}
+
+    @pytest.mark.asyncio
+    async def test_request_token_rejects_direct_proxy_result(self, mcp_client):
+        proxy_response = _FakeResponse({
+            "result": {"content": [{"type": "text", "text": "proxied output"}]}
+        })
+
+        with patch("app.mcp_client.httpx.AsyncClient", return_value=_FakeAsyncClient([proxy_response])):
+
+            with pytest.raises(RuntimeError, match="direct tool result instead of a token"):
+                await mcp_client.request_token("file-read", {"path": "/tmp/test"})

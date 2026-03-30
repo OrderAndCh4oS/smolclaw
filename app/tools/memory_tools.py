@@ -549,10 +549,22 @@ class MemoryRecallTool(Tool):
             "required": ["query", "mode"],
         }
 
-    def __init__(self, smol_rag):
+    def __init__(self, smol_rag, return_tool_result: bool = False):
         self.smol_rag = smol_rag
+        self.return_tool_result = return_tool_result
 
-    async def execute(self, **kwargs) -> str:
+    def bind(self, runtime_ctx: ToolRuntimeContext) -> Tool:
+        return MemoryRecallTool(
+            self.smol_rag,
+            return_tool_result=True,
+        )
+
+    def _format_return(self, result: ToolResult) -> ToolResult | str:
+        if self.return_tool_result:
+            return result
+        return result.content
+
+    async def execute(self, **kwargs) -> ToolResult | str:
         query = kwargs["query"]
         mode = kwargs.get("mode", "topic")
         days = kwargs.get("days", 7)
@@ -564,9 +576,9 @@ class MemoryRecallTool(Tool):
                 include_bm25=True,
                 return_metadata=True,
             )
-            return _memory_query_result(result)
+            return self._format_return(_memory_query_result(result))
         elif mode == "temporal":
-            return await self._temporal_query(days)
+            return self._format_return(await self._temporal_query(days))
         return "Unknown recall mode."
 
     async def _temporal_query(self, days: float) -> ToolResult:

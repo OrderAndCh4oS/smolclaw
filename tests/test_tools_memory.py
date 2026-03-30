@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from app.obsidian import parse_tags
-from app.tools.base import ToolResult
+from app.tools.base import ToolResult, ToolRuntimeContext
 from app.tools.memory_tools import (
     MEMORY_TYPES,
     MemoryRelateTool,
@@ -65,7 +65,7 @@ class TestMemoryRecallTool:
         )
 
     @pytest.mark.asyncio
-    async def test_topic_mode_returns_accessed_excerpt_ids(self, mock_smol_rag):
+    async def test_topic_mode_returns_string_for_direct_callers(self, mock_smol_rag):
         mock_smol_rag.mix_query = AsyncMock(return_value={
             "content": "remembered",
             "excerpt_ids": ["exc-episode-1"],
@@ -74,9 +74,48 @@ class TestMemoryRecallTool:
 
         result = await tool.execute(query="session summary", mode="topic")
 
+        assert result == "remembered"
+
+    @pytest.mark.asyncio
+    async def test_topic_mode_returns_accessed_excerpt_ids_for_runtime_bound_tool(self, mock_smol_rag):
+        mock_smol_rag.mix_query = AsyncMock(return_value={
+            "content": "remembered",
+            "excerpt_ids": ["exc-episode-1"],
+        })
+        tool = MemoryRecallTool(mock_smol_rag).bind(ToolRuntimeContext())
+
+        result = await tool.execute(query="session summary", mode="topic")
+
         assert isinstance(result, ToolResult)
         assert result.content == "remembered"
         assert result.metadata["accessed_excerpt_ids"] == ["exc-episode-1"]
+
+    @pytest.mark.asyncio
+    async def test_temporal_mode_returns_string_for_direct_callers_with_matches(self, mock_smol_rag):
+        mock_smol_rag.excerpt_kv.get_all = AsyncMock(return_value={
+            "exc-1": {
+                "memory_type": "episode",
+                "indexed_at": 9999999999,
+                "excerpt": "did the work",
+                "summary": "shipped",
+            },
+        })
+        tool = MemoryRecallTool(mock_smol_rag)
+
+        result = await tool.execute(query="recent work", mode="temporal", days=7)
+
+        assert isinstance(result, str)
+        assert "did the work" in result
+        assert "shipped" in result
+
+    @pytest.mark.asyncio
+    async def test_temporal_mode_returns_string_for_direct_callers_without_matches(self, mock_smol_rag):
+        mock_smol_rag.excerpt_kv.get_all = AsyncMock(return_value={})
+        tool = MemoryRecallTool(mock_smol_rag)
+
+        result = await tool.execute(query="recent work", mode="temporal", days=7)
+
+        assert result == "No recent session memories found."
 
 
 class TestMemoryGraphQueryTool:
