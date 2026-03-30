@@ -35,6 +35,7 @@ PERMISSION_BLOCKED_CAPABILITIES: Dict[str, Set[str]] = {
     "plan": {MUTATES_STATE, DELEGATES},
     "execute": {DELEGATES},
 }
+VALID_PERMISSION_MODES: Final[frozenset[str]] = frozenset(PERMISSION_BLOCKED)
 
 
 @dataclass(frozen=True)
@@ -59,11 +60,16 @@ class PermissionMiddleware:
     """Middleware that blocks tool calls not permitted by the agent's permission mode."""
 
     def __init__(self, mode: str):
+        if mode not in VALID_PERMISSION_MODES:
+            supported = ", ".join(sorted(VALID_PERMISSION_MODES))
+            raise ValueError(
+                f"Unknown permission mode '{mode}'. Expected one of: {supported}."
+            )
         self.mode = mode
         self.decision = PermissionDecision(
-            blocked_capabilities=frozenset(PERMISSION_BLOCKED_CAPABILITIES.get(mode, set())),
+            blocked_capabilities=frozenset(PERMISSION_BLOCKED_CAPABILITIES[mode]),
         )
-        self.blocked_tools = PERMISSION_BLOCKED.get(mode, set())
+        self.blocked_tools = PERMISSION_BLOCKED[mode]
 
     async def __call__(self, tool: Tool, kwargs: Dict[str, Any], next_fn: NextFn):
         if tool.name in self.blocked_tools:

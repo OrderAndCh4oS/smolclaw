@@ -105,6 +105,8 @@ class ChildAgentFactory:
                 if self.context_builder_factory is not None
                 else None
             ),
+            context_builder_factory=self.context_builder_factory,
+            registry_factory=self.registry_factory,
             hook_runner_configurers=hook_runner_configurers,
             child_smol_rag_resolver=self.smol_rag_resolver,
             child_hook_runner_configurers_resolver=self.hook_runner_configurers_resolver,

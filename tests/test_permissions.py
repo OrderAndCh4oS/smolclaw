@@ -176,12 +176,9 @@ class TestExecuteMode:
 
 
 class TestUnknownMode:
-    @pytest.mark.asyncio
-    async def test_unknown_mode_allows_all(self):
-        mw = PermissionMiddleware("unknown_mode")
-        chain = MiddlewareChain([mw])
-        result = await chain.run(FakeTool("exec"), {})
-        assert result == "exec executed"
+    def test_unknown_mode_raises(self):
+        with pytest.raises(ValueError, match="Unknown permission mode"):
+            PermissionMiddleware("unknown_mode")
 
 
 class TestPermissionBlockedMapping:

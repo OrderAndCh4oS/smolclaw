@@ -110,6 +110,31 @@ class EchoTool(Tool):
         return kwargs["text"]
 
 
+class CaptureChildFactoryTool(Tool):
+    def __init__(self, child_agent_factory=None):
+        self.child_agent_factory = child_agent_factory
+
+    @property
+    def name(self) -> str:
+        return "capture_child_factory"
+
+    @property
+    def description(self) -> str:
+        return "Expose the bound child agent factory for tests."
+
+    @property
+    def parameters(self) -> dict:
+        return {"type": "object", "properties": {}}
+
+    def bind(self, runtime_ctx) -> Tool:
+        return CaptureChildFactoryTool(
+            child_agent_factory=runtime_ctx.child_agent_factory,
+        )
+
+    async def execute(self, **kwargs) -> str:
+        return "captured"
+
+
 @pytest.fixture
 def master_registry():
     registry = ToolRegistry()
@@ -302,6 +327,64 @@ class TestAgentFactory:
         loop = factory.build(child_config, purpose="spawn")
 
         defs = loop.tool_registry.get_definitions()
+        names = [d["function"]["name"] for d in defs]
+        assert names == ["tool_c"]
+
+    @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
+    def test_child_agent_factory_forwards_registry_factory_to_grandchildren(
+        self, _mock_create, mock_smol_rag, sessions_dir
+    ):
+        root_registry = ToolRegistry()
+        root_registry.register(CaptureChildFactoryTool())
+        root_registry.register(StubToolA())
+
+        child_registry = ToolRegistry()
+        child_registry.register(CaptureChildFactoryTool())
+        child_registry.register(StubToolB())
+
+        grandchild_registry = ToolRegistry()
+        grandchild_registry.register(CaptureChildFactoryTool())
+        grandchild_registry.register(StubToolC())
+
+        def registry_factory(config: AgentConfig) -> ToolRegistry:
+            if config.modules == ["child"]:
+                return child_registry
+            if config.modules == ["child", "memory"]:
+                return grandchild_registry
+            return root_registry
+
+        factory = ChildAgentFactory(
+            master_registry=root_registry,
+            registry_factory=registry_factory,
+            smol_rag=mock_smol_rag,
+            session_manager=SessionManager(sessions_dir),
+            parent_session_key="parent",
+        )
+
+        child_loop = factory.build(
+            AgentConfig(
+                name="writer",
+                model="gpt-5.2-pro",
+                persona="You are Writer.",
+                tools=["capture_child_factory", "tool_b"],
+                modules=["child"],
+            ),
+            purpose="spawn",
+        )
+
+        capture_tool = child_loop.tool_registry._tools["capture_child_factory"]
+        grandchild_loop = capture_tool.child_agent_factory.build(
+            AgentConfig(
+                name="researcher",
+                model="gpt-5.2-pro",
+                persona="You are Researcher.",
+                tools=["tool_c"],
+                modules=["child", "memory"],
+            ),
+            purpose="spawn",
+        )
+
+        defs = grandchild_loop.tool_registry.get_definitions()
         names = [d["function"]["name"] for d in defs]
         assert names == ["tool_c"]
 

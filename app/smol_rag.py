@@ -703,11 +703,14 @@ class SmolRag:
         # Merge BM25 results when requested
         if include_bm25:
             bm25_excerpts = results[3]
-            seen_ids = {e.get("doc_id") for e in query_excerpts if "doc_id" in e}
+            seen_ids = set(self._collect_excerpt_ids(query_excerpts))
             for e in bm25_excerpts:
-                if e.get("doc_id") not in seen_ids:
-                    query_excerpts.append(e)
-                    seen_ids.add(e.get("doc_id"))
+                excerpt_id = e.get("excerpt_id")
+                if excerpt_id and excerpt_id in seen_ids:
+                    continue
+                query_excerpts.append(e)
+                if excerpt_id:
+                    seen_ids.add(excerpt_id)
 
         if memory_type:
             kg_excerpts = self._filter_excerpts_by_memory_type(kg_excerpts, memory_type)
