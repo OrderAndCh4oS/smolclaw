@@ -7,6 +7,7 @@ import pytest
 from app.agent_loop import AgentLoop
 from app.context_builder import ContextBuilder
 from app.session import Session, SessionManager
+from app.tools.base import ToolResult
 from app.tools.registry import ToolRegistry
 from app.tools.base import Tool
 
@@ -30,6 +31,31 @@ class EchoTool(Tool):
 
     async def execute(self, **kwargs) -> str:
         return f"echo: {kwargs['text']}"
+
+
+class MemoryLookupTool(Tool):
+    @property
+    def name(self) -> str:
+        return "memory_search"
+
+    @property
+    def description(self) -> str:
+        return "Lookup memory excerpts."
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        }
+
+    async def execute(self, **kwargs) -> ToolResult:
+        return ToolResult(
+            status="ok",
+            content="remembered summary",
+            metadata={"accessed_excerpt_ids": ["exc-1", "exc-2", "exc-1"]},
+        )
 
 
 def _make_tool_call(name, arguments):
@@ -196,6 +222,50 @@ class TestAgentLoop:
         second_msgs = call_messages[1]
         roles = [m["role"] for m in second_msgs]
         assert "tool" in roles
+
+    @pytest.mark.asyncio
+    async def test_process_surfaces_excerpt_ids_in_tool_messages(self, temp_dir):
+        llm = MagicMock()
+        call_messages = []
+
+        async def capture_call(**kwargs):
+            call_messages.append(kwargs.get("messages", []))
+            if len(call_messages) == 1:
+                return {
+                    "content": None,
+                    "tool_calls": [_make_tool_call("memory_search", {"query": "pricing"})],
+                    "has_tool_calls": True,
+                }
+            return {
+                "content": "done",
+                "tool_calls": None,
+                "has_tool_calls": False,
+            }
+
+        llm.get_tool_completion = AsyncMock(side_effect=capture_call)
+
+        registry = ToolRegistry()
+        registry.register(MemoryLookupTool())
+        builder = ContextBuilder()
+        session = Session(key="memory-ids-test")
+        sm = SessionManager(temp_dir)
+
+        loop = AgentLoop(
+            llm=llm,
+            tool_registry=registry,
+            context_builder=builder,
+            session=session,
+            session_manager=sm,
+        )
+
+        await loop.process("use memory")
+
+        tool_messages = [m for m in call_messages[1] if m["role"] == "tool"]
+        assert len(tool_messages) == 1
+        assert "remembered summary" in tool_messages[0]["content"]
+        assert "Excerpt IDs you can use with memory_get:" in tool_messages[0]["content"]
+        assert "- exc-1" in tool_messages[0]["content"]
+        assert "- exc-2" in tool_messages[0]["content"]
 
     @pytest.mark.asyncio
     async def test_consolidate_memory(self, temp_dir):

@@ -257,6 +257,7 @@ class Gateway:
             token_issuer_url=self.token_issuer_url,
             gateway_url=self.gateway_url,
             agent_configs=configs,
+            enable_subagents=True,
         )
         agent = build_configured_agent(
             config=config,

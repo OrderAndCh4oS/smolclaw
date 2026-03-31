@@ -91,6 +91,28 @@ class AgentLoop:
     def summarize_tool_result(cls, result: str, limit: int = 100) -> str:
         return cls._truncate_text(result or "", limit=limit)
 
+    @staticmethod
+    def _format_tool_message_content(tool_result: ToolResult) -> str:
+        content = tool_result.content or ""
+        excerpt_ids = []
+        seen = set()
+        for excerpt_id in tool_result.metadata.get("accessed_excerpt_ids") or []:
+            if not excerpt_id or excerpt_id in seen:
+                continue
+            seen.add(excerpt_id)
+            excerpt_ids.append(excerpt_id)
+
+        if not excerpt_ids:
+            return content
+
+        ids_block = "\n".join([
+            "Excerpt IDs you can use with memory_get:",
+            *[f"- {excerpt_id}" for excerpt_id in excerpt_ids],
+        ])
+        if not content:
+            return ids_block
+        return f"{content}\n\n{ids_block}"
+
     async def _emit_event(
         self,
         on_event: Optional[Callable[[dict], Awaitable[None]]],
@@ -277,7 +299,7 @@ class AgentLoop:
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call["id"],
-                    "content": tool_result.content,
+                    "content": self._format_tool_message_content(tool_result),
                 })
 
             # Drain any usage from tool-initiated LLM calls (e.g. memory search context retrieval)

@@ -259,3 +259,22 @@ class TestGatewayProtocol:
         assert agent is fake_agent
         assert ON_SESSION_END in fake_agent.hook_runner.events
         assert len(fake_agent.hook_runner._hooks[ON_SESSION_END]) == 1
+
+    def test_get_or_create_agent_enables_subagents_in_runtime_env(self, wired_gateway):
+        fake_agent = MagicMock()
+        fake_agent.llm = MagicMock()
+        fake_agent.hook_runner = HookRunner()
+        fake_agent.smol_rag = None
+
+        config = AgentConfig(
+            name="default",
+            model="gpt-test",
+            persona="You are Default.",
+            tools=["spawn_agent"],
+        )
+
+        with patch("app.gateway.AgentConfigLoader.load", return_value={"default": config}), \
+            patch("app.gateway.build_configured_agent", return_value=fake_agent) as mock_build:
+            wired_gateway._get_or_create_agent("subagent-session")
+
+        assert mock_build.call_args.kwargs["env"].enable_subagents is True
