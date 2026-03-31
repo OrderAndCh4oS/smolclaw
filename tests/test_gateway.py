@@ -5,7 +5,9 @@ import tempfile
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.agent_config import AgentConfig
 from app.gateway import Gateway
+from app.hooks import ON_SESSION_END, HookRunner
 from app.session import SessionManager
 from tests.conftest import FakeWebSocket
 
@@ -235,3 +237,25 @@ class TestGatewayProtocol:
         lifecycle_events = [m for m in fake_ws._messages if m.get("event") == "agent"]
         for e in lifecycle_events:
             assert e["payload"]["sessionKey"] == "my-session"
+
+    def test_get_or_create_agent_skips_export_hooks_for_memoryless_agent(self, wired_gateway):
+        fake_agent = MagicMock()
+        fake_agent.llm = MagicMock()
+        fake_agent.hook_runner = HookRunner()
+        fake_agent.smol_rag = None
+
+        config = AgentConfig(
+            name="default",
+            model="gpt-test",
+            persona="You are Default.",
+            tools=["read_file"],
+            modules=["transport.mcp"],
+        )
+
+        with patch("app.gateway.AgentConfigLoader.load", return_value={"default": config}), \
+            patch("app.gateway.build_configured_agent", return_value=fake_agent):
+            agent = wired_gateway._get_or_create_agent("memoryless-session")
+
+        assert agent is fake_agent
+        assert ON_SESSION_END in fake_agent.hook_runner.events
+        assert len(fake_agent.hook_runner._hooks[ON_SESSION_END]) == 1

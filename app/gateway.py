@@ -233,15 +233,19 @@ class Gateway:
             from app.usage import UsagePersistHook
 
             loop.hook_runner.on(ON_SESSION_END, UsagePersistHook(SESSIONS_DIR))
+            rag = getattr(loop, "smol_rag", None)
+            if rag is None:
+                return
+
             loop.hook_runner.on(ON_SESSION_END, SessionExportHook(
-                smol_rag=self._smol_rag,
+                smol_rag=rag,
                 llm=loop.llm,
                 memory_dir=memory_dir,
             ))
-            if hasattr(self._smol_rag, 'contradiction_detector') and self._smol_rag.contradiction_detector:
+            if getattr(rag, "contradiction_detector", None):
                 loop.hook_runner.on(
                     ON_SESSION_END,
-                    ContradictionExpiryHook(self._smol_rag.contradiction_detector),
+                    ContradictionExpiryHook(rag.contradiction_detector),
                 )
 
         env = RuntimeEnvironment(

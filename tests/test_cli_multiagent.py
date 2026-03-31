@@ -229,8 +229,9 @@ class TestCliMultiagent:
         fake_agent.hook_runner = HookRunner()
         fake_agent.close = AsyncMock()
         fake_agent.session = MagicMock()
+        fake_agent.smol_rag = smol_rag = MagicMock()
+        smol_rag.contradiction_detector = None
 
-        smol_rag = MagicMock()
         session_manager = MagicMock()
 
         with patch("cli.main.create_smol_rag", return_value=smol_rag), \
@@ -251,6 +252,47 @@ class TestCliMultiagent:
             child_loop_registrar=ANY,
         )
         assert ON_SESSION_END in fake_agent.hook_runner.events
+        assert len(fake_agent.hook_runner._hooks[ON_SESSION_END]) == 2
+        fake_agent.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_chat_loop_skips_export_hook_for_memoryless_multiagent(self):
+        from cli.main import DEFAULT_AGENTS_CONFIG, _chat_loop
+
+        class FakePromptSession:
+            def __init__(self, **kwargs):
+                pass
+
+            async def prompt_async(self, _prompt):
+                raise EOFError
+
+        class FakeConsole:
+            def status(self, *args, **kwargs):
+                return nullcontext()
+
+            def print(self, *args, **kwargs):
+                return None
+
+        fake_agent = MagicMock()
+        fake_agent.llm = MagicMock()
+        fake_agent.hook_runner = HookRunner()
+        fake_agent.close = AsyncMock()
+        fake_agent.session = MagicMock()
+        fake_agent.smol_rag = None
+
+        smol_rag = MagicMock()
+        smol_rag.contradiction_detector = None
+        session_manager = MagicMock()
+
+        with patch("cli.main.create_smol_rag", return_value=smol_rag), \
+            patch("cli.main.SessionManager", return_value=session_manager), \
+            patch("cli.main.PromptSession", FakePromptSession), \
+            patch("cli.main._build_multiagent", return_value=fake_agent), \
+            patch("cli.main.console", FakeConsole()):
+            await _chat_loop("default", "/tmp", "model", agent_name="researcher", auto_export=True)
+
+        assert ON_SESSION_END in fake_agent.hook_runner.events
+        assert len(fake_agent.hook_runner._hooks[ON_SESSION_END]) == 1
         fake_agent.close.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -276,8 +318,8 @@ class TestCliMultiagent:
         fake_agent.hook_runner = HookRunner()
         fake_agent.close = AsyncMock()
         fake_agent.session = MagicMock()
-
-        smol_rag = MagicMock()
+        fake_agent.smol_rag = smol_rag = MagicMock()
+        smol_rag.contradiction_detector = None
         session_manager = MagicMock()
 
         with patch("cli.main.create_smol_rag", return_value=smol_rag), \
@@ -326,8 +368,8 @@ class TestCliMultiagent:
         fake_agent.hook_runner = HookRunner()
         fake_agent.close = AsyncMock()
         fake_agent.session = MagicMock()
-
-        smol_rag = MagicMock()
+        fake_agent.smol_rag = smol_rag = MagicMock()
+        smol_rag.contradiction_detector = None
         session_manager = MagicMock()
 
         with patch("cli.main.create_smol_rag", return_value=smol_rag), \
@@ -347,6 +389,7 @@ class TestCliMultiagent:
             child_loop_registrar=ANY,
         )
         assert ON_SESSION_END in fake_agent.hook_runner.events
+        assert len(fake_agent.hook_runner._hooks[ON_SESSION_END]) == 2
         fake_agent.close.assert_awaited_once()
 
     @pytest.mark.asyncio

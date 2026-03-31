@@ -278,22 +278,25 @@ async def _chat_loop(
 
     def register_session_end_hooks(loop: AgentLoop):
         loop.hook_runner.on(ON_SESSION_END, UsagePersistHook(SESSIONS_DIR))
-        if auto_export:
-            from app.lifecycle_hooks import ContradictionExpiryHook
+        rag = getattr(loop, "smol_rag", None)
+        if not auto_export or rag is None:
+            return
 
+        from app.lifecycle_hooks import ContradictionExpiryHook
+
+        loop.hook_runner.on(
+            ON_SESSION_END,
+            SessionExportHook(
+                smol_rag=rag,
+                llm=loop.llm,
+                memory_dir=memory_dir,
+            ),
+        )
+        if getattr(rag, "contradiction_detector", None):
             loop.hook_runner.on(
                 ON_SESSION_END,
-                SessionExportHook(
-                    smol_rag=smol_rag,
-                    llm=loop.llm,
-                    memory_dir=memory_dir,
-                ),
+                ContradictionExpiryHook(rag.contradiction_detector),
             )
-            if hasattr(smol_rag, 'contradiction_detector') and smol_rag.contradiction_detector:
-                loop.hook_runner.on(
-                    ON_SESSION_END,
-                    ContradictionExpiryHook(smol_rag.contradiction_detector),
-                )
 
     if agent_name:
         agent = _build_multiagent(
