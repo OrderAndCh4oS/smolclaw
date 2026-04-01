@@ -1,6 +1,6 @@
 import os
 from datetime import datetime
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
 import yaml
@@ -72,9 +72,11 @@ class TestMemoryRecallTool:
         })
         tool = MemoryRecallTool(mock_smol_rag)
 
-        result = await tool.execute(query="session summary", mode="topic")
+        with patch("app.tools.memory_tools._promote_accessed_excerpts", new=AsyncMock()) as mock_promote:
+            result = await tool.execute(query="session summary", mode="topic")
 
         assert result == "remembered"
+        mock_promote.assert_awaited_once_with(mock_smol_rag, ["exc-episode-1"])
 
     @pytest.mark.asyncio
     async def test_topic_mode_returns_accessed_excerpt_ids_for_runtime_bound_tool(self, mock_smol_rag):
@@ -91,6 +93,20 @@ class TestMemoryRecallTool:
         assert result.metadata["accessed_excerpt_ids"] == ["exc-episode-1"]
 
     @pytest.mark.asyncio
+    async def test_topic_mode_runtime_bound_tool_defers_promotion_to_hooks(self, mock_smol_rag):
+        mock_smol_rag.mix_query = AsyncMock(return_value={
+            "content": "remembered",
+            "excerpt_ids": ["exc-episode-1"],
+        })
+        tool = MemoryRecallTool(mock_smol_rag).bind(ToolRuntimeContext())
+
+        with patch("app.tools.memory_tools._promote_accessed_excerpts", new=AsyncMock()) as mock_promote:
+            result = await tool.execute(query="session summary", mode="topic")
+
+        assert isinstance(result, ToolResult)
+        mock_promote.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_temporal_mode_returns_string_for_direct_callers_with_matches(self, mock_smol_rag):
         mock_smol_rag.excerpt_kv.get_all = AsyncMock(return_value={
             "exc-1": {
@@ -102,11 +118,13 @@ class TestMemoryRecallTool:
         })
         tool = MemoryRecallTool(mock_smol_rag)
 
-        result = await tool.execute(query="recent work", mode="temporal", days=7)
+        with patch("app.tools.memory_tools._promote_accessed_excerpts", new=AsyncMock()) as mock_promote:
+            result = await tool.execute(query="recent work", mode="temporal", days=7)
 
         assert isinstance(result, str)
         assert "did the work" in result
         assert "shipped" in result
+        mock_promote.assert_awaited_once_with(mock_smol_rag, ["exc-1"])
 
     @pytest.mark.asyncio
     async def test_temporal_mode_returns_string_for_direct_callers_without_matches(self, mock_smol_rag):

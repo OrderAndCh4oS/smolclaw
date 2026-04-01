@@ -559,9 +559,12 @@ class MemoryRecallTool(Tool):
             return_tool_result=True,
         )
 
-    def _format_return(self, result: ToolResult) -> ToolResult | str:
+    async def _format_return(self, result: ToolResult) -> ToolResult | str:
         if self.return_tool_result:
             return result
+        excerpt_ids = result.metadata.get("accessed_excerpt_ids") or []
+        if excerpt_ids:
+            await _promote_accessed_excerpts(self.smol_rag, excerpt_ids)
         return result.content
 
     async def execute(self, **kwargs) -> ToolResult | str:
@@ -576,9 +579,9 @@ class MemoryRecallTool(Tool):
                 include_bm25=True,
                 return_metadata=True,
             )
-            return self._format_return(_memory_query_result(result))
+            return await self._format_return(_memory_query_result(result))
         elif mode == "temporal":
-            return self._format_return(await self._temporal_query(days))
+            return await self._format_return(await self._temporal_query(days))
         return "Unknown recall mode."
 
     async def _temporal_query(self, days: float) -> ToolResult:
