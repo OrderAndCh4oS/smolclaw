@@ -6,6 +6,7 @@ import typer
 from typer.testing import CliRunner
 
 from app.agent_config import AgentConfigLoader
+from app.definitions import build_workspace_paths
 from app.agent_loop import AgentLoop
 from app.tools.registry import ToolRegistry
 from cli.main import _build_cli_tool_registry, _build_default_chat_agent, _build_multiagent
@@ -134,6 +135,9 @@ class TestCliMultiagent:
         env = mock_build_configured_agent.call_args.kwargs["env"]
         assert set(env.agent_configs) == {"default", "researcher", "writer"}
         assert env.enable_subagents is True
+        assert env.memory_docs_dir == build_workspace_paths("/tmp").memory_docs_dir
+        assert env.workspace == build_workspace_paths("/tmp").root_dir
+        assert env.llm_db_path == build_workspace_paths("/tmp").sqlite_db_path
 
     def test_build_default_chat_agent_requires_default_entry(self, temp_dir, mock_smol_rag, sessions_dir):
         path = os.path.join(temp_dir, "agents.yaml")
@@ -412,6 +416,50 @@ class TestCliMultiagent:
         assert ON_SESSION_END in fake_agent.hook_runner.events
         assert len(fake_agent.hook_runner._hooks[ON_SESSION_END]) == 2
         fake_agent.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_chat_loop_uses_workspace_scoped_paths(self, temp_dir):
+        from cli.main import DEFAULT_AGENTS_CONFIG, _chat_loop
+
+        class FakePromptSession:
+            def __init__(self, **kwargs):
+                pass
+
+            async def prompt_async(self, _prompt):
+                raise EOFError
+
+        class FakeConsole:
+            def status(self, *args, **kwargs):
+                return nullcontext()
+
+            def print(self, *args, **kwargs):
+                return None
+
+        workspace_root = os.path.join(temp_dir, "topic-a")
+        expected = build_workspace_paths(workspace_root)
+        fake_agent = MagicMock()
+        fake_agent.llm = MagicMock()
+        fake_agent.hook_runner = HookRunner()
+        fake_agent.close = AsyncMock()
+        fake_agent.session = MagicMock()
+        fake_agent.smol_rag = smol_rag = MagicMock()
+        smol_rag.contradiction_detector = None
+        session_manager = MagicMock()
+
+        with patch("cli.main.create_smol_rag", return_value=smol_rag) as mock_create_smol_rag, \
+            patch("cli.main.SessionManager", return_value=session_manager) as mock_session_manager, \
+            patch("cli.main.PromptSession", FakePromptSession), \
+            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
+            patch("cli.main.console", FakeConsole()):
+            await _chat_loop("default", workspace_root, "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+
+        mock_create_smol_rag.assert_called_once_with(
+            db_path=expected.sqlite_db_path,
+            graph_path=expected.kg_db_path,
+            input_docs_dir=expected.research_dir,
+            log_dir=expected.log_dir,
+        )
+        mock_session_manager.assert_called_once_with(expected.sessions_dir)
 
     @pytest.mark.asyncio
     async def test_chat_loop_remember_command_stores_memory_without_agent_turn(self):

@@ -12,6 +12,8 @@ When you ask a question, SmolClaw combines semantic vector search with knowledge
 
 Change detection is automatic. Every document is content-hashed on ingest. If a file's hash changes, the old embeddings and graph entries are cleaned up and the new content is reingested, so answers always reflect the latest state of your source material.
 
+For the maintained runtime architecture view, see [docs/architecture-runtime.md](docs/architecture-runtime.md). That page maps the current CLI/gateway flow, module-driven tool composition, deferred tool discovery, memory hooks, and child-agent orchestration.
+
 ## Getting Started
 
 SmolClaw requires Python 3.11+. Set up with pyenv or your preferred version manager, then install dependencies into a virtual environment:
@@ -311,6 +313,8 @@ app/
   reset.py             # Full store wipe (reset command)
 cli/
   main.py              # Typer CLI (chat, ingest, watch, serve, recall, index-sessions, reset, clear-logs)
+docs/
+  architecture-runtime.md  # Maintained runtime architecture and flow diagrams
 store/                 # All persistent data (gitignored)
   smolclaw.db          # SQLite (vectors, excerpts, mappings, caches, BM25)
   kg_db.graphml        # NetworkX knowledge graph

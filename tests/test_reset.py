@@ -26,7 +26,9 @@ def data_dir(temp_dir):
         (d / sub / "file1.txt").write_text("data")
         (d / sub / "file2.txt").write_text("data")
 
-    # input_docs — should be preserved
+    # research and legacy input_docs — should be preserved
+    (d / "research").mkdir()
+    (d / "research" / "keep_me.md").write_text("important")
     (d / "input_docs").mkdir()
     (d / "input_docs" / "keep_me.md").write_text("important")
 
@@ -55,10 +57,12 @@ async def test_reset_deletes_all_stores(data_dir):
 
 
 @pytest.mark.asyncio
-async def test_reset_preserves_input_docs(data_dir):
+async def test_reset_preserves_research_docs(data_dir):
     await reset_all_stores(data_dir)
 
     d = Path(data_dir)
+    assert (d / "research" / "keep_me.md").exists()
+    assert (d / "research" / "keep_me.md").read_text() == "important"
     assert (d / "input_docs" / "keep_me.md").exists()
     assert (d / "input_docs" / "keep_me.md").read_text() == "important"
 

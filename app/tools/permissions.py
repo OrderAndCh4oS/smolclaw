@@ -24,18 +24,54 @@ DELEGATION_TOOLS: Final[Set[str]] = {
     "spawn_agent",
 }
 
+@dataclass(frozen=True)
+class PermissionModeConfig:
+    blocked_tools: frozenset[str]
+    blocked_capabilities: frozenset[str]
+    capability_exempt_tools: frozenset[str] = frozenset()
+
+
+PERMISSION_MODES: Final[Dict[str, PermissionModeConfig]] = {
+    "full": PermissionModeConfig(
+        blocked_tools=frozenset(),
+        blocked_capabilities=frozenset(),
+    ),
+    "plan": PermissionModeConfig(
+        blocked_tools=frozenset(DIRECT_MUTATION_TOOLS | DELEGATION_TOOLS),
+        blocked_capabilities=frozenset({MUTATES_STATE, DELEGATES}),
+    ),
+    "execute": PermissionModeConfig(
+        blocked_tools=frozenset(DELEGATION_TOOLS),
+        blocked_capabilities=frozenset({DELEGATES}),
+    ),
+    "research": PermissionModeConfig(
+        blocked_tools=frozenset({
+            "write_file",
+            "edit_file",
+            "exec",
+            "memory_relate",
+            "sequential_pipeline",
+            "fanout_pipeline",
+            "route",
+            "spawn_agent",
+        }),
+        blocked_capabilities=frozenset({MUTATES_STATE, DELEGATES}),
+        capability_exempt_tools=frozenset({"memory_store"}),
+    ),
+    "delegate_only": PermissionModeConfig(
+        blocked_tools=frozenset(DIRECT_MUTATION_TOOLS),
+        blocked_capabilities=frozenset({MUTATES_STATE}),
+    ),
+}
+
 PERMISSION_BLOCKED: Dict[str, Set[str]] = {
-    "full": set(),
-    "plan": DIRECT_MUTATION_TOOLS | DELEGATION_TOOLS,
-    "execute": set(DELEGATION_TOOLS),
+    name: set(config.blocked_tools) for name, config in PERMISSION_MODES.items()
 }
 
 PERMISSION_BLOCKED_CAPABILITIES: Dict[str, Set[str]] = {
-    "full": set(),
-    "plan": {MUTATES_STATE, DELEGATES},
-    "execute": {DELEGATES},
+    name: set(config.blocked_capabilities) for name, config in PERMISSION_MODES.items()
 }
-VALID_PERMISSION_MODES: Final[frozenset[str]] = frozenset(PERMISSION_BLOCKED)
+VALID_PERMISSION_MODES: Final[frozenset[str]] = frozenset(PERMISSION_MODES)
 
 
 @dataclass(frozen=True)
@@ -66,15 +102,18 @@ class PermissionMiddleware:
                 f"Unknown permission mode '{mode}'. Expected one of: {supported}."
             )
         self.mode = mode
+        self.config = PERMISSION_MODES[mode]
         self.decision = PermissionDecision(
-            blocked_capabilities=frozenset(PERMISSION_BLOCKED_CAPABILITIES[mode]),
+            blocked_capabilities=self.config.blocked_capabilities,
         )
-        self.blocked_tools = PERMISSION_BLOCKED[mode]
+        self.blocked_tools = set(self.config.blocked_tools)
 
     async def __call__(self, tool: Tool, kwargs: Dict[str, Any], next_fn: NextFn):
         if tool.name in self.blocked_tools:
             return f"Error: tool '{tool.name}' is not permitted in '{self.mode}' mode."
         capabilities = _policy_capabilities(tool, kwargs)
+        if tool.name in self.config.capability_exempt_tools:
+            capabilities -= self.decision.blocked_capabilities
         blocked = sorted(cap for cap in capabilities if self.decision.denies(cap))
         if blocked:
             caps = ", ".join(blocked)

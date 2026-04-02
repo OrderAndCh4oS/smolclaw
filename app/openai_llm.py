@@ -17,14 +17,15 @@ load_dotenv()
 
 class OpenAiLlm:
     def __init__(self, completion_model=None, embedding_model=None, query_cache_kv=None, embedding_cache_kv=None,
-                 openai_api_key=None) -> None:
+                 openai_api_key=None, db_path=None) -> None:
         """
         Initializes the OpenAiLlm instance with specified models and caches.
         """
         api_key = openai_api_key or os.getenv('OPENAI_API_KEY')
         self.client = OpenAI(api_key=api_key)
-        self.query_cache_kv = query_cache_kv or SqliteKvStore(SQLITE_DB_PATH, "query_cache")
-        self.embedding_cache_kv = embedding_cache_kv or SqliteKvStore(SQLITE_DB_PATH, "embedding_cache")
+        cache_db_path = db_path or SQLITE_DB_PATH
+        self.query_cache_kv = query_cache_kv or SqliteKvStore(cache_db_path, "query_cache")
+        self.embedding_cache_kv = embedding_cache_kv or SqliteKvStore(cache_db_path, "embedding_cache")
         self.completion_model = completion_model or COMPLETION_MODEL
         self.embedding_model = embedding_model or EMBEDDING_MODEL
         self.usage_collector = None

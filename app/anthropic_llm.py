@@ -15,10 +15,11 @@ load_dotenv()
 
 
 class AnthropicLlm:
-    def __init__(self, completion_model=None, query_cache_kv=None) -> None:
+    def __init__(self, completion_model=None, query_cache_kv=None, db_path=None) -> None:
         api_key = os.getenv("ANTHROPIC_API_KEY")
         self.client = anthropic.Anthropic(api_key=api_key)
-        self.query_cache_kv = query_cache_kv or SqliteKvStore(SQLITE_DB_PATH, "query_cache")
+        cache_db_path = db_path or SQLITE_DB_PATH
+        self.query_cache_kv = query_cache_kv or SqliteKvStore(cache_db_path, "query_cache")
         self.completion_model = completion_model or COMPLETION_MODEL
         self.usage_collector = None
 

@@ -9,7 +9,7 @@ from typing import Optional
 import websockets
 
 from app.agent_config import AgentConfigLoader
-from app.definitions import PROJECT_ROOT, SESSIONS_DIR, MEMORY_DOCS_DIR, WORKSPACE_DIR
+from app.definitions import PROJECT_ROOT, WORKSPACE_DIR, build_workspace_paths, ensure_workspace_dirs
 from app.hooks import ON_SESSION_END
 from app.lifecycle_hooks import ContradictionExpiryHook
 from app.runtime import RuntimeEnvironment, build_configured_agent
@@ -31,12 +31,14 @@ class Gateway:
         gateway_url: str = "http://mcp-gateway:3200/mcp",
         validate_token: Optional[callable] = None,
         agents_config: str = DEFAULT_AGENTS_CONFIG,
+        workspace: str = WORKSPACE_DIR,
     ):
         self.port = port
         self.token_issuer_url = token_issuer_url
         self.gateway_url = gateway_url
         self._validate_token = validate_token or self._default_validate_token
         self.agents_config = agents_config
+        self.workspace = workspace
         self._active_loops: dict[str, "AgentLoop"] = {}
         self._session_agents: dict[str, "AgentLoop"] = {}
         self._smol_rag: Optional[SmolRag] = None
@@ -226,13 +228,14 @@ class Gateway:
 
         configs = AgentConfigLoader.load(self.agents_config)
         config = configs["default"]
+        paths = build_workspace_paths(self.workspace)
 
-        memory_dir = ensure_dir(MEMORY_DOCS_DIR)
+        memory_dir = ensure_dir(paths.memory_docs_dir)
 
         def register_session_end_hooks(loop):
             from app.usage import UsagePersistHook
 
-            loop.hook_runner.on(ON_SESSION_END, UsagePersistHook(SESSIONS_DIR))
+            loop.hook_runner.on(ON_SESSION_END, UsagePersistHook(paths.sessions_dir))
             rag = getattr(loop, "smol_rag", None)
             if rag is None:
                 return
@@ -251,13 +254,14 @@ class Gateway:
         env = RuntimeEnvironment(
             smol_rag=self._smol_rag,
             session_manager=self._session_manager,
-            memory_docs_dir=MEMORY_DOCS_DIR,
-            workspace=WORKSPACE_DIR,
+            memory_docs_dir=paths.memory_docs_dir,
+            workspace=paths.root_dir,
             transport="mcp",
             token_issuer_url=self.token_issuer_url,
             gateway_url=self.gateway_url,
             agent_configs=configs,
             enable_subagents=True,
+            llm_db_path=paths.sqlite_db_path,
         )
         agent = build_configured_agent(
             config=config,
@@ -272,9 +276,14 @@ class Gateway:
     async def start(self):
         from app.tracing import init_tracing
         init_tracing()
-        ensure_dir(SESSIONS_DIR)
-        self._smol_rag = create_smol_rag()
-        self._session_manager = SessionManager(SESSIONS_DIR)
+        paths = ensure_workspace_dirs(build_workspace_paths(self.workspace))
+        self._smol_rag = create_smol_rag(
+            db_path=paths.sqlite_db_path,
+            graph_path=paths.kg_db_path,
+            input_docs_dir=paths.research_dir,
+            log_dir=paths.log_dir,
+        )
+        self._session_manager = SessionManager(paths.sessions_dir)
         logger.info(f"SmolClaw gateway starting on port {self.port}")
         async with websockets.serve(self._handle_connection, "0.0.0.0", self.port):
             await asyncio.Future()  # Run forever

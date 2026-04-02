@@ -51,7 +51,7 @@ def build_tool_registry(
             registry.register(WriteFileTool(allowed_dir=workspace), module_name=module_name)
             registry.register(EditFileTool(allowed_dir=workspace), module_name=module_name)
             registry.register(ListDirTool(allowed_dir=workspace), module_name=module_name)
-            registry.register(ExecTool(), module_name=module_name)
+            registry.register(ExecTool(allowed_dir=workspace), module_name=module_name)
             registry.register(WebSearchTool(), module_name=module_name)
             registry.register(WebFetchTool(), module_name=module_name)
         elif module_name == "transport.mcp":

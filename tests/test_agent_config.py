@@ -179,3 +179,31 @@ class TestAgentConfigPermissionMode:
             )
         configs = AgentConfigLoader.load(yaml_path)
         assert configs["agent"].permission_mode == "full"
+
+
+class TestRepoAgentsConfig:
+    def test_repo_agents_use_explicit_modules_and_permission_modes(self):
+        yaml_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "agents.yaml")
+        configs = AgentConfigLoader.load(yaml_path)
+
+        assert configs["default"].modules == ["transport.direct", "memory"]
+        assert configs["default"].permission_mode == "plan"
+        assert "write_file" not in configs["default"].tools
+        assert "edit_file" not in configs["default"].tools
+        assert "exec" not in configs["default"].tools
+
+        assert configs["researcher"].modules == ["transport.direct", "memory"]
+        assert configs["researcher"].permission_mode == "research"
+        assert "memory_store" in configs["researcher"].tools
+        assert "exec" not in configs["researcher"].tools
+
+        assert configs["coder"].modules == ["transport.direct", "memory"]
+        assert configs["coder"].permission_mode == "execute"
+        assert "exec" in configs["coder"].tools
+        assert "write_file" in configs["coder"].tools
+
+        assert configs["orchestrator"].modules == ["memory", "orchestration", "subagents"]
+        assert configs["orchestrator"].permission_mode == "delegate_only"
+        assert "transport.direct" not in configs["orchestrator"].modules
+        assert "write_file" not in configs["orchestrator"].tools
+        assert "exec" not in configs["orchestrator"].tools

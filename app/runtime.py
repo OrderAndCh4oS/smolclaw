@@ -25,6 +25,7 @@ class RuntimeEnvironment:
     agent_configs: Optional[Dict[str, AgentConfig]] = None
     enable_subagents: bool = False
     llm: object = None
+    llm_db_path: Optional[str] = None
 
 def configure_memory_hooks(env: RuntimeEnvironment) -> tuple[Callable[[HookRunner], None], ...]:
     if not env.smol_rag:
@@ -144,6 +145,9 @@ def build_configured_agent(
         env,
         module_names=module_names,
     )
+    llm_factory_kwargs = {}
+    if env.llm_db_path:
+        llm_factory_kwargs["db_path"] = env.llm_db_path
     registry_factory = lambda agent_config: build_master_registry(
         env,
         module_names=resolve_module_names(agent_config, env),
@@ -164,4 +168,5 @@ def build_configured_agent(
         hook_runner_configurers=hook_runner_configurers,
         child_smol_rag_resolver=lambda agent_config: resolve_agent_smol_rag(agent_config, env),
         child_hook_runner_configurers_resolver=lambda agent_config: resolve_hook_runner_configurers(agent_config, env),
+        llm_factory_kwargs=llm_factory_kwargs,
     )

@@ -42,14 +42,18 @@ class SmolRag:
             query_cache_kv=None,
             embedding_cache_kv=None,
             graph_db=None,
+            graph_path=None,
             db_path=None,
             dimensions=None,
             excerpt_size=2000,
             overlap=200,
             ingest_concurrency=4,
             contradiction_detector=None,
+            input_docs_dir=None,
+            log_dir=None,
     ):
-        set_logger("main.log")
+        _db = db_path or SQLITE_DB_PATH
+        set_logger("main.log", log_dir=log_dir)
         self.llm_limiter = AsyncLimiter(max_rate=100, time_period=1)
         self._provenance_lock = asyncio.Lock()
 
@@ -57,16 +61,17 @@ class SmolRag:
         self.excerpt_size = excerpt_size
         self.overlap = overlap
         self.ingest_concurrency = max(1, ingest_concurrency)
+        self.input_docs_dir = input_docs_dir or INPUT_DOCS_DIR
 
         self.llm = llm or create_llm(
             COMPLETION_MODEL,
             EMBEDDING_MODEL,
             query_cache_kv=query_cache_kv,
             embedding_cache_kv=embedding_cache_kv,
+            db_path=_db,
         )
 
         self.dimensions = dimensions or 1536
-        _db = db_path or SQLITE_DB_PATH
         self.embeddings_db = embeddings_db or SqliteVectorStore(
             _db, dimensions=self.dimensions, table=EMBEDDINGS_TABLE
         )
@@ -83,7 +88,7 @@ class SmolRag:
         self.excerpt_kv = excerpt_kv or SqliteKvStore(_db, "excerpts")
         self.bm25_store = bm25_store or BM25Store(_db, "bm25_index")
 
-        self.graph = graph_db or NetworkXGraphStore(KG_DB)
+        self.graph = graph_db or NetworkXGraphStore(graph_path or KG_DB)
         self.contradiction_detector = contradiction_detector
         self._current_ingest_source = "extraction"
 
@@ -293,7 +298,7 @@ class SmolRag:
             await self._save_stores()
 
     async def import_documents(self):
-        sources = get_docs(INPUT_DOCS_DIR)
+        sources = get_docs(self.input_docs_dir)
         semaphore = asyncio.Semaphore(self.ingest_concurrency)
         await asyncio.gather(*(self._process_source(source, semaphore) for source in sources))
         await self._save_stores()

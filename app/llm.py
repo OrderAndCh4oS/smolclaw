@@ -68,6 +68,7 @@ def create_llm(completion_model=None, embedding_model=None, **kwargs):
         anthropic_llm = AnthropicLlm(
             completion_model=completion_model,
             query_cache_kv=kwargs.get("query_cache_kv"),
+            db_path=kwargs.get("db_path"),
         )
 
         if embedding_model:
@@ -76,6 +77,7 @@ def create_llm(completion_model=None, embedding_model=None, **kwargs):
                 query_cache_kv=kwargs.get("query_cache_kv"),
                 embedding_cache_kv=kwargs.get("embedding_cache_kv"),
                 openai_api_key=kwargs.get("openai_api_key"),
+                db_path=kwargs.get("db_path"),
             )
             return CompositeLlm(
                 completion_provider=anthropic_llm,
@@ -90,4 +92,5 @@ def create_llm(completion_model=None, embedding_model=None, **kwargs):
         query_cache_kv=kwargs.get("query_cache_kv"),
         embedding_cache_kv=kwargs.get("embedding_cache_kv"),
         openai_api_key=kwargs.get("openai_api_key"),
+        db_path=kwargs.get("db_path"),
     )

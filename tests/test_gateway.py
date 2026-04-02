@@ -1,11 +1,13 @@
 import asyncio
 import json
+import os
 import tempfile
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.agent_config import AgentConfig
+from app.definitions import build_workspace_paths
 from app.gateway import Gateway
 from app.hooks import ON_SESSION_END, HookRunner
 from app.session import SessionManager
@@ -278,3 +280,36 @@ class TestGatewayProtocol:
             wired_gateway._get_or_create_agent("subagent-session")
 
         assert mock_build.call_args.kwargs["env"].enable_subagents is True
+
+    def test_get_or_create_agent_uses_workspace_scoped_runtime_env(self, mock_smol_rag, temp_dir):
+        workspace_root = os.path.join(temp_dir, "topic-a")
+        gateway = Gateway(
+            port=0,
+            token_issuer_url="http://localhost:9999/mcp-tokens",
+            gateway_url="http://localhost:9999/mcp",
+            validate_token=lambda t: t == "valid-token",
+            workspace=workspace_root,
+        )
+        gateway._smol_rag = mock_smol_rag
+        gateway._session_manager = SessionManager(temp_dir)
+
+        fake_agent = MagicMock()
+        fake_agent.llm = MagicMock()
+        fake_agent.hook_runner = HookRunner()
+        fake_agent.smol_rag = None
+        config = AgentConfig(
+            name="default",
+            model="gpt-test",
+            persona="You are Default.",
+            tools=["read_file"],
+        )
+
+        with patch("app.gateway.AgentConfigLoader.load", return_value={"default": config}), \
+            patch("app.gateway.build_configured_agent", return_value=fake_agent) as mock_build:
+            gateway._get_or_create_agent("workspace-session")
+
+        expected = build_workspace_paths(workspace_root)
+        env = mock_build.call_args.kwargs["env"]
+        assert env.memory_docs_dir == expected.memory_docs_dir
+        assert env.workspace == expected.root_dir
+        assert env.llm_db_path == expected.sqlite_db_path

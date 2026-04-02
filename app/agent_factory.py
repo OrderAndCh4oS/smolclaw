@@ -46,6 +46,7 @@ class ChildAgentFactory:
     smol_rag: object
     session_manager: SessionManager
     parent_session_key: str
+    llm_factory_kwargs: Optional[dict] = None
     registry_factory: Optional[Callable[[AgentConfig], ToolRegistry]] = None
     loop_registrar: Optional[Callable[[AgentLoop], None]] = None
     context_builder_factory: Optional[Callable[[AgentConfig], ContextBuilder]] = None
@@ -106,6 +107,7 @@ class ChildAgentFactory:
             hook_runner_configurers=hook_runner_configurers,
             child_smol_rag_resolver=self.smol_rag_resolver,
             child_hook_runner_configurers_resolver=self.hook_runner_configurers_resolver,
+            llm_factory_kwargs=self.llm_factory_kwargs,
         )
         if self.loop_registrar:
             self.loop_registrar(loop)
@@ -127,8 +129,9 @@ def build_agent_loop(
     hook_runner_configurers: HookRunnerConfigurers = (),
     child_smol_rag_resolver: Optional[SmolRagResolver] = None,
     child_hook_runner_configurers_resolver: Optional[HookRunnerConfigurersResolver] = None,
+    llm_factory_kwargs: Optional[dict] = None,
 ) -> AgentLoop:
-    llm = create_llm(completion_model=config.model)
+    llm = create_llm(completion_model=config.model, **(llm_factory_kwargs or {}))
     agent_smol_rag = smol_rag
     if config.modules and "memory" not in config.modules:
         agent_smol_rag = None
@@ -156,6 +159,7 @@ def build_agent_loop(
         smol_rag=agent_smol_rag,
         session_manager=session_manager,
         parent_session_key=resolved_session_key,
+        llm_factory_kwargs=llm_factory_kwargs,
         loop_registrar=child_loop_registrar,
         context_builder_factory=context_builder_factory,
         hook_runner_configurers=hook_runner_configurers,

@@ -1,3 +1,7 @@
+# Legacy Class Diagram
+
+This file is kept as an older class-oriented sketch. The maintained runtime architecture view now lives in [docs/architecture-runtime.md](docs/architecture-runtime.md).
+
 ```mermaid
 classDiagram
     direction TB

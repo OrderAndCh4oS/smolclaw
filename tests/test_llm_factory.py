@@ -35,6 +35,7 @@ class TestCreateLlm:
             query_cache_kv=None,
             embedding_cache_kv=None,
             openai_api_key=None,
+            db_path=None,
         )
 
     @patch("app.llm.OpenAiLlm")
@@ -65,6 +66,23 @@ class TestCreateLlm:
 
         result = create_llm()
         assert result is mock_instance
+
+    @patch("app.llm.OpenAiLlm")
+    def test_passes_db_path_to_provider(self, MockOpenAi):
+        mock_instance = MagicMock()
+        MockOpenAi.side_effect = lambda **kwargs: mock_instance
+
+        result = create_llm(db_path="/tmp/workspace/store/smolclaw.db")
+
+        assert result is mock_instance
+        MockOpenAi.assert_called_once_with(
+            completion_model=None,
+            embedding_model=None,
+            query_cache_kv=None,
+            embedding_cache_kv=None,
+            openai_api_key=None,
+            db_path="/tmp/workspace/store/smolclaw.db",
+        )
 
 
 class TestCompositeLlm:

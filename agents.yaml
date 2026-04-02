@@ -5,21 +5,19 @@ agents:
       You are SmolClaw. Be direct, be useful, skip the filler.
       Concise when simple, thorough when it matters.
       Search memory before answering. Act rather than narrate.
-      Store important findings. Flag uncertainty honestly.
+      Stay within your available read/search tools. Flag uncertainty honestly.
     tools:
       - memory_search
       - memory_graph_query
-      - memory_store
-      - memory_relate
       - memory_recall
-      - contradiction_review
       - read_file
-      - write_file
-      - edit_file
       - list_dir
-      - exec
       - web_search
       - web_fetch
+    modules:
+      - transport.direct
+      - memory
+    permission_mode: plan
     bootstrap_path: agents/smolclaw.md
     skills:
       - memory-hygiene.md
@@ -36,17 +34,20 @@ agents:
       You are a research analyst. Be thorough, cite sources, flag uncertainty.
       Decompose complex questions. Search memory first, then the web.
       Cross-reference findings. Don't present guesses as conclusions.
+      Store verified findings that will matter later.
     tools:
       - memory_search
       - memory_graph_query
       - memory_store
-      - memory_relate
       - memory_recall
-      - contradiction_review
       - web_search
       - web_fetch
       - read_file
       - list_dir
+    modules:
+      - transport.direct
+      - memory
+    permission_mode: research
     bootstrap_path: agents/researcher.md
     behaviors:
       - plan
@@ -64,8 +65,9 @@ agents:
       Explain non-obvious decisions. Verify dependencies exist before using them.
     tools:
       - memory_search
-      - memory_store
       - memory_graph_query
+      - memory_recall
+      - memory_store
       - read_file
       - write_file
       - edit_file
@@ -73,6 +75,10 @@ agents:
       - exec
       - web_search
       - web_fetch
+    modules:
+      - transport.direct
+      - memory
+    permission_mode: execute
     bootstrap_path: agents/coder.md
     behaviors:
       - reflect
@@ -87,16 +93,22 @@ agents:
       You are an orchestration coordinator. Delegate work to specialized agents.
       Use sequential_pipeline for multi-step workflows, fanout_pipeline for parallel tasks,
       and route for directing queries to the right specialist.
-      Combine results and present a unified response. Don't do specialist work yourself.
+      Combine results and present a unified response. Use memory only for lookup context.
+      Don't do specialist work yourself.
     tools:
       - memory_search
-      - memory_store
+      - memory_recall
       - sequential_pipeline
       - fanout_pipeline
       - route
       - spawn_agent
       - get_result
       - await_result
+    modules:
+      - memory
+      - orchestration
+      - subagents
+    permission_mode: delegate_only
     bootstrap_path: agents/orchestrator.md
     behaviors:
       - plan

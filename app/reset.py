@@ -7,7 +7,7 @@ from pathlib import Path
 async def reset_all_stores(data_dir: str) -> list[str]:
     """Delete all persistent data under *data_dir* for a full reset.
 
-    Preserves ``input_docs/`` (user source material).
+    Preserves ``research/`` and legacy ``input_docs/`` (user source material).
     Returns a list of human-readable descriptions of what was deleted.
     """
     deleted: list[str] = []
@@ -25,7 +25,7 @@ async def reset_all_stores(data_dir: str) -> list[str]:
         p.unlink()
         deleted.append(f"Deleted {p}")
 
-    # 4. Subdirectories: sessions, memory, logs, cache (NOT input_docs)
+    # 4. Subdirectories: sessions, memory, logs, cache (NOT research/input_docs)
     for subdir in ("sessions", "memory", "logs", "cache"):
         d = data / subdir
         if not d.is_dir():

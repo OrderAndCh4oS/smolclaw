@@ -50,12 +50,13 @@ def clear_logs(log_dir: str = LOG_DIR) -> list[str]:
     return deleted
 
 
-def set_logger(log_file: str):
+def set_logger(log_file: str, log_dir: str | None = None):
     configured_level = os.getenv("LOG_LEVEL", "INFO").upper()
     log_level = getattr(logging, configured_level, logging.INFO)
     logger.setLevel(log_level)
-    os.makedirs(LOG_DIR, exist_ok=True)
-    log_path = os.path.join(LOG_DIR, log_file)
+    log_dir = log_dir or LOG_DIR
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, log_file)
     max_bytes = _get_configured_int("LOG_MAX_BYTES", 10 * 1024 * 1024)
     backup_count = _get_configured_int("LOG_BACKUP_COUNT", 5)
     formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")

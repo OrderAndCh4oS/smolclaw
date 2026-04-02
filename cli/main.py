@@ -17,7 +17,7 @@ from prompt_toolkit.history import FileHistory
 
 from app.agent_loop import AgentLoop
 from app.definitions import (
-    DATA_DIR, LOG_DIR, SESSIONS_DIR, MEMORY_DOCS_DIR, WORKSPACE_DIR, AGENT_MODEL,
+    AGENT_MODEL, WORKSPACE_DIR, build_workspace_paths, ensure_workspace_dirs,
 )
 from app.logger import clear_logs
 from app.session_export_hook import SessionExportHook
@@ -162,17 +162,30 @@ def _print_usage_summary(console, session_usage):
             )
 
 
+def _workspace_paths(workspace_root: str):
+    return ensure_workspace_dirs(build_workspace_paths(workspace_root))
+
+
+def _resolve_workspace_local_path(workspace_root: str, path: str) -> str:
+    expanded = os.path.expanduser(path)
+    if os.path.isabs(expanded):
+        return expanded
+    return os.path.abspath(os.path.join(workspace_root, expanded))
+
+
 def _build_cli_tool_registry(smol_rag: SmolRag, workspace: str, llm=None,
                               agent_configs=None, session_manager=None, enable_subagents: bool = False):
+    paths = build_workspace_paths(workspace)
     env = RuntimeEnvironment(
         smol_rag=smol_rag,
         session_manager=session_manager,
-        memory_docs_dir=MEMORY_DOCS_DIR,
-        workspace=workspace,
+        memory_docs_dir=paths.memory_docs_dir,
+        workspace=paths.root_dir,
         transport="direct",
         agent_configs=agent_configs,
         enable_subagents=enable_subagents,
         llm=llm,
+        llm_db_path=paths.sqlite_db_path,
     )
     return build_master_registry(env)
 
@@ -194,14 +207,16 @@ def _build_multiagent(
         available = ", ".join(sorted(configs.keys()))
         raise typer.BadParameter(f"Unknown agent '{agent_name}'. Available: {available}")
 
+    paths = build_workspace_paths(workspace)
     env = RuntimeEnvironment(
         smol_rag=smol_rag,
         session_manager=session_manager,
-        memory_docs_dir=MEMORY_DOCS_DIR,
-        workspace=workspace,
+        memory_docs_dir=paths.memory_docs_dir,
+        workspace=paths.root_dir,
         transport="direct",
         agent_configs=configs,
         enable_subagents=True,
+        llm_db_path=paths.sqlite_db_path,
     )
     return build_configured_agent(
         config=configs[agent_name],
@@ -228,14 +243,16 @@ def _build_default_chat_agent(
             f"Agents config '{agents_config_path}' must define a 'default' agent for chat."
         )
 
+    paths = build_workspace_paths(workspace)
     env = RuntimeEnvironment(
         smol_rag=smol_rag,
         session_manager=session_manager,
-        memory_docs_dir=MEMORY_DOCS_DIR,
-        workspace=workspace,
+        memory_docs_dir=paths.memory_docs_dir,
+        workspace=paths.root_dir,
         transport="direct",
         agent_configs=configs,
         enable_subagents=True,
+        llm_db_path=paths.sqlite_db_path,
     )
     return build_configured_agent(
         config=configs["default"],
@@ -249,7 +266,7 @@ def _build_default_chat_agent(
 @app.command()
 def chat(
     session_key: str = typer.Option("default", "--session", "-s", help="Session key"),
-    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace directory"),
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root (isolated store, memory, research)"),
     model: str = typer.Option(AGENT_MODEL, "--model", "-m", help="LLM model to use"),
     agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Agent name from agents.yaml"),
     agents_config: str = typer.Option(DEFAULT_AGENTS_CONFIG, "--agents-config", help="Path to agents YAML config"),
@@ -269,17 +286,21 @@ async def _chat_loop(
     auto_export: bool = True,
     show_actions: bool = True,
 ):
-    ensure_dir(SESSIONS_DIR)
-
-    smol_rag = create_smol_rag()
-    session_manager = SessionManager(SESSIONS_DIR)
-    memory_dir = ensure_dir(MEMORY_DOCS_DIR)
+    paths = _workspace_paths(workspace)
+    smol_rag = create_smol_rag(
+        db_path=paths.sqlite_db_path,
+        graph_path=paths.kg_db_path,
+        input_docs_dir=paths.research_dir,
+        log_dir=paths.log_dir,
+    )
+    session_manager = SessionManager(paths.sessions_dir)
+    memory_dir = ensure_dir(paths.memory_docs_dir)
 
     from app.hooks import ON_SESSION_END
     from app.usage import UsagePersistHook
 
     def register_session_end_hooks(loop: AgentLoop):
-        loop.hook_runner.on(ON_SESSION_END, UsagePersistHook(SESSIONS_DIR))
+        loop.hook_runner.on(ON_SESSION_END, UsagePersistHook(paths.sessions_dir))
         rag = getattr(loop, "smol_rag", None)
         if not auto_export or rag is None:
             return
@@ -337,7 +358,7 @@ async def _chat_loop(
         memory_dir=memory_dir,
     )
 
-    history_file = os.path.join(SESSIONS_DIR, "prompt_history.txt")
+    history_file = paths.prompt_history_path
     prompt_session = PromptSession(history=FileHistory(history_file))
 
     console.print(f"[bold green]{label}[/bold green] ready. Type /help for commands, /quit to exit.\n")
@@ -428,15 +449,23 @@ async def _chat_loop(
 @app.command()
 def ingest(
     path: str = typer.Argument(..., help="File or directory to ingest"),
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root (isolated store, memory, research)"),
 ):
     """Ingest documents into memory."""
-    asyncio.run(_ingest(path))
+    asyncio.run(_ingest(path, workspace))
 
 
-async def _ingest(path: str):
+async def _ingest(path: str, workspace: str):
     from app.utilities import get_docs, make_hash
-    smol_rag = create_smol_rag()
+    paths = _workspace_paths(workspace)
+    smol_rag = create_smol_rag(
+        db_path=paths.sqlite_db_path,
+        graph_path=paths.kg_db_path,
+        input_docs_dir=paths.research_dir,
+        log_dir=paths.log_dir,
+    )
     try:
+        path = _resolve_workspace_local_path(paths.root_dir, path)
         if os.path.isfile(path):
             files = [path]
         elif os.path.isdir(path):
@@ -470,20 +499,28 @@ async def _ingest(path: str):
 
 @app.command()
 def watch(
-    memory_dir: str = typer.Option(
-        MEMORY_DOCS_DIR, "--memory-dir", "-d", help="Memory directory to watch",
+    path: Optional[str] = typer.Option(
+        None, "--path", "--memory-dir", "-p", "-d", help="Directory to watch (defaults to <workspace>/research)",
     ),
     interval: float = typer.Option(5.0, "--interval", "-i", help="Poll interval in seconds"),
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root (isolated store, memory, research)"),
 ):
-    """Watch the memory directory for changes and re-ingest."""
-    asyncio.run(_watch(memory_dir, interval))
+    """Watch a workspace directory for changes and re-ingest."""
+    asyncio.run(_watch(path, interval, workspace))
 
 
-async def _watch(memory_dir: str, interval: float):
+async def _watch(path: Optional[str], interval: float, workspace: str):
     from app.watcher import MemoryFileWatcher
-    smol_rag = create_smol_rag()
-    watcher = MemoryFileWatcher(memory_dir, smol_rag, poll_interval=interval)
-    console.print(f"[bold green]Watching[/bold green] {memory_dir} (poll every {interval}s)")
+    paths = _workspace_paths(workspace)
+    smol_rag = create_smol_rag(
+        db_path=paths.sqlite_db_path,
+        graph_path=paths.kg_db_path,
+        input_docs_dir=paths.research_dir,
+        log_dir=paths.log_dir,
+    )
+    watch_path = paths.research_dir if path is None else _resolve_workspace_local_path(paths.root_dir, path)
+    watcher = MemoryFileWatcher(watch_path, smol_rag, poll_interval=interval)
+    console.print(f"[bold green]Watching[/bold green] {watch_path} (poll every {interval}s)")
     try:
         await watcher.start()
     except KeyboardInterrupt:
@@ -502,14 +539,15 @@ def serve(
     gateway: str = typer.Option(
         "http://mcp-gateway:3200/mcp", "--gateway", help="MCP gateway URL",
     ),
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root (isolated store, memory, research)"),
 ):
     """Start the WebSocket gateway server."""
-    asyncio.run(_serve(port, token_issuer, gateway))
+    asyncio.run(_serve(port, token_issuer, gateway, workspace))
 
 
-async def _serve(port: int, token_issuer: str, gateway_url: str):
+async def _serve(port: int, token_issuer: str, gateway_url: str, workspace: str):
     from app.gateway import Gateway
-    gw = Gateway(port=port, token_issuer_url=token_issuer, gateway_url=gateway_url)
+    gw = Gateway(port=port, token_issuer_url=token_issuer, gateway_url=gateway_url, workspace=workspace)
     await gw.start()
 
 
@@ -518,13 +556,20 @@ def recall(
     query: str = typer.Argument(..., help="Search query for past sessions"),
     mode: str = typer.Option("topic", "--mode", "-m", help="Search mode: topic or temporal"),
     days: float = typer.Option(7, "--days", "-d", help="For temporal mode: how many days back"),
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root (isolated store, memory, research)"),
 ):
     """Search past sessions using BM25 + semantic search."""
-    asyncio.run(_recall(query, mode, days))
+    asyncio.run(_recall(query, mode, days, workspace))
 
 
-async def _recall(query: str, mode: str, days: float):
-    smol_rag = create_smol_rag()
+async def _recall(query: str, mode: str, days: float, workspace: str):
+    paths = _workspace_paths(workspace)
+    smol_rag = create_smol_rag(
+        db_path=paths.sqlite_db_path,
+        graph_path=paths.kg_db_path,
+        input_docs_dir=paths.research_dir,
+        log_dir=paths.log_dir,
+    )
     try:
         tool = MemoryRecallTool(smol_rag)
         result = await tool.execute(query=query, mode=mode, days=days)
@@ -535,18 +580,27 @@ async def _recall(query: str, mode: str, days: float):
 
 @app.command(name="index-sessions")
 def index_sessions(
-    sessions_dir: str = typer.Option(SESSIONS_DIR, "--sessions-dir", help="Sessions directory"),
-    memory_dir: str = typer.Option(MEMORY_DOCS_DIR, "--memory-dir", help="Memory docs directory"),
+    sessions_dir: Optional[str] = typer.Option(None, "--sessions-dir", help="Sessions directory (defaults to <workspace>/store/sessions)"),
+    memory_dir: Optional[str] = typer.Option(None, "--memory-dir", help="Memory docs directory (defaults to <workspace>/memory)"),
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root (isolated store, memory, research)"),
 ):
     """Index all past sessions into SmolRAG for recall."""
-    asyncio.run(_index_sessions(sessions_dir, memory_dir))
+    asyncio.run(_index_sessions(sessions_dir, memory_dir, workspace))
 
 
-async def _index_sessions(sessions_dir: str, memory_dir: str):
+async def _index_sessions(sessions_dir: Optional[str], memory_dir: Optional[str], workspace: str):
     from app.session_indexer import index_all_sessions
-    smol_rag = create_smol_rag()
+    paths = _workspace_paths(workspace)
+    resolved_sessions_dir = paths.sessions_dir if sessions_dir is None else _resolve_workspace_local_path(paths.root_dir, sessions_dir)
+    resolved_memory_dir = paths.memory_docs_dir if memory_dir is None else _resolve_workspace_local_path(paths.root_dir, memory_dir)
+    smol_rag = create_smol_rag(
+        db_path=paths.sqlite_db_path,
+        graph_path=paths.kg_db_path,
+        input_docs_dir=paths.research_dir,
+        log_dir=paths.log_dir,
+    )
     try:
-        results = await index_all_sessions(sessions_dir, smol_rag, memory_dir=memory_dir)
+        results = await index_all_sessions(resolved_sessions_dir, smol_rag, memory_dir=resolved_memory_dir)
         for key, source_id in results.items():
             console.print(f"[green]Indexed:[/green] {key} -> {source_id}")
         console.print(f"\n[bold]Done:[/bold] {len(results)} sessions indexed")
@@ -557,6 +611,7 @@ async def _index_sessions(sessions_dir: str, memory_dir: str):
 @app.command()
 def reset(
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root (isolated store, memory, research)"),
 ):
     """Wipe all persistent data (memories, sessions, indexes) for a full reset."""
     if not force:
@@ -565,12 +620,13 @@ def reset(
         )
         if not confirm:
             raise typer.Abort()
-    asyncio.run(_reset())
+    asyncio.run(_reset(workspace))
 
 
-async def _reset():
+async def _reset(workspace: str):
     from app.reset import reset_all_stores
-    deleted = await reset_all_stores(DATA_DIR)
+    paths = build_workspace_paths(workspace)
+    deleted = await reset_all_stores(paths.data_dir)
     if deleted:
         for line in deleted:
             console.print(f"  [red]{line}[/red]")
@@ -582,17 +638,20 @@ async def _reset():
 @app.command(name="clear-logs")
 def clear_logs_command(
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
-    logs_dir: str = typer.Option(LOG_DIR, "--logs-dir", help="Logs directory"),
+    logs_dir: Optional[str] = typer.Option(None, "--logs-dir", help="Logs directory (defaults to <workspace>/store/logs)"),
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root (isolated store, memory, research)"),
 ):
     """Delete log files without touching memories, sessions, or indexes."""
+    paths = build_workspace_paths(workspace)
+    resolved_logs_dir = paths.log_dir if logs_dir is None else _resolve_workspace_local_path(paths.root_dir, logs_dir)
     if not force:
         confirm = typer.confirm(
-            f"This will delete log files under '{logs_dir}'. Continue?"
+            f"This will delete log files under '{resolved_logs_dir}'. Continue?"
         )
         if not confirm:
             raise typer.Abort()
 
-    deleted = clear_logs(logs_dir)
+    deleted = clear_logs(resolved_logs_dir)
     if deleted:
         for path in deleted:
             console.print(f"  [red]Deleted {path}[/red]")

@@ -1,4 +1,5 @@
 import asyncio
+import os
 import re
 
 from app.tools.base import Tool, ToolCallPolicy
@@ -25,6 +26,8 @@ class ExecTool(Tool):
 
     @property
     def description(self) -> str:
+        if self.allowed_dir:
+            return "Execute a shell command inside the current workspace and return its output."
         return "Execute a shell command and return its output."
 
     @property
@@ -38,8 +41,24 @@ class ExecTool(Tool):
             "required": ["command"],
         }
 
-    def __init__(self, timeout: float = 30.0):
+    def __init__(self, timeout: float = 30.0, allowed_dir: str | None = None):
         self.timeout = timeout
+        self.allowed_dir = os.path.realpath(allowed_dir) if allowed_dir else None
+
+    def _resolve_working_dir(self, working_dir: str | None) -> tuple[str | None, str | None]:
+        if not self.allowed_dir:
+            return working_dir, None
+
+        if working_dir:
+            expanded = os.path.expanduser(working_dir)
+            candidate = expanded if os.path.isabs(expanded) else os.path.join(self.allowed_dir, expanded)
+        else:
+            candidate = self.allowed_dir
+
+        resolved = os.path.realpath(candidate)
+        if resolved != self.allowed_dir and not resolved.startswith(self.allowed_dir + os.sep):
+            return None, f"Error: working_dir '{working_dir}' is outside allowed directory"
+        return resolved, None
 
     async def execute(self, **kwargs) -> str:
         command = kwargs["command"]
@@ -49,12 +68,16 @@ class ExecTool(Tool):
             if pattern.search(command):
                 return f"Error: command blocked by safety filter"
 
+        resolved_working_dir, path_error = self._resolve_working_dir(working_dir)
+        if path_error:
+            return path_error
+
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=working_dir,
+                cwd=resolved_working_dir,
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
         except asyncio.TimeoutError:
