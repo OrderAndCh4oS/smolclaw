@@ -30,15 +30,11 @@ def _make_promote_hook(smol_rag):
         if not ctx.get("success"):
             return
         tool_name = ctx.get("tool_name")
-        arguments = ctx.get("arguments", {})
         result = normalize_tool_result(ctx.get("result"))
         excerpt_ids = result.metadata.get("accessed_excerpt_ids") or []
         if not excerpt_ids:
             return
-        if tool_name == "memory_search":
-            await _promote_accessed_excerpts(smol_rag, excerpt_ids)
-            return
-        if tool_name == "memory_recall" and arguments.get("mode") == "topic":
+        if tool_name in {"memory_search", "memory_recall"}:
             await _promote_accessed_excerpts(smol_rag, excerpt_ids)
 
     return _promote_hook
@@ -169,6 +165,7 @@ def build_agent_loop(
     filtered_registry = master_registry.project_for_agent(
         config.tools,
         runtime_ctx=runtime_ctx,
+        allowed_modules=config.modules or None,
     )
     filtered_registry.use(HookFiringMiddleware(hook_runner))
 

@@ -234,6 +234,8 @@ def _build_default_chat_agent(
         memory_docs_dir=MEMORY_DOCS_DIR,
         workspace=workspace,
         transport="direct",
+        agent_configs=configs,
+        enable_subagents=True,
     )
     return build_configured_agent(
         config=configs["default"],

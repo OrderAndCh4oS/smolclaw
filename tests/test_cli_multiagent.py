@@ -114,6 +114,27 @@ class TestCliMultiagent:
         assert agent.llm.completion_model == "gpt-5.2-pro"
         assert agent.session.key == "plain-session"
 
+    def test_build_default_chat_agent_passes_agent_configs_and_subagent_support(
+        self, agents_yaml, mock_smol_rag, sessions_dir
+    ):
+        sm = SessionManager(sessions_dir)
+        fake_agent = MagicMock()
+
+        with patch("cli.main.build_configured_agent", return_value=fake_agent) as mock_build_configured_agent:
+            agent = _build_default_chat_agent(
+                agents_config_path=agents_yaml,
+                session_key="plain-session",
+                model="gpt-5.2-pro",
+                smol_rag=mock_smol_rag,
+                workspace="/tmp",
+                session_manager=sm,
+            )
+
+        assert agent is fake_agent
+        env = mock_build_configured_agent.call_args.kwargs["env"]
+        assert set(env.agent_configs) == {"default", "researcher", "writer"}
+        assert env.enable_subagents is True
+
     def test_build_default_chat_agent_requires_default_entry(self, temp_dir, mock_smol_rag, sessions_dir):
         path = os.path.join(temp_dir, "agents.yaml")
         with open(path, "w") as f:

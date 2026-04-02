@@ -562,6 +562,61 @@ class TestAgentFactory:
         mock_promote.assert_awaited_once_with(mock_smol_rag, ["exc-1", "exc-2"])
 
     @pytest.mark.asyncio
+    async def test_build_agent_loop_promotes_temporal_recall_via_tool_hooks(
+        self, mock_smol_rag, sessions_dir
+    ):
+        from app.tools.memory_tools import MemoryRecallTool
+
+        llm = MagicMock()
+        llm.get_tool_completion = AsyncMock(side_effect=[
+            {
+                "content": None,
+                "tool_calls": [{
+                    "id": "call-1",
+                    "name": "memory_recall",
+                    "arguments": {"query": "recent work", "mode": "temporal", "days": 3},
+                }],
+                "has_tool_calls": True,
+            },
+            {
+                "content": "done",
+                "tool_calls": None,
+                "has_tool_calls": False,
+            },
+        ])
+        llm.completion_model = "gpt-test"
+        mock_smol_rag.excerpt_kv.get_all = AsyncMock(return_value={
+            "exc-1": {
+                "memory_type": "episode",
+                "indexed_at": 9999999999,
+                "excerpt": "did the work",
+                "summary": "shipped",
+            },
+        })
+
+        registry = ToolRegistry()
+        registry.register(MemoryRecallTool(mock_smol_rag))
+        config = AgentConfig(
+            name="researcher",
+            model="gpt-test",
+            persona="You are Researcher.",
+            tools=["memory_recall"],
+        )
+
+        with patch("app.agent_factory.create_llm", return_value=llm), \
+            patch("app.agent_factory._promote_accessed_excerpts", new=AsyncMock()) as mock_promote:
+            loop = build_agent_loop(
+                config,
+                registry,
+                mock_smol_rag,
+                SessionManager(sessions_dir),
+            )
+            result = await loop.process("use memory")
+
+        assert result == "done"
+        mock_promote.assert_awaited_once_with(mock_smol_rag, ["exc-1"])
+
+    @pytest.mark.asyncio
     async def test_memory_store_uses_runtime_bound_llm_for_auto_classification(
         self, mock_smol_rag, sessions_dir, temp_dir
     ):

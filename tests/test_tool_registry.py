@@ -329,6 +329,27 @@ class TestProjectForAgent:
         result = await projected.execute("dummy", {"text": "hello"})
         assert result.startswith("Error:")
 
+    @pytest.mark.asyncio
+    async def test_excludes_tools_from_disabled_modules(self):
+        registry = ToolRegistry()
+        registry.register(DummyTool(), module_name="transport.direct")
+        registry.register(DeferredDummyTool(), module_name="memory")
+        registry.register(SearchTool(), module_name="tool_discovery")
+
+        projected = registry.project_for_agent(
+            ["dummy", "tool_search"],
+            allowed_modules=["transport.direct"],
+        )
+
+        defs = projected.get_definitions()
+        names = [d["function"]["name"] for d in defs]
+        assert names == ["dummy"]
+        assert projected.search_tools("deferred") == []
+
+        result = await projected.execute("deferred_dummy", {})
+        assert result.startswith("Error:")
+        assert "unknown tool" in result
+
 
 class TestFilterByNames:
     def test_filter_by_names_returns_subset(self):

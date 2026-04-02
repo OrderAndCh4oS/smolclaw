@@ -47,24 +47,24 @@ def build_tool_registry(
             from app.tools.shell import ExecTool
             from app.tools.web import WebSearchTool, WebFetchTool
 
-            registry.register(ReadFileTool(allowed_dir=workspace))
-            registry.register(WriteFileTool(allowed_dir=workspace))
-            registry.register(EditFileTool(allowed_dir=workspace))
-            registry.register(ListDirTool(allowed_dir=workspace))
-            registry.register(ExecTool())
-            registry.register(WebSearchTool())
-            registry.register(WebFetchTool())
+            registry.register(ReadFileTool(allowed_dir=workspace), module_name=module_name)
+            registry.register(WriteFileTool(allowed_dir=workspace), module_name=module_name)
+            registry.register(EditFileTool(allowed_dir=workspace), module_name=module_name)
+            registry.register(ListDirTool(allowed_dir=workspace), module_name=module_name)
+            registry.register(ExecTool(), module_name=module_name)
+            registry.register(WebSearchTool(), module_name=module_name)
+            registry.register(WebFetchTool(), module_name=module_name)
         elif module_name == "transport.mcp":
             from app.tools.mcp_tools import (
                 McpFileReadTool, McpFileWriteTool, McpShellExecTool,
                 McpHttpFetchTool, McpWebSearchTool,
             )
 
-            registry.register(McpFileReadTool(token_issuer_url, gateway_url))
-            registry.register(McpFileWriteTool(token_issuer_url, gateway_url))
-            registry.register(McpShellExecTool(token_issuer_url, gateway_url))
-            registry.register(McpHttpFetchTool(token_issuer_url, gateway_url))
-            registry.register(McpWebSearchTool(token_issuer_url, gateway_url))
+            registry.register(McpFileReadTool(token_issuer_url, gateway_url), module_name=module_name)
+            registry.register(McpFileWriteTool(token_issuer_url, gateway_url), module_name=module_name)
+            registry.register(McpShellExecTool(token_issuer_url, gateway_url), module_name=module_name)
+            registry.register(McpHttpFetchTool(token_issuer_url, gateway_url), module_name=module_name)
+            registry.register(McpWebSearchTool(token_issuer_url, gateway_url), module_name=module_name)
         elif module_name == "memory" and smol_rag is not None:
             from app.tools.memory_tools import (
                 MemorySearchTool, MemoryGraphQueryTool, MemoryStoreTool,
@@ -73,28 +73,28 @@ def build_tool_registry(
             )
 
             docs_dir = ensure_dir(memory_docs_dir)
-            registry.register(MemorySearchTool(smol_rag))
-            registry.register(MemoryGraphQueryTool(smol_rag))
-            registry.register(MemoryStoreTool(smol_rag, docs_dir, llm=llm))
-            registry.register(MemoryRelateTool(smol_rag))
-            registry.register(MemoryRecallTool(smol_rag))
-            registry.register(MemoryGetTool(smol_rag))
+            registry.register(MemorySearchTool(smol_rag), module_name=module_name)
+            registry.register(MemoryGraphQueryTool(smol_rag), module_name=module_name)
+            registry.register(MemoryStoreTool(smol_rag, docs_dir, llm=llm), module_name=module_name)
+            registry.register(MemoryRelateTool(smol_rag), module_name=module_name)
+            registry.register(MemoryRecallTool(smol_rag), module_name=module_name)
+            registry.register(MemoryGetTool(smol_rag), module_name=module_name)
             if hasattr(smol_rag, "contradiction_detector") and smol_rag.contradiction_detector:
-                registry.register(ContradictionReviewTool(smol_rag.contradiction_detector))
+                registry.register(ContradictionReviewTool(smol_rag.contradiction_detector), module_name=module_name)
         elif module_name == "orchestration" and agent_configs and session_manager:
             from app.tools.orchestration_tools import (
                 SequentialPipelineTool, FanoutPipelineTool, RouteTool,
             )
 
-            registry.register(SequentialPipelineTool(agent_configs, registry, smol_rag, session_manager))
-            registry.register(FanoutPipelineTool(agent_configs, registry, smol_rag, session_manager))
-            registry.register(RouteTool(agent_configs, registry, smol_rag, session_manager))
+            registry.register(SequentialPipelineTool(agent_configs, registry, smol_rag, session_manager), module_name=module_name)
+            registry.register(FanoutPipelineTool(agent_configs, registry, smol_rag, session_manager), module_name=module_name)
+            registry.register(RouteTool(agent_configs, registry, smol_rag, session_manager), module_name=module_name)
         elif module_name == "subagents" and agent_configs:
             from app.tools.spawn import SpawnTool, GetResultTool, AwaitResultTool
 
-            registry.register(SpawnTool(configs=agent_configs))
-            registry.register(GetResultTool(configs=agent_configs))
-            registry.register(AwaitResultTool(configs=agent_configs))
+            registry.register(SpawnTool(configs=agent_configs), module_name=module_name)
+            registry.register(GetResultTool(configs=agent_configs), module_name=module_name)
+            registry.register(AwaitResultTool(configs=agent_configs), module_name=module_name)
         elif module_name == "tool_discovery":
             # Backward-compatible no-op alias. Deferred tools are always searchable.
             continue
@@ -104,7 +104,7 @@ def build_tool_registry(
     ):
         from app.tools.tool_search import ToolSearchTool
 
-        registry.register(ToolSearchTool(registry))
+        registry.register(ToolSearchTool(registry), module_name="tool_discovery")
 
     # Register catalog-wide middleware. Runtime-bound middleware is installed per agent loop.
     registry.use(logging_middleware)
