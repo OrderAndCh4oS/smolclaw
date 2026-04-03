@@ -17,6 +17,7 @@ from app.tools.base import ToolRuntimeContext, normalize_tool_result
 from app.tools.middleware import HookFiringMiddleware
 from app.tools.memory_tools import _promote_accessed_excerpts
 from app.tools.registry import ToolRegistry
+from app.workspace import WorkspaceContext
 
 _SHARED_BOOTSTRAP_PATH = os.path.join(PROJECT_ROOT, "AGENT.md")
 HookRunnerConfigurer = Callable[[HookRunner], None]
@@ -44,6 +45,7 @@ def _make_promote_hook(smol_rag):
 class ChildAgentFactory:
     master_registry: ToolRegistry
     smol_rag: object
+    workspace: WorkspaceContext | None
     session_manager: SessionManager
     parent_session_key: str
     llm_factory_kwargs: Optional[dict] = None
@@ -95,6 +97,7 @@ class ChildAgentFactory:
             master_registry=master_registry,
             smol_rag=smol_rag,
             session_manager=self.session_manager,
+            workspace=self.workspace,
             session_key=self.make_session_key(config.name, purpose),
             child_loop_registrar=self.loop_registrar,
             context_builder=(
@@ -119,6 +122,7 @@ def build_agent_loop(
     master_registry: ToolRegistry,
     smol_rag,
     session_manager: SessionManager,
+    workspace: WorkspaceContext | None = None,
     session_key_prefix: str = "default",
     session_key: Optional[str] = None,
     hook_runner: Optional[HookRunner] = None,
@@ -133,8 +137,13 @@ def build_agent_loop(
 ) -> AgentLoop:
     llm = create_llm(completion_model=config.model, **(llm_factory_kwargs or {}))
     agent_smol_rag = smol_rag
-    if config.modules and "memory" not in config.modules:
+    if config.capabilities and "memory" not in config.capabilities:
         agent_smol_rag = None
+
+    missing_tools = sorted(set(config.tools) - master_registry.tool_names())
+    if missing_tools:
+        names = ", ".join(missing_tools)
+        raise ValueError(f"Agent '{config.name}' requests unavailable tools: {names}.")
 
     # Shared hook runner for tool hooks + agent lifecycle hooks
     if hook_runner is None:
@@ -150,6 +159,7 @@ def build_agent_loop(
         hook_runner=hook_runner,
         session_manager=session_manager,
         smol_rag=agent_smol_rag,
+        workspace=workspace,
         session_key=resolved_session_key,
         loop_registrar=child_loop_registrar,
     )
@@ -157,6 +167,7 @@ def build_agent_loop(
         master_registry=master_registry,
         registry_factory=registry_factory,
         smol_rag=agent_smol_rag,
+        workspace=workspace,
         session_manager=session_manager,
         parent_session_key=resolved_session_key,
         llm_factory_kwargs=llm_factory_kwargs,
@@ -169,7 +180,7 @@ def build_agent_loop(
     filtered_registry = master_registry.project_for_agent(
         config.tools,
         runtime_ctx=runtime_ctx,
-        allowed_modules=config.modules or None,
+        allowed_capabilities=config.capabilities or None,
     )
     filtered_registry.use(HookFiringMiddleware(hook_runner))
 

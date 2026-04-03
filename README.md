@@ -1,6 +1,6 @@
 # SmolClaw
 
-SmolClaw is a memory-first agent with persistent, associative memory. It pairs a knowledge graph and vector retrieval backend (SmolRAG) with a tool-using agent loop that can search the web, read/write files, execute shell commands, and maintain long-term memory across sessions. Both a CLI and a WebSocket gateway are available as interfaces.
+SmolClaw is a memory-first agent with persistent, associative memory. It pairs a knowledge graph and vector retrieval backend (SmolRAG) with a tool-using agent loop that can search the web, read and write workspace files, and maintain long-term memory across sessions. Both a CLI and a WebSocket gateway are available as interfaces.
 
 ## How It Works
 
@@ -12,7 +12,7 @@ When you ask a question, SmolClaw combines semantic vector search with knowledge
 
 Change detection is automatic. Every document is content-hashed on ingest. If a file's hash changes, the old embeddings and graph entries are cleaned up and the new content is reingested, so answers always reflect the latest state of your source material.
 
-For the maintained runtime architecture view, see [docs/architecture-runtime.md](docs/architecture-runtime.md). That page maps the current CLI/gateway flow, module-driven tool composition, deferred tool discovery, memory hooks, and child-agent orchestration.
+For the maintained runtime architecture view, see [docs/architecture-runtime.md](docs/architecture-runtime.md). That page maps the current CLI/gateway flow, capability-driven tool composition, deferred tool discovery, memory hooks, and child-agent orchestration.
 
 ## Getting Started
 
@@ -91,7 +91,7 @@ You'll be prompted for confirmation. Pass `--force` to skip it (useful for scrip
 python -m cli.main reset --force
 ```
 
-This deletes the SQLite database, the knowledge graph, and all files in `sessions/`, `memory/`, `logs/`, and `cache/`. After a reset, stores are recreated automatically the next time you run any command.
+This deletes the SQLite database, the knowledge graph, and all files in `store/sessions/`, `memory/`, `store/logs/`, and `store/cache/`. The workspace `research/` directory is preserved. After a reset, stores are recreated automatically the next time you run any command.
 
 ### Session Recall
 
@@ -124,17 +124,17 @@ Every agent draws from a shared tool registry. The available tools cover four ca
 
 **Memory** tools let agents search the knowledge graph with `memory_search` (hybrid vector + KG retrieval with optional memory type filtering), query specific entities and their relationships with `memory_graph_query`, store new memories with taxonomy classification via `memory_store`, create explicit graph edges between entities with `memory_relate`, retrieve past sessions with `memory_recall`, fetch a specific excerpt with `memory_get`, and review contradictions with `contradiction_review`.
 
-**Filesystem** tools provide `read_file`, `write_file`, `edit_file`, and `list_dir` within a sandboxed workspace directory.
+**Filesystem** tools provide `read_file`, `write_file`, `edit_file`, and `list_dir` within the active workspace root.
 
 **Web** tools include `web_search` for internet queries and `web_fetch` for retrieving and reading web page content.
 
-**Shell** execution via `exec` runs arbitrary commands with dangerous-pattern blocking and timeout.
+**Shell** execution is transport-dependent. Direct local shell execution is currently disabled until a real sandbox backend exists; MCP-backed runtimes may still expose `exec` through the remote provider.
 
 **Multi-agent** tools (`spawn_agent`, `get_result`, `await_result`) allow orchestrating sub-agents from within a conversation.
 
 **Orchestration** tools provide higher-level patterns: `sequential_pipeline` chains agents so the output of one becomes the input of the next, `fanout_pipeline` runs agents in parallel on the same input, and `route` directs input to the best-matching agent via pattern matching or LLM classification.
 
-Tools are extensible at two levels. For a single capability, implement the `Tool` base class and declare its per-call policy (`mutates_state`, `delegates`) plus optional deferred exposure. For a reusable bundle, add a runtime module to the shared registry factory so the capability can be enabled, replaced, or omitted cleanly by environment. `modules` define the supply boundary for an agent, while `tools` define which immediate tools are exposed at startup. Deferred tools from enabled modules stay discoverable at runtime, and `tool_search` is exposed automatically when an agent has hidden deferred tools to discover. Agent configs can now opt into higher-level loop behavior with `behaviors` in `agents.yaml` (`plan`, `reflect`) without hardcoding those prompts into the loop itself.
+Tools are extensible at two levels. For a single capability, implement the `Tool` base class and declare its per-call policy (`mutates_state`, `delegates`) plus optional deferred exposure. For a reusable bundle, add a capability provider to the shared registry factory so the capability can be enabled, replaced, or omitted cleanly by runtime transport. `capabilities` define the supply boundary for an agent, while `tools` define which immediate tools are exposed at startup. Deferred tools from enabled capabilities stay discoverable at runtime, and `tool_search` is exposed automatically when an agent has hidden deferred tools to discover. Agent configs can also opt into higher-level loop behavior with `behaviors` in `agents.yaml` (`plan`, `reflect`) without hardcoding those prompts into the loop itself.
 
 ### Tool Middleware
 

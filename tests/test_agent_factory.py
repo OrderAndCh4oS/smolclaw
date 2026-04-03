@@ -11,6 +11,7 @@ from app.tools.base import Tool
 from app.tools.factory import build_tool_registry
 from app.tools.registry import ToolRegistry
 from app.tools.tool_search import ToolSearchTool
+from app.workspace import WorkspaceContext
 
 
 class StubToolA(Tool):
@@ -314,12 +315,13 @@ class TestAgentFactory:
             model="gpt-5.2-pro",
             persona="You are Writer.",
             tools=["tool_c"],
-            modules=["child"],
+            capabilities=["child"],
         )
         factory = ChildAgentFactory(
             master_registry=master_registry,
-            registry_factory=lambda config: child_registry if config.modules == ["child"] else master_registry,
+            registry_factory=lambda config: child_registry if config.capabilities == ["child"] else master_registry,
             smol_rag=mock_smol_rag,
+            workspace=None,
             session_manager=SessionManager(sessions_dir),
             parent_session_key="parent",
         )
@@ -347,9 +349,9 @@ class TestAgentFactory:
         grandchild_registry.register(StubToolC())
 
         def registry_factory(config: AgentConfig) -> ToolRegistry:
-            if config.modules == ["child"]:
+            if config.capabilities == ["child"]:
                 return child_registry
-            if config.modules == ["child", "memory"]:
+            if config.capabilities == ["child", "memory"]:
                 return grandchild_registry
             return root_registry
 
@@ -357,6 +359,7 @@ class TestAgentFactory:
             master_registry=root_registry,
             registry_factory=registry_factory,
             smol_rag=mock_smol_rag,
+            workspace=None,
             session_manager=SessionManager(sessions_dir),
             parent_session_key="parent",
         )
@@ -367,7 +370,7 @@ class TestAgentFactory:
                 model="gpt-5.2-pro",
                 persona="You are Writer.",
                 tools=["capture_child_factory", "tool_b"],
-                modules=["child"],
+                capabilities=["child"],
             ),
             purpose="spawn",
         )
@@ -379,7 +382,7 @@ class TestAgentFactory:
                 model="gpt-5.2-pro",
                 persona="You are Researcher.",
                 tools=["tool_c"],
-                modules=["child", "memory"],
+                capabilities=["child", "memory"],
             ),
             purpose="spawn",
         )
@@ -394,10 +397,9 @@ class TestAgentFactory:
     ):
         registry = build_tool_registry(
             smol_rag=mock_smol_rag,
-            memory_docs_dir=temp_dir,
-            workspace=temp_dir,
+            workspace=WorkspaceContext.from_root(temp_dir),
             llm=None,
-            mode="direct",
+            transport="direct",
         )
         config = AgentConfig(
             name="researcher",
@@ -419,32 +421,30 @@ class TestAgentFactory:
         assert "memory_search" in names
         assert "tool_search" in names
 
-    def test_build_tool_registry_registers_tool_search_independent_of_module_order(
+    def test_build_tool_registry_registers_tool_search_independent_of_capability_order(
         self, mock_smol_rag, temp_dir
     ):
         registry = build_tool_registry(
             smol_rag=mock_smol_rag,
-            memory_docs_dir=temp_dir,
-            workspace=temp_dir,
+            workspace=WorkspaceContext.from_root(temp_dir),
             llm=None,
-            mode="direct",
-            module_names=["tool_discovery", "memory", "transport.direct"],
+            transport="direct",
+            capability_names=["memory", "filesystem"],
         )
 
         defs = registry.get_definitions()
         names = [d["function"]["name"] for d in defs]
         assert "tool_search" in names
 
-    def test_build_tool_registry_registers_tool_search_for_explicit_module_lists(
+    def test_build_tool_registry_registers_tool_search_for_explicit_capability_lists(
         self, mock_smol_rag, temp_dir
     ):
         registry = build_tool_registry(
             smol_rag=mock_smol_rag,
-            memory_docs_dir=temp_dir,
-            workspace=temp_dir,
+            workspace=WorkspaceContext.from_root(temp_dir),
             llm=None,
-            mode="direct",
-            module_names=["transport.direct", "memory"],
+            transport="direct",
+            capability_names=["filesystem", "memory"],
         )
 
         defs = registry.get_definitions()
@@ -643,10 +643,9 @@ class TestAgentFactory:
 
         registry = build_tool_registry(
             smol_rag=mock_smol_rag,
-            memory_docs_dir=temp_dir,
-            workspace=temp_dir,
+            workspace=WorkspaceContext.from_root(temp_dir),
             llm=None,
-            mode="direct",
+            transport="direct",
         )
         config = AgentConfig(
             name="researcher",
@@ -675,6 +674,7 @@ class TestAgentFactory:
         factory = ChildAgentFactory(
             master_registry=master_registry,
             smol_rag=mock_smol_rag,
+            workspace=None,
             session_manager=SessionManager(sessions_dir),
             parent_session_key="parent:session/unsafe",
         )
@@ -699,10 +699,10 @@ class TestAgentFactory:
             return None
 
         def resolve_smol_rag(config: AgentConfig):
-            return mock_smol_rag if "memory" in config.modules else None
+            return mock_smol_rag if "memory" in config.capabilities else None
 
         def resolve_hook_runner_configurers(config: AgentConfig):
-            if "memory" not in config.modules:
+            if "memory" not in config.capabilities:
                 return ()
 
             def _configure(hook_runner):
@@ -713,6 +713,7 @@ class TestAgentFactory:
         factory = ChildAgentFactory(
             master_registry=master_registry,
             smol_rag=mock_smol_rag,
+            workspace=None,
             session_manager=SessionManager(sessions_dir),
             parent_session_key="parent",
             smol_rag_resolver=resolve_smol_rag,
@@ -725,7 +726,7 @@ class TestAgentFactory:
                 model="gpt-test",
                 persona="You are Reader.",
                 tools=["tool_a"],
-                modules=["transport.direct"],
+                capabilities=["filesystem"],
             ),
             purpose="spawn",
         )
@@ -735,7 +736,7 @@ class TestAgentFactory:
                 model="gpt-test",
                 persona="You are Researcher.",
                 tools=["tool_a"],
-                modules=["transport.direct", "memory"],
+                capabilities=["filesystem", "memory"],
             ),
             purpose="spawn",
         )

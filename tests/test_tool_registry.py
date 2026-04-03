@@ -330,15 +330,15 @@ class TestProjectForAgent:
         assert result.startswith("Error:")
 
     @pytest.mark.asyncio
-    async def test_excludes_tools_from_disabled_modules(self):
+    async def test_excludes_tools_from_disabled_capabilities(self):
         registry = ToolRegistry()
-        registry.register(DummyTool(), module_name="transport.direct")
-        registry.register(DeferredDummyTool(), module_name="memory")
-        registry.register(SearchTool(), module_name="tool_discovery")
+        registry.register(DummyTool(), capability_name="filesystem")
+        registry.register(DeferredDummyTool(), capability_name="memory")
+        registry.register(SearchTool(), capability_name="tool_discovery")
 
         projected = registry.project_for_agent(
             ["dummy", "tool_search"],
-            allowed_modules=["transport.direct"],
+            allowed_capabilities=["filesystem"],
         )
 
         defs = projected.get_definitions()

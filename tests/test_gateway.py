@@ -251,7 +251,7 @@ class TestGatewayProtocol:
             model="gpt-test",
             persona="You are Default.",
             tools=["read_file"],
-            modules=["transport.mcp"],
+            capabilities=["filesystem"],
         )
 
         with patch("app.gateway.AgentConfigLoader.load", return_value={"default": config}), \
@@ -311,5 +311,5 @@ class TestGatewayProtocol:
         expected = build_workspace_paths(workspace_root)
         env = mock_build.call_args.kwargs["env"]
         assert env.memory_docs_dir == expected.memory_docs_dir
-        assert env.workspace == expected.root_dir
+        assert env.workspace.root_dir == os.path.realpath(expected.root_dir)
         assert env.llm_db_path == expected.sqlite_db_path

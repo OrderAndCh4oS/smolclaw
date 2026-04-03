@@ -116,6 +116,23 @@ class TestAgentConfigLoader:
         with pytest.raises(FileNotFoundError):
             AgentConfigLoader.load("/nonexistent/agents.yaml")
 
+    def test_load_rejects_legacy_modules_field(self, temp_dir):
+        yaml_path = os.path.join(temp_dir, "agents.yaml")
+        with open(yaml_path, "w") as f:
+            f.write(
+                "agents:\n"
+                "  - name: legacy\n"
+                "    model: m\n"
+                "    persona: p\n"
+                "    modules:\n"
+                "      - transport.direct\n"
+            )
+
+        with pytest.raises(ValueError) as exc_info:
+            AgentConfigLoader.load(yaml_path)
+
+        assert "capabilities" in str(exc_info.value)
+
 
 class TestAgentConfigSkills:
     def test_skills_default_empty(self):
@@ -182,28 +199,31 @@ class TestAgentConfigPermissionMode:
 
 
 class TestRepoAgentsConfig:
-    def test_repo_agents_use_explicit_modules_and_permission_modes(self):
+    def test_repo_agents_use_explicit_capabilities_and_permission_modes(self):
         yaml_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "agents.yaml")
         configs = AgentConfigLoader.load(yaml_path)
 
-        assert configs["default"].modules == ["transport.direct", "memory"]
+        assert configs["default"].capabilities == ["filesystem", "web", "memory"]
         assert configs["default"].permission_mode == "plan"
         assert "write_file" not in configs["default"].tools
         assert "edit_file" not in configs["default"].tools
         assert "exec" not in configs["default"].tools
+        assert "list_dir" not in configs["default"].tools
 
-        assert configs["researcher"].modules == ["transport.direct", "memory"]
+        assert configs["researcher"].capabilities == ["filesystem", "web", "memory"]
         assert configs["researcher"].permission_mode == "research"
         assert "memory_store" in configs["researcher"].tools
         assert "exec" not in configs["researcher"].tools
+        assert "list_dir" not in configs["researcher"].tools
 
-        assert configs["coder"].modules == ["transport.direct", "memory"]
+        assert configs["coder"].capabilities == ["filesystem", "web", "memory"]
         assert configs["coder"].permission_mode == "execute"
-        assert "exec" in configs["coder"].tools
+        assert "exec" not in configs["coder"].tools
         assert "write_file" in configs["coder"].tools
+        assert "edit_file" in configs["coder"].tools
+        assert "list_dir" not in configs["coder"].tools
 
-        assert configs["orchestrator"].modules == ["memory", "orchestration", "subagents"]
+        assert configs["orchestrator"].capabilities == ["memory", "orchestration", "subagents"]
         assert configs["orchestrator"].permission_mode == "delegate_only"
-        assert "transport.direct" not in configs["orchestrator"].modules
         assert "write_file" not in configs["orchestrator"].tools
         assert "exec" not in configs["orchestrator"].tools

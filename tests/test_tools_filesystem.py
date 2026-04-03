@@ -3,6 +3,7 @@ import os
 import pytest
 
 from app.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
+from app.workspace import WorkspaceContext
 
 
 class TestReadFileTool:
@@ -83,4 +84,29 @@ class TestAllowedDir:
         tool = ReadFileTool(allowed_dir=temp_dir)
         result = await tool.execute(path="/etc/passwd")
         assert result.startswith("Error:")
-        assert "outside allowed directory" in result
+        assert "outside workspace" in result
+
+
+class TestWorkspaceRelativePaths:
+    @pytest.mark.asyncio
+    async def test_read_file_resolves_relative_to_workspace_root(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        nested_dir = os.path.join(temp_dir, "notes")
+        os.makedirs(nested_dir, exist_ok=True)
+        with open(os.path.join(nested_dir, "todo.md"), "w") as f:
+            f.write("ship it")
+
+        tool = ReadFileTool(workspace=workspace)
+        result = await tool.execute(path="notes/todo.md")
+
+        assert result == "ship it"
+
+    @pytest.mark.asyncio
+    async def test_list_dir_dot_resolves_to_workspace_root(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        os.makedirs(os.path.join(temp_dir, "notes"), exist_ok=True)
+
+        tool = ListDirTool(workspace=workspace)
+        result = await tool.execute(path=".")
+
+        assert "notes" in result

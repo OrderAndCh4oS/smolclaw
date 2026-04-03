@@ -1,9 +1,26 @@
 import os
 
 from app.tools.base import Tool, ToolCallPolicy
+from app.workspace import WorkspaceContext
 
 
-class ReadFileTool(Tool):
+class _WorkspacePathMixin:
+    def __init__(self, workspace: WorkspaceContext | str | None = None):
+        if isinstance(workspace, WorkspaceContext):
+            self.workspace = workspace
+        elif workspace:
+            self.workspace = WorkspaceContext.from_root(workspace)
+        else:
+            self.workspace = None
+
+    def _resolve_path(self, path: str) -> tuple[str | None, str | None]:
+        if self.workspace is None:
+            expanded = os.path.expanduser(path)
+            return os.path.realpath(expanded), None
+        return self.workspace.resolve_contained_path(path, label="path")
+
+
+class ReadFileTool(_WorkspacePathMixin, Tool):
     @property
     def name(self) -> str:
         return "read_file"
@@ -22,18 +39,11 @@ class ReadFileTool(Tool):
             "required": ["path"],
         }
 
-    def __init__(self, allowed_dir: str = None):
-        self.allowed_dir = os.path.realpath(allowed_dir) if allowed_dir else None
-
-    def _check_path(self, path: str) -> str | None:
-        real = os.path.realpath(path)
-        if self.allowed_dir and not real.startswith(self.allowed_dir + os.sep) and real != self.allowed_dir:
-            return f"Error: path '{path}' is outside allowed directory"
-        return None
+    def __init__(self, workspace: WorkspaceContext | str | None = None, allowed_dir: str | None = None):
+        super().__init__(workspace=workspace or allowed_dir)
 
     async def execute(self, **kwargs) -> str:
-        path = kwargs["path"]
-        err = self._check_path(path)
+        path, err = self._resolve_path(kwargs["path"])
         if err:
             return err
         try:
@@ -45,7 +55,7 @@ class ReadFileTool(Tool):
             return f"Error: {e}"
 
 
-class WriteFileTool(Tool):
+class WriteFileTool(_WorkspacePathMixin, Tool):
     @property
     def default_call_policy(self) -> ToolCallPolicy:
         return ToolCallPolicy(mutates_state=True, tags=frozenset({"filesystem", "write"}))
@@ -69,19 +79,12 @@ class WriteFileTool(Tool):
             "required": ["path", "content"],
         }
 
-    def __init__(self, allowed_dir: str = None):
-        self.allowed_dir = os.path.realpath(allowed_dir) if allowed_dir else None
-
-    def _check_path(self, path: str) -> str | None:
-        real = os.path.realpath(path)
-        if self.allowed_dir and not real.startswith(self.allowed_dir + os.sep) and real != self.allowed_dir:
-            return f"Error: path '{path}' is outside allowed directory"
-        return None
+    def __init__(self, workspace: WorkspaceContext | str | None = None, allowed_dir: str | None = None):
+        super().__init__(workspace=workspace or allowed_dir)
 
     async def execute(self, **kwargs) -> str:
-        path = kwargs["path"]
+        path, err = self._resolve_path(kwargs["path"])
         content = kwargs["content"]
-        err = self._check_path(path)
         if err:
             return err
         try:
@@ -93,7 +96,7 @@ class WriteFileTool(Tool):
             return f"Error: {e}"
 
 
-class EditFileTool(Tool):
+class EditFileTool(_WorkspacePathMixin, Tool):
     @property
     def default_call_policy(self) -> ToolCallPolicy:
         return ToolCallPolicy(mutates_state=True, tags=frozenset({"filesystem", "write"}))
@@ -118,20 +121,13 @@ class EditFileTool(Tool):
             "required": ["path", "old_text", "new_text"],
         }
 
-    def __init__(self, allowed_dir: str = None):
-        self.allowed_dir = os.path.realpath(allowed_dir) if allowed_dir else None
-
-    def _check_path(self, path: str) -> str | None:
-        real = os.path.realpath(path)
-        if self.allowed_dir and not real.startswith(self.allowed_dir + os.sep) and real != self.allowed_dir:
-            return f"Error: path '{path}' is outside allowed directory"
-        return None
+    def __init__(self, workspace: WorkspaceContext | str | None = None, allowed_dir: str | None = None):
+        super().__init__(workspace=workspace or allowed_dir)
 
     async def execute(self, **kwargs) -> str:
-        path = kwargs["path"]
+        path, err = self._resolve_path(kwargs["path"])
         old_text = kwargs["old_text"]
         new_text = kwargs["new_text"]
-        err = self._check_path(path)
         if err:
             return err
         try:
@@ -147,7 +143,7 @@ class EditFileTool(Tool):
             return f"Error: {e}"
 
 
-class ListDirTool(Tool):
+class ListDirTool(_WorkspacePathMixin, Tool):
     @property
     def name(self) -> str:
         return "list_dir"
@@ -166,18 +162,11 @@ class ListDirTool(Tool):
             "required": ["path"],
         }
 
-    def __init__(self, allowed_dir: str = None):
-        self.allowed_dir = os.path.realpath(allowed_dir) if allowed_dir else None
-
-    def _check_path(self, path: str) -> str | None:
-        real = os.path.realpath(path)
-        if self.allowed_dir and not real.startswith(self.allowed_dir + os.sep) and real != self.allowed_dir:
-            return f"Error: path '{path}' is outside allowed directory"
-        return None
+    def __init__(self, workspace: WorkspaceContext | str | None = None, allowed_dir: str | None = None):
+        super().__init__(workspace=workspace or allowed_dir)
 
     async def execute(self, **kwargs) -> str:
-        path = kwargs["path"]
-        err = self._check_path(path)
+        path, err = self._resolve_path(kwargs["path"])
         if err:
             return err
         try:

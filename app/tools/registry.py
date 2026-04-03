@@ -14,17 +14,20 @@ from app.tools.middleware import MiddlewareChain, MiddlewareFn
 class ToolRegistry:
     def __init__(self):
         self._tools: Dict[str, Tool] = {}
-        self._tool_modules: Dict[str, Optional[str]] = {}
+        self._tool_capabilities: Dict[str, Optional[str]] = {}
         self._middleware = MiddlewareChain()
         self._per_tool_middleware: Dict[str, MiddlewareChain] = {}
         self._exposed: Set[str] = set()
 
-    def register(self, tool: Tool, module_name: str | None = None):
+    def register(self, tool: Tool, capability_name: str | None = None):
         self._tools[tool.name] = tool
-        self._tool_modules[tool.name] = module_name
+        self._tool_capabilities[tool.name] = capability_name
 
     def values(self) -> List[Tool]:
         return list(self._tools.values())
+
+    def tool_names(self) -> Set[str]:
+        return set(self._tools)
 
     def has_deferred_tools(self) -> bool:
         return any(tool.deferred for tool in self._tools.values())
@@ -110,7 +113,7 @@ class ToolRegistry:
             if name in self._tools:
                 tool = self._tools[name]
                 filtered._tools[name] = tool.bind(runtime_ctx) if runtime_ctx else tool
-                filtered._tool_modules[name] = self._tool_modules.get(name)
+                filtered._tool_capabilities[name] = self._tool_capabilities.get(name)
         # Inherit middleware and exposed set from parent registry
         filtered._middleware = MiddlewareChain(list(self._middleware._middlewares))
         filtered._exposed = set(self._exposed)
@@ -125,24 +128,24 @@ class ToolRegistry:
         self,
         enabled_names: List[str],
         runtime_ctx: ToolRuntimeContext | None = None,
-        allowed_modules: List[str] | None = None,
+        allowed_capabilities: List[str] | None = None,
     ) -> "ToolRegistry":
         projected = ToolRegistry()
         if runtime_ctx is not None:
             runtime_ctx.registry = projected
 
         enabled = set(enabled_names)
-        allowed = set(allowed_modules) if allowed_modules is not None else None
+        allowed = set(allowed_capabilities) if allowed_capabilities is not None else None
 
         for name, tool in self._tools.items():
             if name == "tool_search":
                 continue
-            tool_module = self._tool_modules.get(name)
-            if allowed is not None and tool_module is not None and tool_module not in allowed:
+            tool_capability = self._tool_capabilities.get(name)
+            if allowed is not None and tool_capability is not None and tool_capability not in allowed:
                 continue
             if tool.deferred or name in enabled:
                 projected._tools[name] = tool.bind(runtime_ctx) if runtime_ctx else tool
-                projected._tool_modules[name] = tool_module
+                projected._tool_capabilities[name] = tool_capability
 
         projected._exposed = {
             name for name in self._exposed if name in projected._tools
@@ -158,7 +161,7 @@ class ToolRegistry:
             projected._tools["tool_search"] = (
                 tool_search.bind(runtime_ctx) if runtime_ctx else tool_search
             )
-            projected._tool_modules["tool_search"] = self._tool_modules.get("tool_search")
+            projected._tool_capabilities["tool_search"] = self._tool_capabilities.get("tool_search")
 
         projected._middleware = MiddlewareChain(list(self._middleware._middlewares))
         for tool_name, chain in self._per_tool_middleware.items():

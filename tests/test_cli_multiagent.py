@@ -12,6 +12,7 @@ from app.tools.registry import ToolRegistry
 from cli.main import _build_cli_tool_registry, _build_default_chat_agent, _build_multiagent
 from app.hooks import ON_SESSION_END, HookRunner
 from app.session import SessionManager
+from app.workspace import WorkspaceContext
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 
@@ -42,6 +43,14 @@ def agents_yaml(temp_dir):
             "      - read_file\n"
         )
     return path
+
+
+def _fake_runtime(workspace_root: str, smol_rag, session_manager):
+    runtime = MagicMock()
+    runtime.workspace = WorkspaceContext.from_root(workspace_root).ensure_dirs()
+    runtime.smol_rag = smol_rag
+    runtime.session_manager = session_manager
+    return runtime
 
 
 class TestCliMultiagent:
@@ -136,7 +145,7 @@ class TestCliMultiagent:
         assert set(env.agent_configs) == {"default", "researcher", "writer"}
         assert env.enable_subagents is True
         assert env.memory_docs_dir == build_workspace_paths("/tmp").memory_docs_dir
-        assert env.workspace == build_workspace_paths("/tmp").root_dir
+        assert env.workspace.root_dir == os.path.realpath(build_workspace_paths("/tmp").root_dir)
         assert env.llm_db_path == build_workspace_paths("/tmp").sqlite_db_path
 
     def test_build_default_chat_agent_requires_default_entry(self, temp_dir, mock_smol_rag, sessions_dir):
@@ -259,8 +268,7 @@ class TestCliMultiagent:
 
         session_manager = MagicMock()
 
-        with patch("cli.main.create_smol_rag", return_value=smol_rag), \
-            patch("cli.main.SessionManager", return_value=session_manager), \
+        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
             patch("cli.main.PromptSession", FakePromptSession), \
             patch("cli.main._build_multiagent", return_value=fake_agent) as mock_build_multiagent, \
             patch("cli.main.console", FakeConsole()):
@@ -309,8 +317,7 @@ class TestCliMultiagent:
         smol_rag.contradiction_detector = None
         session_manager = MagicMock()
 
-        with patch("cli.main.create_smol_rag", return_value=smol_rag), \
-            patch("cli.main.SessionManager", return_value=session_manager), \
+        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
             patch("cli.main.PromptSession", FakePromptSession), \
             patch("cli.main._build_multiagent", return_value=fake_agent), \
             patch("cli.main.console", FakeConsole()):
@@ -347,8 +354,7 @@ class TestCliMultiagent:
         smol_rag.contradiction_detector = None
         session_manager = MagicMock()
 
-        with patch("cli.main.create_smol_rag", return_value=smol_rag), \
-            patch("cli.main.SessionManager", return_value=session_manager), \
+        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
             patch("cli.main.PromptSession", FakePromptSession), \
             patch("cli.main._build_multiagent", return_value=fake_agent) as mock_build_multiagent, \
             patch("cli.main.console", FakeConsole()):
@@ -397,8 +403,7 @@ class TestCliMultiagent:
         smol_rag.contradiction_detector = None
         session_manager = MagicMock()
 
-        with patch("cli.main.create_smol_rag", return_value=smol_rag), \
-            patch("cli.main.SessionManager", return_value=session_manager), \
+        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
             patch("cli.main.PromptSession", FakePromptSession), \
             patch("cli.main._build_default_chat_agent", return_value=fake_agent) as mock_default_builder, \
             patch("cli.main.console", FakeConsole()):
@@ -446,20 +451,19 @@ class TestCliMultiagent:
         smol_rag.contradiction_detector = None
         session_manager = MagicMock()
 
-        with patch("cli.main.create_smol_rag", return_value=smol_rag) as mock_create_smol_rag, \
-            patch("cli.main.SessionManager", return_value=session_manager) as mock_session_manager, \
+        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime(workspace_root, smol_rag, session_manager)) as mock_build_runtime, \
             patch("cli.main.PromptSession", FakePromptSession), \
             patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
             patch("cli.main.console", FakeConsole()):
             await _chat_loop("default", workspace_root, "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
 
-        mock_create_smol_rag.assert_called_once_with(
-            db_path=expected.sqlite_db_path,
-            graph_path=expected.kg_db_path,
-            input_docs_dir=expected.research_dir,
-            log_dir=expected.log_dir,
-        )
-        mock_session_manager.assert_called_once_with(expected.sessions_dir)
+        mock_build_runtime.assert_called_once()
+        runtime = mock_build_runtime.return_value
+        assert runtime.workspace.paths.sqlite_db_path == expected.sqlite_db_path
+        assert runtime.workspace.paths.kg_db_path == expected.kg_db_path
+        assert runtime.workspace.paths.research_dir == expected.research_dir
+        assert runtime.workspace.paths.log_dir == expected.log_dir
+        assert runtime.session_manager is session_manager
 
     @pytest.mark.asyncio
     async def test_chat_loop_remember_command_stores_memory_without_agent_turn(self):
@@ -494,8 +498,7 @@ class TestCliMultiagent:
         smol_rag = MagicMock()
         session_manager = MagicMock()
 
-        with patch("cli.main.create_smol_rag", return_value=smol_rag), \
-            patch("cli.main.SessionManager", return_value=session_manager), \
+        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
             patch("cli.main.PromptSession", FakePromptSession), \
             patch("cli.main.MemoryStoreTool", return_value=memory_tool), \
             patch("cli.main._build_default_chat_agent", return_value=fake_agent) as mock_build_default_chat_agent, \
@@ -539,8 +542,7 @@ class TestCliMultiagent:
         smol_rag = MagicMock()
         session_manager = MagicMock()
 
-        with patch("cli.main.create_smol_rag", return_value=smol_rag), \
-            patch("cli.main.SessionManager", return_value=session_manager), \
+        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
             patch("cli.main.PromptSession", FakePromptSession), \
             patch("cli.main.SessionExportHook") as mock_export_hook_cls, \
             patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
@@ -591,8 +593,7 @@ class TestCliMultiagent:
         smol_rag = MagicMock()
         session_manager = MagicMock()
 
-        with patch("cli.main.create_smol_rag", return_value=smol_rag), \
-            patch("cli.main.SessionManager", return_value=session_manager), \
+        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
             patch("cli.main.PromptSession", FakePromptSession), \
             patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
             patch("cli.main.console", fake_console):
@@ -639,8 +640,7 @@ class TestCliMultiagent:
         smol_rag = MagicMock()
         smol_rag.close = AsyncMock()
 
-        with patch("cli.main.create_smol_rag", return_value=smol_rag), \
-            patch("cli.main.SessionManager", return_value=session_manager), \
+        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
             patch("cli.main.PromptSession", FakePromptSession), \
             patch("cli.main._build_default_chat_agent", return_value=agent), \
             patch("cli.main.console", FakeConsole()):
@@ -701,8 +701,7 @@ class TestCliMultiagent:
         smol_rag = MagicMock()
         session_manager = MagicMock()
 
-        with patch("cli.main.create_smol_rag", return_value=smol_rag), \
-            patch("cli.main.SessionManager", return_value=session_manager), \
+        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
             patch("cli.main.PromptSession", FakePromptSession), \
             patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
             patch("cli.main.console", fake_console):

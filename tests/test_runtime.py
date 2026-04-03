@@ -8,6 +8,7 @@ from app.context_builder import ContextBuilder
 from app.hooks import ON_AFTER_TOOL
 from app.runtime import RuntimeEnvironment, build_configured_agent
 from app.session import SessionManager
+from app.workspace import WorkspaceContext
 
 
 def _make_loop_llm():
@@ -22,23 +23,23 @@ def _make_loop_llm():
     return llm
 
 
-class TestRuntimeMemoryModules:
+class TestRuntimeMemoryCapabilities:
     @pytest.mark.asyncio
-    async def test_build_configured_agent_without_memory_module_disables_memory(
+    async def test_build_configured_agent_without_memory_capability_disables_memory(
         self, mock_smol_rag, sessions_dir, temp_dir
     ):
         llm = _make_loop_llm()
         env = RuntimeEnvironment(
             smol_rag=mock_smol_rag,
             session_manager=SessionManager(sessions_dir),
-            workspace=temp_dir,
+            workspace=WorkspaceContext.from_root(temp_dir),
         )
         config = AgentConfig(
             name="reader",
             model="gpt-test",
             persona="You are Reader.",
             tools=["read_file"],
-            modules=["transport.direct"],
+            capabilities=["filesystem"],
             memory_window=20,
         )
 
@@ -58,21 +59,21 @@ class TestRuntimeMemoryModules:
         mock_smol_rag.ingest_text.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_build_configured_agent_with_memory_module_enables_memory(
+    async def test_build_configured_agent_with_memory_capability_enables_memory(
         self, mock_smol_rag, sessions_dir, temp_dir
     ):
         llm = _make_loop_llm()
         env = RuntimeEnvironment(
             smol_rag=mock_smol_rag,
             session_manager=SessionManager(sessions_dir),
-            workspace=temp_dir,
+            workspace=WorkspaceContext.from_root(temp_dir),
         )
         config = AgentConfig(
             name="researcher",
             model="gpt-test",
             persona="You are Researcher.",
             tools=["memory_search"],
-            modules=["transport.direct", "memory"],
+            capabilities=["filesystem", "memory"],
             memory_window=20,
         )
 
@@ -93,3 +94,57 @@ class TestRuntimeMemoryModules:
         await loop.process("new input")
 
         mock_smol_rag.ingest_text.assert_called_once()
+
+
+class TestRuntimeProviders:
+    @pytest.mark.asyncio
+    async def test_build_configured_agent_uses_mcp_wrappers_for_gateway_transport(
+        self, mock_smol_rag, sessions_dir, temp_dir
+    ):
+        llm = _make_loop_llm()
+        env = RuntimeEnvironment(
+            smol_rag=mock_smol_rag,
+            session_manager=SessionManager(sessions_dir),
+            workspace=WorkspaceContext.from_root(temp_dir),
+            transport="mcp",
+            token_issuer_url="http://issuer",
+            gateway_url="http://gateway",
+        )
+        config = AgentConfig(
+            name="reader",
+            model="gpt-test",
+            persona="You are Reader.",
+            tools=["read_file", "web_fetch"],
+            capabilities=["filesystem", "web"],
+        )
+
+        with patch("app.agent_factory.create_llm", return_value=llm):
+            loop = build_configured_agent(config, env)
+
+        assert loop.tool_registry._tools["read_file"].__class__.__name__ == "McpFileReadTool"
+        assert loop.tool_registry._tools["web_fetch"].__class__.__name__ == "McpHttpFetchTool"
+
+    def test_build_configured_agent_rejects_unsatisfied_tools_for_transport(
+        self, mock_smol_rag, sessions_dir, temp_dir
+    ):
+        env = RuntimeEnvironment(
+            smol_rag=mock_smol_rag,
+            session_manager=SessionManager(sessions_dir),
+            workspace=WorkspaceContext.from_root(temp_dir),
+            transport="mcp",
+            token_issuer_url="http://issuer",
+            gateway_url="http://gateway",
+        )
+        config = AgentConfig(
+            name="reader",
+            model="gpt-test",
+            persona="You are Reader.",
+            tools=["list_dir"],
+            capabilities=["filesystem"],
+        )
+
+        with patch("app.agent_factory.create_llm", return_value=_make_loop_llm()):
+            with pytest.raises(ValueError) as exc_info:
+                build_configured_agent(config, env)
+
+        assert "unavailable for transport 'mcp'" in str(exc_info.value)

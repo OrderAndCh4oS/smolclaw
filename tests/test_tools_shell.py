@@ -75,14 +75,13 @@ class TestExecTool:
 
 
 class TestExecToolFactory:
-    def test_build_tool_registry_scopes_exec_to_workspace(self, temp_dir):
-        registry = build_tool_registry(
-            smol_rag=None,
-            memory_docs_dir=temp_dir,
-            workspace=temp_dir,
-            mode="direct",
-        )
+    def test_build_tool_registry_rejects_direct_shell_capability(self, temp_dir):
+        with pytest.raises(ValueError) as exc_info:
+            build_tool_registry(
+                smol_rag=None,
+                workspace=None,
+                transport="direct",
+                capability_names=["shell"],
+            )
 
-        exec_tool = registry._tools["exec"]
-        assert isinstance(exec_tool, ExecTool)
-        assert exec_tool.allowed_dir == os.path.realpath(temp_dir)
+        assert "does not support capabilities" in str(exc_info.value)

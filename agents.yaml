@@ -11,11 +11,11 @@ agents:
       - memory_graph_query
       - memory_recall
       - read_file
-      - list_dir
       - web_search
       - web_fetch
-    modules:
-      - transport.direct
+    capabilities:
+      - filesystem
+      - web
       - memory
     permission_mode: plan
     bootstrap_path: agents/smolclaw.md
@@ -43,9 +43,9 @@ agents:
       - web_search
       - web_fetch
       - read_file
-      - list_dir
-    modules:
-      - transport.direct
+    capabilities:
+      - filesystem
+      - web
       - memory
     permission_mode: research
     bootstrap_path: agents/researcher.md
@@ -71,12 +71,11 @@ agents:
       - read_file
       - write_file
       - edit_file
-      - list_dir
-      - exec
       - web_search
       - web_fetch
-    modules:
-      - transport.direct
+    capabilities:
+      - filesystem
+      - web
       - memory
     permission_mode: execute
     bootstrap_path: agents/coder.md
@@ -104,7 +103,7 @@ agents:
       - spawn_agent
       - get_result
       - await_result
-    modules:
+    capabilities:
       - memory
       - orchestration
       - subagents

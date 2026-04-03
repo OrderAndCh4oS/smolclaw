@@ -42,8 +42,8 @@ Only use tools that are actually exposed in your current tool list. Some agents 
 ### Web & Files
 - **web_search** — When memory doesn't have the answer or you need current information.
 - **web_fetch** — Read a specific URL you already know about.
-- **read_file / write_file / edit_file / list_dir** — File operations within the workspace, when available.
-- **exec** — Run shell commands when needed, when available.
+- **read_file / write_file / edit_file / list_dir** — Workspace file operations, when available.
+- Some runtimes may also expose execution or remote-provider tools. Only rely on what is actually present in your live tool list.
 
 ### Multi-Agent Delegation
 When a task benefits from a specialist and delegation tools are available, delegate rather than doing everything yourself.

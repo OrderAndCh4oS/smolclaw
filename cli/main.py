@@ -17,15 +17,17 @@ from prompt_toolkit.history import FileHistory
 
 from app.agent_loop import AgentLoop
 from app.definitions import (
-    AGENT_MODEL, WORKSPACE_DIR, build_workspace_paths, ensure_workspace_dirs,
+    AGENT_MODEL, WORKSPACE_DIR,
 )
 from app.logger import clear_logs
+from app.runtime_builder import build_runtime_services
 from app.session_export_hook import SessionExportHook
-from app.session import SessionManager
 from app.runtime import RuntimeEnvironment, build_configured_agent, build_master_registry
-from app.smol_rag import SmolRag, create_smol_rag
+from app.session import SessionManager
+from app.smol_rag import SmolRag
 from app.tools.memory_tools import MemoryRecallTool, MemoryStoreTool
 from app.utilities import ensure_dir
+from app.workspace import WorkspaceContext
 
 
 def _get_param_metavar(param, ctx):
@@ -162,32 +164,55 @@ def _print_usage_summary(console, session_usage):
             )
 
 
-def _workspace_paths(workspace_root: str):
-    return ensure_workspace_dirs(build_workspace_paths(workspace_root))
+def _workspace_context(workspace_root: str) -> WorkspaceContext:
+    return WorkspaceContext.from_root(workspace_root).ensure_dirs()
 
 
-def _resolve_workspace_local_path(workspace_root: str, path: str) -> str:
+def _resolve_user_path(workspace: WorkspaceContext, path: str) -> str:
     expanded = os.path.expanduser(path)
     if os.path.isabs(expanded):
-        return expanded
-    return os.path.abspath(os.path.join(workspace_root, expanded))
+        return os.path.realpath(expanded)
+    return workspace.resolve_path(expanded)
 
 
-def _build_cli_tool_registry(smol_rag: SmolRag, workspace: str, llm=None,
-                              agent_configs=None, session_manager=None, enable_subagents: bool = False):
-    paths = build_workspace_paths(workspace)
-    env = RuntimeEnvironment(
-        smol_rag=smol_rag,
-        session_manager=session_manager,
-        memory_docs_dir=paths.memory_docs_dir,
-        workspace=paths.root_dir,
+def _resolve_workspace_path(workspace: WorkspaceContext, path: str) -> str:
+    resolved, error = workspace.resolve_contained_path(path)
+    if error:
+        raise typer.BadParameter(error)
+    return resolved
+
+
+def _build_cli_runtime(
+    workspace: str | WorkspaceContext,
+    *,
+    agent_configs=None,
+    enable_subagents: bool = False,
+    llm=None,
+    smol_rag=None,
+    session_manager=None,
+):
+    return build_runtime_services(
+        workspace,
         transport="direct",
         agent_configs=agent_configs,
         enable_subagents=enable_subagents,
         llm=llm,
-        llm_db_path=paths.sqlite_db_path,
+        smol_rag=smol_rag,
+        session_manager=session_manager,
     )
-    return build_master_registry(env)
+
+
+def _build_cli_tool_registry(smol_rag: SmolRag, workspace: str, llm=None,
+                              agent_configs=None, session_manager=None, enable_subagents: bool = False):
+    runtime = _build_cli_runtime(
+        workspace,
+        agent_configs=agent_configs,
+        enable_subagents=enable_subagents,
+        llm=llm,
+        smol_rag=smol_rag,
+        session_manager=session_manager,
+    )
+    return build_master_registry(runtime.env)
 
 
 def _build_multiagent(
@@ -207,17 +232,13 @@ def _build_multiagent(
         available = ", ".join(sorted(configs.keys()))
         raise typer.BadParameter(f"Unknown agent '{agent_name}'. Available: {available}")
 
-    paths = build_workspace_paths(workspace)
-    env = RuntimeEnvironment(
-        smol_rag=smol_rag,
-        session_manager=session_manager,
-        memory_docs_dir=paths.memory_docs_dir,
-        workspace=paths.root_dir,
-        transport="direct",
+    env = _build_cli_runtime(
+        workspace,
         agent_configs=configs,
         enable_subagents=True,
-        llm_db_path=paths.sqlite_db_path,
-    )
+        smol_rag=smol_rag,
+        session_manager=session_manager,
+    ).env
     return build_configured_agent(
         config=configs[agent_name],
         env=env,
@@ -243,17 +264,13 @@ def _build_default_chat_agent(
             f"Agents config '{agents_config_path}' must define a 'default' agent for chat."
         )
 
-    paths = build_workspace_paths(workspace)
-    env = RuntimeEnvironment(
-        smol_rag=smol_rag,
-        session_manager=session_manager,
-        memory_docs_dir=paths.memory_docs_dir,
-        workspace=paths.root_dir,
-        transport="direct",
+    env = _build_cli_runtime(
+        workspace,
         agent_configs=configs,
         enable_subagents=True,
-        llm_db_path=paths.sqlite_db_path,
-    )
+        smol_rag=smol_rag,
+        session_manager=session_manager,
+    ).env
     return build_configured_agent(
         config=configs["default"],
         env=env,
@@ -286,14 +303,11 @@ async def _chat_loop(
     auto_export: bool = True,
     show_actions: bool = True,
 ):
-    paths = _workspace_paths(workspace)
-    smol_rag = create_smol_rag(
-        db_path=paths.sqlite_db_path,
-        graph_path=paths.kg_db_path,
-        input_docs_dir=paths.research_dir,
-        log_dir=paths.log_dir,
-    )
-    session_manager = SessionManager(paths.sessions_dir)
+    runtime = _build_cli_runtime(workspace)
+    workspace_ctx = runtime.workspace
+    paths = workspace_ctx.paths
+    smol_rag = runtime.smol_rag
+    session_manager = runtime.session_manager
     memory_dir = ensure_dir(paths.memory_docs_dir)
 
     from app.hooks import ON_SESSION_END
@@ -457,15 +471,12 @@ def ingest(
 
 async def _ingest(path: str, workspace: str):
     from app.utilities import get_docs, make_hash
-    paths = _workspace_paths(workspace)
-    smol_rag = create_smol_rag(
-        db_path=paths.sqlite_db_path,
-        graph_path=paths.kg_db_path,
-        input_docs_dir=paths.research_dir,
-        log_dir=paths.log_dir,
-    )
+    runtime = _build_cli_runtime(workspace)
+    workspace_ctx = runtime.workspace
+    paths = workspace_ctx.paths
+    smol_rag = runtime.smol_rag
     try:
-        path = _resolve_workspace_local_path(paths.root_dir, path)
+        path = _resolve_user_path(workspace_ctx, path)
         if os.path.isfile(path):
             files = [path]
         elif os.path.isdir(path):
@@ -511,14 +522,11 @@ def watch(
 
 async def _watch(path: Optional[str], interval: float, workspace: str):
     from app.watcher import MemoryFileWatcher
-    paths = _workspace_paths(workspace)
-    smol_rag = create_smol_rag(
-        db_path=paths.sqlite_db_path,
-        graph_path=paths.kg_db_path,
-        input_docs_dir=paths.research_dir,
-        log_dir=paths.log_dir,
-    )
-    watch_path = paths.research_dir if path is None else _resolve_workspace_local_path(paths.root_dir, path)
+    runtime = _build_cli_runtime(workspace)
+    workspace_ctx = runtime.workspace
+    paths = workspace_ctx.paths
+    smol_rag = runtime.smol_rag
+    watch_path = paths.research_dir if path is None else _resolve_workspace_path(workspace_ctx, path)
     watcher = MemoryFileWatcher(watch_path, smol_rag, poll_interval=interval)
     console.print(f"[bold green]Watching[/bold green] {watch_path} (poll every {interval}s)")
     try:
@@ -563,13 +571,8 @@ def recall(
 
 
 async def _recall(query: str, mode: str, days: float, workspace: str):
-    paths = _workspace_paths(workspace)
-    smol_rag = create_smol_rag(
-        db_path=paths.sqlite_db_path,
-        graph_path=paths.kg_db_path,
-        input_docs_dir=paths.research_dir,
-        log_dir=paths.log_dir,
-    )
+    runtime = _build_cli_runtime(workspace)
+    smol_rag = runtime.smol_rag
     try:
         tool = MemoryRecallTool(smol_rag)
         result = await tool.execute(query=query, mode=mode, days=days)
@@ -590,15 +593,12 @@ def index_sessions(
 
 async def _index_sessions(sessions_dir: Optional[str], memory_dir: Optional[str], workspace: str):
     from app.session_indexer import index_all_sessions
-    paths = _workspace_paths(workspace)
-    resolved_sessions_dir = paths.sessions_dir if sessions_dir is None else _resolve_workspace_local_path(paths.root_dir, sessions_dir)
-    resolved_memory_dir = paths.memory_docs_dir if memory_dir is None else _resolve_workspace_local_path(paths.root_dir, memory_dir)
-    smol_rag = create_smol_rag(
-        db_path=paths.sqlite_db_path,
-        graph_path=paths.kg_db_path,
-        input_docs_dir=paths.research_dir,
-        log_dir=paths.log_dir,
-    )
+    runtime = _build_cli_runtime(workspace)
+    workspace_ctx = runtime.workspace
+    paths = workspace_ctx.paths
+    resolved_sessions_dir = paths.sessions_dir if sessions_dir is None else _resolve_workspace_path(workspace_ctx, sessions_dir)
+    resolved_memory_dir = paths.memory_docs_dir if memory_dir is None else _resolve_workspace_path(workspace_ctx, memory_dir)
+    smol_rag = runtime.smol_rag
     try:
         results = await index_all_sessions(resolved_sessions_dir, smol_rag, memory_dir=resolved_memory_dir)
         for key, source_id in results.items():
@@ -624,9 +624,9 @@ def reset(
 
 
 async def _reset(workspace: str):
-    from app.reset import reset_all_stores
-    paths = build_workspace_paths(workspace)
-    deleted = await reset_all_stores(paths.data_dir)
+    from app.reset import reset_workspace
+
+    deleted = await reset_workspace(_workspace_context(workspace))
     if deleted:
         for line in deleted:
             console.print(f"  [red]{line}[/red]")
@@ -642,8 +642,9 @@ def clear_logs_command(
     workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root (isolated store, memory, research)"),
 ):
     """Delete log files without touching memories, sessions, or indexes."""
-    paths = build_workspace_paths(workspace)
-    resolved_logs_dir = paths.log_dir if logs_dir is None else _resolve_workspace_local_path(paths.root_dir, logs_dir)
+    workspace_ctx = _workspace_context(workspace)
+    paths = workspace_ctx.paths
+    resolved_logs_dir = paths.log_dir if logs_dir is None else _resolve_workspace_path(workspace_ctx, logs_dir)
     if not force:
         confirm = typer.confirm(
             f"This will delete log files under '{resolved_logs_dir}'. Continue?"

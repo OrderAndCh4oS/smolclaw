@@ -96,6 +96,7 @@ class TestGenerateJournal:
         factory = ChildAgentFactory(
             master_registry=MagicMock(),
             smol_rag=MagicMock(),
+            workspace=None,
             session_manager=MagicMock(),
             parent_session_key="parent:root",
         )

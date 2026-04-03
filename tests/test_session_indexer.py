@@ -24,6 +24,7 @@ def _make_child_session_key(parent_session_key: str = "parent:root") -> str:
     factory = ChildAgentFactory(
         master_registry=MagicMock(),
         smol_rag=MagicMock(),
+        workspace=None,
         session_manager=MagicMock(),
         parent_session_key=parent_session_key,
     )

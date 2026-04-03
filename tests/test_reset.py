@@ -1,85 +1,82 @@
-"""Tests for app.reset — full store wipe."""
+"""Tests for app.reset workspace resets."""
+
 import os
 from pathlib import Path
 
 import pytest
 
-from app.reset import reset_all_stores
+from app.reset import reset_all_stores, reset_workspace
+from app.workspace import WorkspaceContext
 
 
 @pytest.fixture
-def data_dir(temp_dir):
-    """Populate a fake data_dir with the files reset should delete."""
-    d = Path(temp_dir)
+def workspace(temp_dir):
+    workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+    paths = workspace.paths
 
-    # SQLite DB + journal files
-    (d / "smolclaw.db").write_text("fake-db")
-    (d / "smolclaw.db-wal").write_text("wal")
-    (d / "smolclaw.db-shm").write_text("shm")
+    Path(paths.sqlite_db_path).write_text("fake-db")
+    Path(paths.sqlite_db_path + "-wal").write_text("wal")
+    Path(paths.sqlite_db_path + "-shm").write_text("shm")
+    Path(paths.kg_db_path).write_text("<graphml/>")
 
-    # Knowledge graph
-    (d / "kg_db.graphml").write_text("<graphml/>")
+    for subdir in (
+        paths.sessions_dir,
+        paths.memory_docs_dir,
+        paths.log_dir,
+        paths.cache_dir,
+    ):
+        directory = Path(subdir)
+        (directory / "file1.txt").write_text("data")
+        nested = directory / "nested"
+        nested.mkdir(exist_ok=True)
+        (nested / "file2.txt").write_text("data")
 
-    # Subdirectories with files
-    for sub in ("sessions", "memory", "logs", "cache"):
-        (d / sub).mkdir()
-        (d / sub / "file1.txt").write_text("data")
-        (d / sub / "file2.txt").write_text("data")
-
-    # research and legacy input_docs — should be preserved
-    (d / "research").mkdir()
-    (d / "research" / "keep_me.md").write_text("important")
-    (d / "input_docs").mkdir()
-    (d / "input_docs" / "keep_me.md").write_text("important")
-
-    return str(d)
+    Path(paths.research_dir, "keep_me.md").write_text("important")
+    return workspace
 
 
 @pytest.mark.asyncio
-async def test_reset_deletes_all_stores(data_dir):
-    deleted = await reset_all_stores(data_dir)
+async def test_reset_workspace_deletes_mutable_state(workspace):
+    deleted = await reset_workspace(workspace)
+    paths = workspace.paths
 
-    d = Path(data_dir)
-    # DB files gone
-    assert not (d / "smolclaw.db").exists()
-    assert not (d / "smolclaw.db-wal").exists()
-    assert not (d / "smolclaw.db-shm").exists()
+    assert not Path(paths.sqlite_db_path).exists()
+    assert not Path(paths.sqlite_db_path + "-wal").exists()
+    assert not Path(paths.sqlite_db_path + "-shm").exists()
+    assert not Path(paths.kg_db_path).exists()
 
-    # Graph gone
-    assert not (d / "kg_db.graphml").exists()
+    for subdir in (
+        paths.sessions_dir,
+        paths.memory_docs_dir,
+        paths.log_dir,
+        paths.cache_dir,
+    ):
+        assert list(Path(subdir).iterdir()) == []
 
-    # Subdirectory contents cleared
-    for sub in ("sessions", "memory", "logs", "cache"):
-        assert list((d / sub).iterdir()) == []
-
-    # Should have reported actions
-    assert len(deleted) > 0
-
-
-@pytest.mark.asyncio
-async def test_reset_preserves_research_docs(data_dir):
-    await reset_all_stores(data_dir)
-
-    d = Path(data_dir)
-    assert (d / "research" / "keep_me.md").exists()
-    assert (d / "research" / "keep_me.md").read_text() == "important"
-    assert (d / "input_docs" / "keep_me.md").exists()
-    assert (d / "input_docs" / "keep_me.md").read_text() == "important"
+    assert deleted
 
 
 @pytest.mark.asyncio
-async def test_reset_on_empty_dir(temp_dir):
-    """Reset on a clean directory does nothing and doesn't error."""
-    deleted = await reset_all_stores(temp_dir)
-    assert deleted == []
+async def test_reset_workspace_preserves_research(workspace):
+    await reset_workspace(workspace)
+    keep = Path(workspace.paths.research_dir, "keep_me.md")
+    assert keep.exists()
+    assert keep.read_text() == "important"
 
 
 @pytest.mark.asyncio
-async def test_stores_recreate_after_reset(data_dir):
-    """After reset, SQLite stores can be created fresh."""
-    await reset_all_stores(data_dir)
+async def test_reset_all_stores_legacy_wrapper_uses_workspace_root(workspace):
+    deleted = await reset_all_stores(workspace.paths.data_dir)
+    assert deleted
+    assert list(Path(workspace.paths.memory_docs_dir).iterdir()) == []
+    assert Path(workspace.paths.research_dir, "keep_me.md").exists()
 
-    db_path = os.path.join(data_dir, "smolclaw.db")
+
+@pytest.mark.asyncio
+async def test_stores_recreate_after_reset(workspace):
+    await reset_workspace(workspace)
+
+    db_path = os.path.join(workspace.paths.data_dir, "smolclaw.db")
     from app.sqlite_store import SqliteKvStore
 
     store = SqliteKvStore(db_path, "test_table")

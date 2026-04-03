@@ -19,6 +19,7 @@ class ToolRuntimeContext:
     hook_runner: Any = None
     session_manager: Any = None
     smol_rag: Any = None
+    workspace: Any = None
     session_key: Optional[str] = None
     child_agent_factory: Any = None
     loop_registrar: Any = None

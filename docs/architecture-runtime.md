@@ -2,17 +2,18 @@
 
 This document describes the current runtime architecture of SmolClaw as implemented in the repo today.
 
-It is intentionally narrower than the product draft in `smolclaw-spec.md`. That draft mixes current behavior with planned capabilities. This page is the maintained source of truth for how the CLI, gateway, agent runtime, tool registry, memory layer, and child-agent orchestration currently work together.
+It is intentionally narrower than the product draft in `smolclaw-spec.md`. That draft mixes current behavior with planned capabilities. This page is the maintained source of truth for how the CLI, gateway, workspace model, agent runtime, tool registry, memory layer, and child-agent orchestration currently work together.
 
 ## At A Glance
 
 SmolClaw is a cohesive runtime with controlled dynamic behavior.
 
-- CLI and gateway both assemble agents through the same runtime core.
-- `modules` define the supply boundary for an agent.
+- CLI and gateway both assemble agents through the same runtime builder.
+- `capabilities` define the supply boundary for an agent.
 - `tools` define the initial visible tool set for that agent.
-- Deferred tools stay discoverable only inside enabled modules.
-- Runtime-bound tools receive loop-specific context, hooks, session state, and child-agent factories.
+- Transport is chosen by the runtime, not by agent config.
+- Deferred tools stay discoverable only inside enabled capabilities.
+- Runtime-bound tools receive loop-specific context, hooks, session state, workspace ownership, and child-agent factories.
 - Orchestration and spawned subagents build child loops through the same agent factory path rather than through special-case code.
 
 This is dynamic composition, not self-modifying runtime behavior. The system adapts its available capabilities per agent config and transport mode, but it does so through explicit wiring and projection rules.
@@ -21,11 +22,16 @@ This is dynamic composition, not self-modifying runtime behavior. The system ada
 
 ```mermaid
 flowchart TD
-    CLI["CLI\ncli/main.py"] --> ENV["RuntimeEnvironment"]
-    GW["Gateway\napp/gateway.py"] --> ENV
+    CLI["CLI\ncli/main.py"] --> RTS["build_runtime_services()"]
+    GW["Gateway\napp/gateway.py"] --> RTS
+
+    RTS --> WS["WorkspaceContext"]
+    RTS --> ENV["RuntimeEnvironment"]
+    RTS --> RAG["SmolRag"]
+    RTS --> SESS["SessionManager"]
 
     ENV --> CFG["build_configured_agent()"]
-    CFG --> MODS["resolve_module_names()"]
+    CFG --> CAPS["resolve_capability_names()"]
     CFG --> REG["build_master_registry()"]
     CFG --> CTX["build_context_builder_factory()"]
     CFG --> HOOKS["resolve_hook_runner_configurers()"]
@@ -35,45 +41,44 @@ flowchart TD
 
     CFG --> LOOP["build_agent_loop()"]
     MASTER --> PROJ["project_for_agent()"]
-    MODS --> PROJ
+    CAPS --> PROJ
     LOOP --> AGENT["AgentLoop"]
     CTX --> AGENT
     PROJ --> AGENT
     HOOKS --> AGENT
 
     AGENT --> LLM["LLM"]
-    AGENT --> SESS["SessionManager / Session"]
-    AGENT --> CB["ContextBuilder or ContextAssembler"]
+    AGENT --> SESS
     AGENT --> TOOLS["Projected ToolRegistry"]
-
-    TOOLS --> DIRECT["Direct tools\nfilesystem / shell / web / memory"]
-    TOOLS --> MCP["MCP wrappers\ntransport.mcp"]
-    DIRECT --> RAG["SmolRag"]
+    TOOLS --> DIRECT["Direct providers\nfilesystem / web / memory / orchestration"]
+    TOOLS --> MCP["MCP providers\nfilesystem / web / exec"]
 ```
 
 ### What This Means
 
-- The CLI and gateway do not own separate agent implementations. They differ mainly in transport and lifecycle wiring, but both end up at `build_configured_agent()`.
+- The CLI and gateway do not own separate agent implementations. They differ mainly in transport and lifecycle wiring, but both end up at the same runtime builder and `build_configured_agent()`.
+- `WorkspaceContext` is the ownership boundary for runtime state. It owns the workspace root plus the canonical `store/`, `memory/`, and `research/` layout.
 - `RuntimeEnvironment` carries the shared dependencies and mode switches: transport, workspace, session manager, agent configs, subagent support, and memory backend.
-- `build_configured_agent()` resolves the agent's module list, builds a master registry for those modules, chooses the right context builder, installs hook configurers, and then hands everything to `build_agent_loop()`.
+- `build_configured_agent()` resolves an agent's capability list, builds a master registry for those capabilities, chooses the right context builder, installs hook configurers, validates that requested tools are satisfiable for the current transport, and then hands everything to `build_agent_loop()`.
 - `build_agent_loop()` creates the actual loop instance, binds runtime context into tools, projects the registry to the agent's allowed tool surface, and applies middleware and permission mode restrictions.
 
 ## 2. Dynamic Tool Surface
 
 ```mermaid
 flowchart TD
-    AC["AgentConfig"] --> MOD["modules"]
+    AC["AgentConfig"] --> CAP["capabilities"]
     AC --> TOOLS["tools"]
 
-    MOD --> BTR["build_tool_registry()"]
-    BTR --> MR["Master registry\nall tools from enabled modules"]
+    CAP --> BTR["build_tool_registry()"]
+    ENV["RuntimeEnvironment.transport"] --> BTR
+    BTR --> MR["Master registry\nall tools from enabled capabilities"]
 
     TOOLS --> PFA["ToolRegistry.project_for_agent()"]
     MR --> PFA
-    MOD --> PFA
+    CAP --> PFA
 
     PFA --> VISIBLE["Immediate visible tools"]
-    PFA --> HIDDEN["Hidden deferred tools\nfrom enabled modules only"]
+    PFA --> HIDDEN["Hidden deferred tools\nfrom enabled capabilities only"]
 
     HIDDEN --> SEARCH["tool_search"]
     SEARCH --> EXPOSE["registry.expose_tool()"]
@@ -83,23 +88,59 @@ flowchart TD
     BOUND --> HOOK["hook_runner"]
     BOUND --> STATE["shared_state / owned_resources"]
     BOUND --> CHILD["child_agent_factory"]
+    BOUND --> WS["workspace"]
 ```
 
 ### Key Rules
 
-- `modules` decide what classes of tools may exist for an agent at all.
+- `capabilities` decide what classes of tools may exist for an agent at all.
 - `tools` decide what the agent sees immediately in its starting tool definitions.
-- Deferred tools are retained for runtime discovery only if they came from enabled modules.
+- Deferred tools are retained for runtime discovery only if they came from enabled capabilities.
 - `tool_search` is exposed automatically when an agent has hidden deferred tools to discover.
-- Binding happens after projection, so the tool instances in a live loop carry loop-specific context such as hooks, session data, shared runtime state, and child-agent factory access.
+- Binding happens after projection, so the tool instances in a live loop carry loop-specific context such as hooks, session data, workspace ownership, shared runtime state, and child-agent factory access.
 
 ### Important Dynamic Properties
 
-- Transport can be swapped at runtime: `transport.direct` gives local filesystem/shell/web tools, while `transport.mcp` swaps those for MCP-backed wrappers.
-- Memory can be disabled per agent by omitting the `memory` module, which also removes memory hooks and the memory-aware context assembler.
-- Orchestration and subagent modules are enabled from the runtime environment and then constrained again per agent config.
+- Transport can be swapped at runtime: direct runtimes bind local workspace-aware filesystem and web providers, while gateway runtimes bind MCP wrappers for those same capabilities.
+- Agent configs no longer select providers directly. A gateway runtime cannot be forced back onto local direct tools by config.
+- Memory can be disabled per agent by omitting the `memory` capability, which also removes memory hooks and the memory-aware context assembler.
+- Orchestration and subagent capabilities are enabled from the runtime environment and then constrained again per agent config.
+- Direct local shell execution is intentionally disabled until a real sandbox backend exists. If `shell` is requested on direct transport, runtime construction fails fast.
 
-## 3. Memory And Hook Flow
+## 3. Workspace Ownership And Reset
+
+```mermaid
+flowchart TD
+    ROOT["Workspace root"] --> STORE["store/"]
+    ROOT --> MEM["memory/"]
+    ROOT --> RESEARCH["research/"]
+
+    STORE --> DB["smolclaw.db"]
+    STORE --> KG["kg_db.graphml"]
+    STORE --> SESS["sessions/"]
+    STORE --> LOGS["logs/"]
+    STORE --> CACHE["cache/"]
+
+    WS["WorkspaceContext"] --> RESOLVE["resolve_contained_path()"]
+    WS --> RESET["reset_workspace()"]
+
+    RESET --> DB
+    RESET --> KG
+    RESET --> SESS
+    RESET --> MEM
+    RESET --> LOGS
+    RESET --> CACHE
+    RESET -. preserves .-> RESEARCH
+```
+
+### Current Behavior
+
+- Relative filesystem tool paths resolve against the workspace root by default.
+- Absolute filesystem tool paths are allowed only when they remain inside the workspace root.
+- `reset_workspace()` is workspace-owned rather than `data_dir`-owned, so the runtime clears mutable state consistently across the new layout.
+- `research/` is preserved across reset because it is treated as source material rather than derived mutable state.
+
+## 4. Memory And Hook Flow
 
 ```mermaid
 sequenceDiagram
@@ -122,10 +163,10 @@ sequenceDiagram
 
 - Memory hooks are installed only when the agent has memory enabled.
 - Memory search and memory recall both surface accessed excerpt ids.
-- The after-tool promotion hook promotes excerpts surfaced by those memory tools so recall/search affects future ranking.
-- Direct callers outside an agent loop can still trigger promotion where the tool itself preserves that behavior, but inside a normal agent loop the hook path is the main mechanism.
+- The after-tool promotion hook promotes excerpts surfaced by those memory tools so recall and search affect future ranking.
+- Direct callers outside an agent loop can still trigger promotion where the tool preserves that behavior, but inside a normal agent loop the hook path is the main mechanism.
 
-## 4. Delegation And Child Agents
+## 5. Delegation And Child Agents
 
 ```mermaid
 flowchart TD
@@ -134,7 +175,7 @@ flowchart TD
 
     CAF --> BUILD["build(config, purpose)"]
     BUILD --> CHILDKEY["Derived child session key"]
-    BUILD --> CHILDREG["Registry factory / module resolution"]
+    BUILD --> CHILDREG["Registry factory / capability resolution"]
     BUILD --> CHILDHOOKS["Per-child hook configurers"]
     BUILD --> CHILDRAG["Per-child memory resolver"]
     BUILD --> CHILDLOOP["Child AgentLoop"]
@@ -150,28 +191,31 @@ flowchart TD
 
 ### What Is Shared vs Isolated
 
-- Child agents reuse the same factory path as top-level agents, so module resolution, registry projection, hooks, and memory policy stay consistent.
+- Child agents reuse the same factory path as top-level agents, so capability resolution, provider selection, registry projection, hooks, and memory policy stay consistent.
 - Session keys are derived from the parent session plus agent name and purpose, so child runs are isolated but traceable.
-- Child agents can receive different modules and memory access than their parent if their own config says so.
+- Child agents can receive different capabilities and memory access than their parent if their own config says so.
 - `SubagentManager` manages spawned tasks and results, while orchestration helpers create short-lived child loops for sequential, fanout, and route workflows.
 
 ## Current Invariants
 
-- CLI chat and gateway chat both rely on the same runtime core.
-- Module-aware registry projection prevents agents from discovering deferred tools from disabled modules.
+- CLI chat and gateway chat both rely on the same runtime builder.
+- Capability-aware registry projection prevents agents from discovering deferred tools from disabled capabilities.
+- Transport is selected by runtime and cannot be overridden by agent config.
 - Memory hooks are installed only when memory is enabled for that agent.
 - `tool_search` only exposes deferred tools that already exist within the projected registry.
 - Child agents are created through `ChildAgentFactory`, not ad hoc loop construction in tool code.
+- Direct local shell is not part of the shipped direct runtime path until a real sandbox exists.
 
 ## Reading Guide
 
 If you are extending the runtime, the main architectural seams are:
 
-1. `RuntimeEnvironment` for shared dependencies and transport/runtime toggles.
-2. `AgentConfig.modules` and `AgentConfig.tools` for capability boundaries.
-3. `build_tool_registry()` for adding reusable runtime modules.
-4. `ToolRegistry.project_for_agent()` for controlling visibility vs discoverability.
-5. `ChildAgentFactory` for preserving consistent behavior across delegated agent execution.
+1. `WorkspaceContext` for workspace ownership, path resolution, and reset boundaries.
+2. `RuntimeEnvironment` for shared dependencies and transport/runtime toggles.
+3. `AgentConfig.capabilities` and `AgentConfig.tools` for capability boundaries.
+4. `build_tool_registry()` for adding transport-specific providers for a capability.
+5. `ToolRegistry.project_for_agent()` for controlling visibility vs discoverability.
+6. `ChildAgentFactory` for preserving consistent behavior across delegated agent execution.
 
 For historical context:
 
