@@ -34,7 +34,7 @@ def resolve_workspace_root(workspace_root: str | None = None) -> str:
 
 def build_workspace_paths(workspace_root: str | None = None) -> WorkspacePaths:
     root_dir = resolve_workspace_root(workspace_root)
-    data_dir = os.path.join(root_dir, "store")
+    data_dir = os.path.join(root_dir, "stores")
     sessions_dir = os.path.join(data_dir, "sessions")
     research_dir = os.path.join(root_dir, "research")
     return WorkspacePaths(

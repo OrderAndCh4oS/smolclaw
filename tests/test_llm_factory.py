@@ -72,7 +72,7 @@ class TestCreateLlm:
         mock_instance = MagicMock()
         MockOpenAi.side_effect = lambda **kwargs: mock_instance
 
-        result = create_llm(db_path="/tmp/workspace/store/smolclaw.db")
+        result = create_llm(db_path="/tmp/workspace/stores/smolclaw.db")
 
         assert result is mock_instance
         MockOpenAi.assert_called_once_with(
@@ -81,7 +81,7 @@ class TestCreateLlm:
             query_cache_kv=None,
             embedding_cache_kv=None,
             openai_api_key=None,
-            db_path="/tmp/workspace/store/smolclaw.db",
+            db_path="/tmp/workspace/stores/smolclaw.db",
         )
 
 

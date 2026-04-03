@@ -2,6 +2,9 @@ import asyncio
 import inspect
 import logging
 import os
+import select
+import sys
+import threading
 from typing import Optional
 
 import typer
@@ -28,6 +31,13 @@ from app.smol_rag import SmolRag
 from app.tools.memory_tools import MemoryRecallTool, MemoryStoreTool
 from app.utilities import ensure_dir
 from app.workspace import WorkspaceContext
+
+try:
+    import termios
+    import tty
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    termios = None
+    tty = None
 
 
 def _get_param_metavar(param, ctx):
@@ -202,6 +212,155 @@ def _build_cli_runtime(
     )
 
 
+def _make_session_end_hook_registrar(paths, memory_dir: str, auto_export: bool):
+    from app.hooks import ON_SESSION_END
+    from app.usage import UsagePersistHook
+
+    def register_session_end_hooks(loop: AgentLoop):
+        loop.hook_runner.on(ON_SESSION_END, UsagePersistHook(paths.sessions_dir))
+        rag = getattr(loop, "smol_rag", None)
+        if not auto_export or rag is None:
+            return
+
+        from app.lifecycle_hooks import ContradictionExpiryHook
+
+        loop.hook_runner.on(
+            ON_SESSION_END,
+            SessionExportHook(
+                smol_rag=rag,
+                llm=loop.llm,
+                memory_dir=memory_dir,
+            ),
+        )
+        if getattr(rag, "contradiction_detector", None):
+            loop.hook_runner.on(
+                ON_SESSION_END,
+                ContradictionExpiryHook(rag.contradiction_detector),
+            )
+
+    return register_session_end_hooks
+
+
+class _ResearchLoopStopController:
+    def __init__(self):
+        self._loop = asyncio.get_running_loop()
+        self._event = asyncio.Event()
+        self._reason: str | None = None
+        self._lock = threading.Lock()
+
+    @property
+    def stop_requested(self) -> bool:
+        return self._event.is_set()
+
+    @property
+    def reason(self) -> str:
+        return self._reason or "Stop requested."
+
+    def request_stop(self, reason: str):
+        with self._lock:
+            if self._reason is None:
+                self._reason = reason
+        self._loop.call_soon_threadsafe(self._event.set)
+
+    async def wait(self, timeout: float | None = None) -> bool:
+        if timeout is None:
+            await self._event.wait()
+            return True
+        try:
+            await asyncio.wait_for(self._event.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+
+class _EscKeyWatcher:
+    def __init__(self, stop_controller: _ResearchLoopStopController):
+        self._stop_controller = stop_controller
+        self._shutdown = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    @property
+    def active(self) -> bool:
+        return self._thread is not None
+
+    def start(self):
+        if self._thread is not None:
+            return
+        if os.name != "posix" or termios is None or tty is None:
+            return
+        if not sys.stdin.isatty():
+            return
+
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):  # pragma: no cover - exercised indirectly in manual CLI use
+        fd = sys.stdin.fileno()
+        original = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd)
+            while not self._shutdown.is_set():
+                ready, _, _ = select.select([fd], [], [], 0.2)
+                if not ready:
+                    continue
+                ch = os.read(fd, 1)
+                if ch == b"\x1b":
+                    self._stop_controller.request_stop("Stopped: Escape pressed.")
+                    break
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, original)
+
+    def close(self):
+        self._shutdown.set()
+        if self._thread is not None:
+            self._thread.join(timeout=0.5)
+
+
+def _create_research_loop_stop_controller():
+    controller = _ResearchLoopStopController()
+    watcher = _EscKeyWatcher(controller)
+    watcher.start()
+    return controller, watcher
+
+
+def _build_research_loop_prompt(goal: str, iteration: int) -> str:
+    run_number = iteration + 1
+    if iteration == 0:
+        return "\n\n".join([
+            f"Ongoing research goal: {goal}",
+            f"Run number: {run_number}",
+            "Search memory first, then use the web only when needed.",
+            "Store verified findings and durable references to memory.",
+            "Return a concise research update with key findings, what changed, and open questions.",
+        ])
+
+    return "\n\n".join([
+        f"Ongoing research goal: {goal}",
+        f"Run number: {run_number}",
+        "Review prior session context and memory first.",
+        "Focus on new, changed, or still-unresolved information instead of repeating prior work.",
+        "Store verified findings and durable references to memory.",
+        "Return only the important delta, plus any open questions that still need research.",
+    ])
+
+
+def _format_research_loop_exit(
+    reason: str | None,
+    *,
+    runs_completed: int,
+    reached_run_limit: bool,
+) -> str:
+    if reason:
+        if runs_completed:
+            return f"{reason} Completed {runs_completed} cycle(s)."
+        return reason
+    if reached_run_limit:
+        return f"Completed requested run limit after {runs_completed} cycle(s)."
+    if runs_completed:
+        return f"Research loop finished after {runs_completed} cycle(s)."
+    return "Research loop finished."
+
+
 def _build_cli_tool_registry(smol_rag: SmolRag, workspace: str, llm=None,
                               agent_configs=None, session_manager=None, enable_subagents: bool = False):
     runtime = _build_cli_runtime(
@@ -309,31 +468,7 @@ async def _chat_loop(
     smol_rag = runtime.smol_rag
     session_manager = runtime.session_manager
     memory_dir = ensure_dir(paths.memory_docs_dir)
-
-    from app.hooks import ON_SESSION_END
-    from app.usage import UsagePersistHook
-
-    def register_session_end_hooks(loop: AgentLoop):
-        loop.hook_runner.on(ON_SESSION_END, UsagePersistHook(paths.sessions_dir))
-        rag = getattr(loop, "smol_rag", None)
-        if not auto_export or rag is None:
-            return
-
-        from app.lifecycle_hooks import ContradictionExpiryHook
-
-        loop.hook_runner.on(
-            ON_SESSION_END,
-            SessionExportHook(
-                smol_rag=rag,
-                llm=loop.llm,
-                memory_dir=memory_dir,
-            ),
-        )
-        if getattr(rag, "contradiction_detector", None):
-            loop.hook_runner.on(
-                ON_SESSION_END,
-                ContradictionExpiryHook(rag.contradiction_detector),
-            )
+    register_session_end_hooks = _make_session_end_hook_registrar(paths, memory_dir, auto_export)
 
     if agent_name:
         agent = _build_multiagent(
@@ -455,6 +590,179 @@ async def _chat_loop(
                 console.print("[dim]Session exported.[/dim]")
             else:
                 await agent.close()
+            _print_usage_summary(console, agent.session_usage)
+        finally:
+            await _close_async_resource(smol_rag)
+
+
+@app.command(name="research-loop")
+def research_loop(
+    goal: str = typer.Argument(..., help="Recurring research goal"),
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root (isolated store, memory, research)"),
+    agent: str = typer.Option("researcher", "--agent", "-a", help="Agent name from agents.yaml"),
+    agents_config: str = typer.Option(DEFAULT_AGENTS_CONFIG, "--agents-config", help="Path to agents YAML config"),
+    session_key: str = typer.Option("research-loop", "--session", "-s", help="Session key used across research runs"),
+    interval: float = typer.Option(300.0, "--interval", "-i", help="Seconds to wait between research runs"),
+    max_runs: Optional[int] = typer.Option(None, "--max-runs", help="Optional limit on research cycles"),
+    auto_export: bool = typer.Option(True, "--auto-export/--no-auto-export", help="Auto-export session on close"),
+    show_actions: bool = typer.Option(True, "--show-actions/--hide-actions", help="Show live tool activity while the agent works"),
+):
+    """Run recurring automated research until stopped."""
+    if interval <= 0:
+        raise typer.BadParameter("--interval must be greater than 0")
+    if max_runs is not None and max_runs <= 0:
+        raise typer.BadParameter("--max-runs must be greater than 0")
+    asyncio.run(
+        _research_loop(
+            goal=goal,
+            workspace=workspace,
+            agent_name=agent,
+            agents_config=agents_config,
+            session_key=session_key,
+            interval=interval,
+            max_runs=max_runs,
+            auto_export=auto_export,
+            show_actions=show_actions,
+        )
+    )
+
+
+async def _research_loop(
+    goal: str,
+    workspace: str,
+    agent_name: str,
+    agents_config: str = DEFAULT_AGENTS_CONFIG,
+    session_key: str = "research-loop",
+    interval: float = 300.0,
+    max_runs: Optional[int] = None,
+    auto_export: bool = True,
+    show_actions: bool = True,
+):
+    runtime = _build_cli_runtime(workspace)
+    workspace_ctx = runtime.workspace
+    paths = workspace_ctx.paths
+    smol_rag = runtime.smol_rag
+    session_manager = runtime.session_manager
+    memory_dir = ensure_dir(paths.memory_docs_dir)
+    register_session_end_hooks = _make_session_end_hook_registrar(paths, memory_dir, auto_export)
+
+    agent = _build_multiagent(
+        agent_name,
+        agents_config,
+        session_key,
+        smol_rag,
+        workspace,
+        session_manager,
+        auto_export,
+        child_loop_registrar=register_session_end_hooks,
+    )
+    register_session_end_hooks(agent)
+
+    stop_controller, esc_watcher = _create_research_loop_stop_controller()
+    esc_hint = " Press Esc or Ctrl+C to stop." if getattr(esc_watcher, "active", False) else " Press Ctrl+C to stop."
+    console.print(f"[bold green]{agent_name.capitalize()}[/bold green] research loop ready.{esc_hint}\n")
+    exit_reason: str | None = None
+
+    async def _run_cycle(prompt: str) -> str:
+        streamed = False
+
+        async def on_output(chunk: str):
+            nonlocal streamed
+            if not streamed:
+                console.print()
+                streamed = True
+            console.file.write(chunk)
+            console.file.flush()
+
+        async def on_event(event: dict):
+            if stop_controller.stop_requested:
+                agent.request_stop()
+            if not show_actions:
+                return
+            line = _format_action_event(event)
+            if line:
+                console.print(f"[dim]{line}[/dim]")
+
+        process_task = asyncio.create_task(
+            agent.process(
+                prompt,
+                on_output=on_output,
+                on_event=on_event,
+            )
+        )
+        stop_task = asyncio.create_task(stop_controller.wait())
+        announced_stop = False
+        try:
+            while not process_task.done():
+                done, _ = await asyncio.wait({process_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+                if process_task in done:
+                    break
+                if stop_task in done and not announced_stop:
+                    agent.request_stop()
+                    console.print("[dim]Stop requested. Finishing the current research cycle...[/dim]")
+                    announced_stop = True
+            response = await process_task
+        finally:
+            if not stop_task.done():
+                stop_task.cancel()
+                await asyncio.gather(stop_task, return_exceptions=True)
+
+        if streamed:
+            console.file.write("\n")
+            console.file.flush()
+            console.print()
+        else:
+            console.print()
+            console.print(Markdown(response))
+            console.print()
+        return response
+
+    runs_completed = 0
+    try:
+        while True:
+            if stop_controller.stop_requested:
+                exit_reason = stop_controller.reason
+                break
+            if max_runs is not None and runs_completed >= max_runs:
+                break
+
+            cycle_number = runs_completed + 1
+            console.print(f"[bold cyan]Research cycle {cycle_number}[/bold cyan]")
+            await _run_cycle(_build_research_loop_prompt(goal, runs_completed))
+            runs_completed += 1
+
+            if stop_controller.stop_requested:
+                break
+            if max_runs is not None and runs_completed >= max_runs:
+                break
+
+            console.print(
+                f"[dim]Sleeping {interval:.1f}s before the next cycle.{esc_hint}[/dim]"
+            )
+            should_stop = await stop_controller.wait(timeout=interval)
+            if should_stop:
+                exit_reason = stop_controller.reason
+                break
+    except KeyboardInterrupt:
+        stop_controller.request_stop("Stopped: Ctrl+C pressed.")
+        agent.request_stop()
+        exit_reason = stop_controller.reason
+        console.print("[dim]Stop requested. Closing research loop...[/dim]")
+    finally:
+        try:
+            esc_watcher.close()
+            if auto_export:
+                with console.status("[bold cyan]exporting session...[/bold cyan]"):
+                    await agent.close()
+                console.print("[dim]Session exported.[/dim]")
+            else:
+                await agent.close()
+            exit_summary = _format_research_loop_exit(
+                exit_reason or (stop_controller.reason if stop_controller.stop_requested else None),
+                runs_completed=runs_completed,
+                reached_run_limit=max_runs is not None and runs_completed >= max_runs,
+            )
+            console.print(f"[dim]{exit_summary}[/dim]")
             _print_usage_summary(console, agent.session_usage)
         finally:
             await _close_async_resource(smol_rag)
@@ -583,7 +891,7 @@ async def _recall(query: str, mode: str, days: float, workspace: str):
 
 @app.command(name="index-sessions")
 def index_sessions(
-    sessions_dir: Optional[str] = typer.Option(None, "--sessions-dir", help="Sessions directory (defaults to <workspace>/store/sessions)"),
+    sessions_dir: Optional[str] = typer.Option(None, "--sessions-dir", help="Sessions directory (defaults to <workspace>/stores/sessions)"),
     memory_dir: Optional[str] = typer.Option(None, "--memory-dir", help="Memory docs directory (defaults to <workspace>/memory)"),
     workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root (isolated store, memory, research)"),
 ):
@@ -638,7 +946,7 @@ async def _reset(workspace: str):
 @app.command(name="clear-logs")
 def clear_logs_command(
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
-    logs_dir: Optional[str] = typer.Option(None, "--logs-dir", help="Logs directory (defaults to <workspace>/store/logs)"),
+    logs_dir: Optional[str] = typer.Option(None, "--logs-dir", help="Logs directory (defaults to <workspace>/stores/logs)"),
     workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root (isolated store, memory, research)"),
 ):
     """Delete log files without touching memories, sessions, or indexes."""

@@ -57,7 +57,7 @@ flowchart TD
 ### What This Means
 
 - The CLI and gateway do not own separate agent implementations. They differ mainly in transport and lifecycle wiring, but both end up at the same runtime builder and `build_configured_agent()`.
-- `WorkspaceContext` is the ownership boundary for runtime state. It owns the workspace root plus the canonical `store/`, `memory/`, and `research/` layout.
+- `WorkspaceContext` is the ownership boundary for runtime state. It owns the workspace root plus the canonical `stores/`, `memory/`, and `research/` layout.
 - `RuntimeEnvironment` carries the shared dependencies and mode switches: transport, workspace, session manager, agent configs, subagent support, and memory backend.
 - `build_configured_agent()` resolves an agent's capability list, builds a master registry for those capabilities, chooses the right context builder, installs hook configurers, validates that requested tools are satisfiable for the current transport, and then hands everything to `build_agent_loop()`.
 - `build_agent_loop()` creates the actual loop instance, binds runtime context into tools, projects the registry to the agent's allowed tool surface, and applies middleware and permission mode restrictions.
@@ -111,7 +111,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    ROOT["Workspace root"] --> STORE["store/"]
+    ROOT["Workspace root"] --> STORE["stores/"]
     ROOT --> MEM["memory/"]
     ROOT --> RESEARCH["research/"]
 

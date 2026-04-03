@@ -2,19 +2,9 @@
 
 SmolClaw is a memory-first agent with persistent, associative memory. It pairs a knowledge graph and vector retrieval backend (SmolRAG) with a tool-using agent loop that can search the web, read and write workspace files, and maintain long-term memory across sessions. Both a CLI and a WebSocket gateway are available as interfaces.
 
-## How It Works
+For the maintained runtime architecture view, see [docs/architecture-runtime.md](docs/architecture-runtime.md). For the user-facing workspace model, see [docs/workspaces.md](docs/workspaces.md).
 
-SmolClaw has two layers. The bottom layer, SmolRAG, handles ingestion, embedding, entity extraction, and retrieval. The top layer provides an agent loop with tool use, session persistence, and multi-agent orchestration.
-
-When you ingest a document, SmolRAG splits it into overlapping chunks that keep Markdown code blocks intact, summarises each chunk for context quality, embeds everything into a vector store, and extracts entities and relationships into a NetworkX knowledge graph.
-
-When you ask a question, SmolClaw combines semantic vector search with knowledge graph traversal to build rich context for the LLM. Five query modes give you control over the retrieval strategy, from pure vector similarity to full hybrid search that merges both approaches.
-
-Change detection is automatic. Every document is content-hashed on ingest. If a file's hash changes, the old embeddings and graph entries are cleaned up and the new content is reingested, so answers always reflect the latest state of your source material.
-
-For the maintained runtime architecture view, see [docs/architecture-runtime.md](docs/architecture-runtime.md). That page maps the current CLI/gateway flow, capability-driven tool composition, deferred tool discovery, memory hooks, and child-agent orchestration.
-
-## Getting Started
+## Installation
 
 SmolClaw requires Python 3.11+. Set up with pyenv or your preferred version manager, then install dependencies into a virtual environment:
 
@@ -31,75 +21,147 @@ OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
+## Quick Start
+
+Use one workspace per topic, client, or project. A workspace keeps research material, exported memory, sessions, logs, and indexes isolated from every other run.
+
+```bash
+export WS=~/smolclaw-workspaces/acme-research
+mkdir -p "$WS"/research
+cp ~/notes/acme-brief.md "$WS"/research/
+
+python -m cli.main ingest "$WS"/research --workspace "$WS"
+python -m cli.main chat --workspace "$WS" --session acme
+python -m cli.main recall "acme" --workspace "$WS"
+```
+
+That gives you:
+
+- `research/` for source material you want to ingest and preserve
+- `memory/` for exported memory and session documents
+- `stores/` for derived runtime state such as the SQLite DB, graph, sessions, logs, and caches
+
+If you want continuous re-ingestion while you add files to `research/`, run:
+
+```bash
+python -m cli.main watch --workspace "$WS"
+```
+
+If you want the built-in recurring research loop, run:
+
+```bash
+python -m cli.main research-loop "Track Acme competitors and notable product changes." --workspace "$WS"
+```
+
+The loop keeps reusing the same workspace memory and session until you stop it with `Ctrl+C` or `Esc`.
+
+## What Is a Workspace?
+
+Every CLI and gateway command accepts `--workspace`. That directory becomes the root for local state and file access.
+
+```text
+your-workspace/
+  stores/
+    smolclaw.db
+    kg_db.graphml
+    sessions/
+    logs/
+    cache/
+  memory/
+  research/
+```
+
+- `stores/` is derived runtime state. It can be rebuilt.
+- `memory/` stores exported markdown memories and indexed session docs.
+- `research/` is your source material and is preserved by `reset`.
+
+Recommended usage: create one workspace per research stream, codebase, customer, or internal project. That keeps recall, memory promotion, logs, and sessions from bleeding across unrelated work.
+
+See [docs/workspaces.md](docs/workspaces.md) for the full workspace guide.
+
 ## CLI Usage
 
-SmolClaw's CLI has six commands: `chat`, `ingest`, `watch`, `serve`, `recall`, and `reset`.
+SmolClaw's CLI exposes nine commands: `chat`, `research-loop`, `ingest`, `watch`, `serve`, `recall`, `index-sessions`, `reset`, and `clear-logs`.
+
+All of them accept `--workspace` and operate on that workspace's isolated state.
 
 ### Interactive Chat
 
 Start a conversation with the default SmolClaw agent. It has access to all tools and reads `AGENT.md` as its bootstrap context:
 
 ```bash
-python -m cli.main chat
+python -m cli.main chat --workspace "$WS"
 ```
 
 You can switch sessions, models, or run a named agent from `agents.yaml`:
 
 ```bash
-python -m cli.main chat --session my-project --model gpt-4o
-python -m cli.main chat --agent default
+python -m cli.main chat --workspace "$WS" --session my-project --model gpt-4o
+python -m cli.main chat --workspace "$WS" --agent researcher
 ```
 
 ### Document Ingestion
 
-Ingest a single file or an entire directory into the knowledge graph and vector store:
+Ingest a single file or an entire directory into the knowledge graph and vector store. The usual pattern is to keep source material in `research/`.
 
 ```bash
-python -m cli.main ingest memory/
-python -m cli.main ingest path/to/specific-file.md
+python -m cli.main ingest "$WS"/research --workspace "$WS"
+python -m cli.main ingest "$WS"/research/acme-brief.md --workspace "$WS"
 ```
 
 Unchanged files are skipped automatically thanks to content hashing.
 
 ### Watch Mode
 
-Watch the memory directory for file changes and re-ingest automatically:
+Watch a workspace directory for changes and re-ingest automatically. With no `--path`, SmolClaw watches `<workspace>/research`.
 
 ```bash
-python -m cli.main watch
+python -m cli.main watch --workspace "$WS"
+python -m cli.main watch --workspace "$WS" --path "$WS"/research
 ```
+
+### Automated Research Loop
+
+Run a recurring research cycle against one workspace and one agent. The default agent is `researcher`.
+
+```bash
+python -m cli.main research-loop "Track Acme competitors and notable product changes." --workspace "$WS"
+python -m cli.main research-loop "Track Acme competitors and notable product changes." --workspace "$WS" --interval 900 --max-runs 4
+```
+
+The loop reuses the same session and memory between cycles. Stop it with `Ctrl+C` or `Esc`.
 
 ### WebSocket Server
 
-Start the WebSocket gateway for programmatic access:
+Start the WebSocket gateway for programmatic access against a specific workspace:
 
 ```bash
-python -m cli.main serve
+python -m cli.main serve --workspace "$WS"
 ```
 
 ### Reset
 
-Wipe all persistent data — memories, sessions, indexes, and caches — for a full reset. The `input_docs/` directory (your source material) is preserved.
+Wipe all derived persistent data for a full reset. `research/` is preserved.
 
 ```bash
-python -m cli.main reset
+python -m cli.main reset --workspace "$WS"
 ```
 
 You'll be prompted for confirmation. Pass `--force` to skip it (useful for scripts):
 
 ```bash
-python -m cli.main reset --force
+python -m cli.main reset --workspace "$WS" --force
 ```
 
-This deletes the SQLite database, the knowledge graph, and all files in `store/sessions/`, `memory/`, `store/logs/`, and `store/cache/`. The workspace `research/` directory is preserved. After a reset, stores are recreated automatically the next time you run any command.
+This deletes the SQLite database, the knowledge graph, and all files in `stores/sessions/`, `memory/`, `stores/logs/`, and `stores/cache/`. The workspace `research/` directory is preserved. After a reset, stores are recreated automatically the next time you run any command.
 
 ### Session Recall
 
 Search past sessions by topic or time range:
 
 ```bash
-python -m cli.main recall "what did we discuss about auth?"
-python -m cli.main recall "last week" --mode temporal --days 7
+python -m cli.main recall "what did we discuss about auth?" --workspace "$WS"
+python -m cli.main recall "last week" --mode temporal --days 7 --workspace "$WS"
 ```
 
 ### Session Indexing
@@ -107,7 +169,7 @@ python -m cli.main recall "last week" --mode temporal --days 7
 Index all past sessions into SmolRAG for retrieval:
 
 ```bash
-python -m cli.main index-sessions
+python -m cli.main index-sessions --workspace "$WS"
 ```
 
 ### Clear Logs
@@ -115,12 +177,22 @@ python -m cli.main index-sessions
 Delete log files without touching data stores:
 
 ```bash
-python -m cli.main clear-logs
+python -m cli.main clear-logs --workspace "$WS"
 ```
+
+## How It Works
+
+SmolClaw has two layers. The bottom layer, SmolRAG, handles ingestion, embedding, entity extraction, and retrieval. The top layer provides an agent loop with tool use, session persistence, and multi-agent orchestration.
+
+When you ingest a document, SmolRAG splits it into overlapping chunks that keep Markdown code blocks intact, summarises each chunk for context quality, embeds everything into a vector store, and extracts entities and relationships into a NetworkX knowledge graph.
+
+When you ask a question, SmolClaw combines semantic vector search with knowledge graph traversal to build rich context for the LLM. Five query modes give you control over the retrieval strategy, from pure vector similarity to full hybrid search that merges both approaches.
+
+Change detection is automatic. Every document is content-hashed on ingest. If a file's hash changes, the old embeddings and graph entries are cleaned up and the new content is reingested, so answers always reflect the latest state of your source material.
 
 ## Tools
 
-Every agent draws from a shared tool registry. The available tools cover four categories.
+Every agent draws from a shared tool registry. The available tools cover several categories.
 
 **Memory** tools let agents search the knowledge graph with `memory_search` (hybrid vector + KG retrieval with optional memory type filtering), query specific entities and their relationships with `memory_graph_query`, store new memories with taxonomy classification via `memory_store`, create explicit graph edges between entities with `memory_relate`, retrieve past sessions with `memory_recall`, fetch a specific excerpt with `memory_get`, and review contradictions with `contradiction_review`.
 
@@ -315,14 +387,15 @@ cli/
   main.py              # Typer CLI (chat, ingest, watch, serve, recall, index-sessions, reset, clear-logs)
 docs/
   architecture-runtime.md  # Maintained runtime architecture and flow diagrams
-store/                 # All persistent data (gitignored)
+  workspaces.md            # Workspace model, layout, and usage guide
+stores/                # Derived persistent runtime data (gitignored)
   smolclaw.db          # SQLite (vectors, excerpts, mappings, caches, BM25)
   kg_db.graphml        # NetworkX knowledge graph
   sessions/            # JSONL session files
-  memory/              # Journal and session markdown docs
   logs/                # Log files
   cache/               # Cache files
-  input_docs/          # User source material (preserved by reset)
+memory/                # Exported memory/session markdown docs
+research/              # User source material (preserved by reset)
 agents.yaml            # Named agent configurations
 AGENT.md               # Shared bootstrap (loaded by all agents)
 ```
@@ -333,7 +406,7 @@ AGENT.md               # Shared bootstrap (loaded by all agents)
 python -m pytest
 ```
 
-Tests use mock LLMs that return random embeddings, so they run without API keys. ~560 tests, ~6 seconds.
+Tests use mock LLMs that return random embeddings, so they run without API keys. Current suite: ~700 tests, ~6-8 seconds.
 
 ## What's Here
 
