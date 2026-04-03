@@ -176,7 +176,7 @@ class TestRuntimeRegressions:
 
         rag = _build_rag(temp_dir=temp_dir, llm=mock_openai_llm, excerpt_fn=excerpt_fn)
 
-        with patch("app.smol_rag.get_docs", return_value=[doc_path]):
+        with patch("app.ingestion.get_docs", return_value=[doc_path]):
             await rag.import_documents()
 
         original_remove = rag.remove_document_by_id
@@ -189,7 +189,7 @@ class TestRuntimeRegressions:
             f.write("shared|new")
 
         with patch.object(rag, "remove_document_by_id", new=AsyncMock(side_effect=delayed_remove)):
-            with patch("app.smol_rag.get_docs", return_value=[doc_path]):
+            with patch("app.ingestion.get_docs", return_value=[doc_path]):
                 await rag.import_documents()
 
         doc_id = await rag.source_doc_map.get_right_single(doc_path)
@@ -232,9 +232,9 @@ class TestRuntimeRegressions:
     async def test_mix_query_keeps_metadata_only_session_content_for_episode_recall(self, temp_dir, mock_openai_llm):
         rag = _build_rag(temp_dir=temp_dir, llm=mock_openai_llm)
         rag.rate_limited_get_completion = AsyncMock(side_effect=["{}", "final response"])
-        rag._get_low_level_dataset = AsyncMock(return_value=([], [], []))
-        rag._get_high_level_dataset = AsyncMock(return_value=([], [], []))
-        rag._get_query_excerpts = AsyncMock(return_value=[
+        rag.query_engine.get_low_level_dataset = AsyncMock(return_value=([], [], []))
+        rag.query_engine.get_high_level_dataset = AsyncMock(return_value=([], [], []))
+        rag.query_engine._get_query_excerpts = AsyncMock(return_value=[
             {"excerpt": "#episode #session", "summary": "header"},
             {"excerpt": "user: shipped the feature", "summary": "body", "memory_type": "episode"},
             {"excerpt": "pricing decision", "summary": "decision", "memory_type": "decision"},
@@ -252,14 +252,14 @@ class TestRuntimeRegressions:
     async def test_mix_query_return_metadata_uses_filtered_excerpt_ids(self, temp_dir, mock_openai_llm):
         rag = _build_rag(temp_dir=temp_dir, llm=mock_openai_llm)
         rag.rate_limited_get_completion = AsyncMock(side_effect=["{}", "final response"])
-        rag._get_low_level_dataset = AsyncMock(return_value=([], [
+        rag.query_engine.get_low_level_dataset = AsyncMock(return_value=([], [
             {"excerpt_id": "exc-low-episode", "excerpt": "low episode", "summary": "low", "memory_type": "episode"},
             {"excerpt_id": "exc-low-decision", "excerpt": "low decision", "summary": "low", "memory_type": "decision"},
         ], []))
-        rag._get_high_level_dataset = AsyncMock(return_value=([], [], [
+        rag.query_engine.get_high_level_dataset = AsyncMock(return_value=([], [], [
             {"excerpt_id": "exc-shared", "excerpt": "shared episode", "summary": "shared", "memory_type": "episode"},
         ]))
-        rag._get_query_excerpts = AsyncMock(return_value=[
+        rag.query_engine._get_query_excerpts = AsyncMock(return_value=[
             {"excerpt_id": "exc-query-episode", "excerpt": "query episode", "summary": "query", "memory_type": "episode"},
             {"excerpt_id": "exc-query-decision", "excerpt": "query decision", "summary": "query", "memory_type": "decision"},
             {"excerpt_id": "exc-shared", "excerpt": "shared episode", "summary": "shared", "memory_type": "episode"},
@@ -277,12 +277,12 @@ class TestRuntimeRegressions:
     async def test_mix_query_include_bm25_deduplicates_by_excerpt_id(self, temp_dir, mock_openai_llm):
         rag = _build_rag(temp_dir=temp_dir, llm=mock_openai_llm)
         rag.rate_limited_get_completion = AsyncMock(side_effect=["{}", "final response"])
-        rag._get_low_level_dataset = AsyncMock(return_value=([], [], []))
-        rag._get_high_level_dataset = AsyncMock(return_value=([], [], []))
-        rag._get_query_excerpts = AsyncMock(return_value=[
+        rag.query_engine.get_low_level_dataset = AsyncMock(return_value=([], [], []))
+        rag.query_engine.get_high_level_dataset = AsyncMock(return_value=([], [], []))
+        rag.query_engine._get_query_excerpts = AsyncMock(return_value=[
             {"excerpt_id": "exc-query", "excerpt": "query episode", "summary": "query"},
         ])
-        rag.bm25_query = AsyncMock(return_value=[
+        rag.query_engine.bm25_query = AsyncMock(return_value=[
             {"excerpt_id": "exc-query", "excerpt": "query duplicate", "summary": "dup"},
             {"excerpt_id": "exc-bm25-1", "excerpt": "keyword alpha", "summary": "alpha"},
             {"excerpt_id": "exc-bm25-2", "excerpt": "keyword beta", "summary": "beta"},

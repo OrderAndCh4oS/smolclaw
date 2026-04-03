@@ -13,7 +13,7 @@ class MemoryLifecycleManager:
     async def promote(self, excerpt_id: str, boost: float = 0.1) -> float:
         """Boost importance of a memory on access. Auto-promotes T2→T1 at importance >= 0.8.
         Returns new importance."""
-        data = await self.smol_rag.excerpt_kv.get_by_key(excerpt_id)
+        data = await self.smol_rag.get_excerpt(excerpt_id)
         if not data:
             return 0.0
         old_importance = data.get("importance", 0.5)
@@ -24,7 +24,7 @@ class MemoryLifecycleManager:
         if tier == 2 and new_importance >= 0.8:
             data["tier"] = 1
             logger.info(f"Auto-promoted {excerpt_id} from tier 2 → tier 1 (importance {new_importance:.2f})")
-        await self.smol_rag.excerpt_kv.add(excerpt_id, data)
+        await self.smol_rag.update_excerpt(excerpt_id, data)
         logger.info(f"Promoted {excerpt_id}: {old_importance:.2f} -> {new_importance:.2f}")
         return new_importance
 

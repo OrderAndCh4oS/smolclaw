@@ -80,7 +80,7 @@ class TestSmolRagBaseline:
 
         # Mock get_docs to return our test document
         try:
-            with patch("app.smol_rag.get_docs", return_value=[doc_path]):
+            with patch("app.ingestion.get_docs", return_value=[doc_path]):
                 # Import documents (uses get_docs internally)
                 await rag.import_documents()
 
@@ -479,7 +479,7 @@ class TestSmolRagEdgeCases:
         )
 
         try:
-            with patch("app.smol_rag.get_docs", return_value=[doc_path]):
+            with patch("app.ingestion.get_docs", return_value=[doc_path]):
                 await rag.import_documents()
 
             doc_id = await rag.source_doc_map.get_right_single(doc_path)

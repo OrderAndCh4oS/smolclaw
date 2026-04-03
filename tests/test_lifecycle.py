@@ -18,9 +18,8 @@ def mock_lifecycle_rag():
     async def add(key, value):
         excerpt_store[key] = value
 
-    mock.excerpt_kv = MagicMock()
-    mock.excerpt_kv.get_by_key = AsyncMock(side_effect=get_by_key)
-    mock.excerpt_kv.add = AsyncMock(side_effect=add)
+    mock.get_excerpt = AsyncMock(side_effect=get_by_key)
+    mock.update_excerpt = AsyncMock(side_effect=add)
 
     # Pre-populate some excerpts
     excerpt_store["exc_1"] = {
@@ -65,7 +64,7 @@ class TestPromote:
         mgr = MemoryLifecycleManager(mock_lifecycle_rag)
         # exc_2 starts at importance 0.6, tier 2
         await mgr.promote("exc_2", boost=0.25)  # 0.85 -> should auto-promote
-        data = await mock_lifecycle_rag.excerpt_kv.get_by_key("exc_2")
+        data = await mock_lifecycle_rag.get_excerpt("exc_2")
         assert data["tier"] == 1
         assert data["importance"] == 0.85
 
@@ -74,5 +73,5 @@ class TestPromote:
         """T2 memory below 0.8 stays at T2."""
         mgr = MemoryLifecycleManager(mock_lifecycle_rag)
         await mgr.promote("exc_2", boost=0.1)  # 0.7 -> stays T2
-        data = await mock_lifecycle_rag.excerpt_kv.get_by_key("exc_2")
+        data = await mock_lifecycle_rag.get_excerpt("exc_2")
         assert data["tier"] == 2

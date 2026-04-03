@@ -37,13 +37,13 @@ async def test_import_documents_skips_unchanged_source(temp_dir, mock_openai_llm
 
     rag = _build_rag(temp_dir=temp_dir, llm=mock_openai_llm)
 
-    with patch("app.smol_rag.get_docs", return_value=[doc_path]):
+    with patch("app.ingestion.get_docs", return_value=[doc_path]):
         await rag.import_documents()
 
     rag._embed_document = AsyncMock()
     rag._extract_entities = AsyncMock()
 
-    with patch("app.smol_rag.get_docs", return_value=[doc_path]):
+    with patch("app.ingestion.get_docs", return_value=[doc_path]):
         await rag.import_documents()
 
     rag._embed_document.assert_not_called()
@@ -58,21 +58,21 @@ async def test_import_documents_reprocesses_changed_source(temp_dir, mock_openai
 
     rag = _build_rag(temp_dir=temp_dir, llm=mock_openai_llm)
 
-    with patch("app.smol_rag.get_docs", return_value=[doc_path]):
+    with patch("app.ingestion.get_docs", return_value=[doc_path]):
         await rag.import_documents()
 
-    rag.remove_document_by_id = AsyncMock()
-    rag._embed_document = AsyncMock()
-    rag._extract_entities = AsyncMock()
+    rag.ingestion.doc_manager.remove_document_by_id = AsyncMock()
+    rag.ingestion._embed_document = AsyncMock()
+    rag.ingestion._extract_entities = AsyncMock()
 
     with open(doc_path, "w") as f:
         f.write("v2")
 
-    with patch("app.smol_rag.get_docs", return_value=[doc_path]):
+    with patch("app.ingestion.get_docs", return_value=[doc_path]):
         await rag.import_documents()
 
-    rag.remove_document_by_id.assert_awaited_once()
-    rag._embed_document.assert_awaited_once()
-    rag._extract_entities.assert_awaited_once()
+    rag.ingestion.doc_manager.remove_document_by_id.assert_awaited_once()
+    rag.ingestion._embed_document.assert_awaited_once()
+    rag.ingestion._extract_entities.assert_awaited_once()
 
 

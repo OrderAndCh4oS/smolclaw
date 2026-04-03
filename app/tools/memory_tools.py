@@ -129,14 +129,13 @@ class MemoryRelateTool(Tool):
         relationship = kwargs["relationship"]
         description = kwargs.get("description", relationship)
 
-        graph = self.smol_rag.graph
         # Ensure both entity nodes exist
-        if not graph.get_node(source):
-            await graph.async_add_node(source, category="entity", description=source)
-        if not graph.get_node(target):
-            await graph.async_add_node(target, category="entity", description=target)
+        if not self.smol_rag.get_graph_node(source):
+            await self.smol_rag.add_graph_node(source, category="entity", description=source)
+        if not self.smol_rag.get_graph_node(target):
+            await self.smol_rag.add_graph_node(target, category="entity", description=target)
         # Create the edge
-        await graph.async_add_edge(source, target, description=description, keywords=relationship, weight=1.0)
+        await self.smol_rag.add_graph_edge(source, target, description=description, keywords=relationship, weight=1.0)
         return f"Related: {source} --[{relationship}]--> {target}"
 
 
@@ -226,8 +225,7 @@ class MemoryGraphQueryTool(Tool):
 
     async def execute(self, **kwargs) -> ToolResult | str:
         entity = kwargs["entity"]
-        graph = self.smol_rag.graph
-        node = graph.get_node(entity)
+        node = self.smol_rag.get_graph_node(entity)
         if node is None:
             return f"No entity found: {entity}"
 
@@ -235,11 +233,11 @@ class MemoryGraphQueryTool(Tool):
         for key, value in node.items():
             lines.append(f"  {key}: {value}")
 
-        edges = graph.get_node_edges(entity)
+        edges = self.smol_rag.get_graph_edges(entity)
         if edges:
             lines.append("Relationships:")
             for src, tgt in edges:
-                edge_data = graph.get_edge((src, tgt))
+                edge_data = self.smol_rag.get_graph_edge((src, tgt))
                 desc = edge_data.get("description", "") if edge_data else ""
                 lines.append(f"  {src} -> {tgt}: {desc}")
 
@@ -381,7 +379,7 @@ class MemoryGetTool(Tool):
 
     async def execute(self, **kwargs) -> str:
         excerpt_id = kwargs["excerpt_id"]
-        data = await self.smol_rag.excerpt_kv.get_by_key(excerpt_id)
+        data = await self.smol_rag.get_excerpt(excerpt_id)
         if not data:
             return f"No memory found with ID: {excerpt_id}"
         lines = [f"## Memory: {excerpt_id}"]
@@ -586,7 +584,7 @@ class MemoryRecallTool(Tool):
 
     async def _temporal_query(self, days: float) -> ToolResult:
         cutoff = time.time() - (days * 86400)
-        all_excerpts = await self.smol_rag.excerpt_kv.get_all()
+        all_excerpts = await self.smol_rag.get_all_excerpts()
         matches = []
         for excerpt_id, data in all_excerpts.items():
             if not isinstance(data, dict):

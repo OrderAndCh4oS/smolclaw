@@ -14,43 +14,43 @@ def mock_smol_rag_for_assembly():
     # Mock embedding generation
     mock.rate_limited_get_embedding = AsyncMock(return_value=[0.1] * 1536)
 
-    # Mock vector query results
-    mock.embeddings_db = MagicMock()
-    mock.embeddings_db.query = AsyncMock(return_value=[
+    # Mock vector search
+    mock.vector_search = AsyncMock(return_value=[
         {"__id__": "exc_1"},
         {"__id__": "exc_2"},
         {"__id__": "exc_3"},
     ])
 
     # Mock excerpt data
-    async def get_excerpt(key):
-        data = {
-            "exc_1": {
-                "excerpt": "Python is a programming language.",
-                "summary": "About Python.",
-                "importance": 0.9,
-                "confidence": 0.95,
-                "indexed_at": time.time() - 86400,  # 1 day ago
-            },
-            "exc_2": {
-                "excerpt": "FastAPI is a web framework built with Python.",
-                "summary": "About FastAPI.",
-                "importance": 0.7,
-                "confidence": 0.8,
-                "indexed_at": time.time() - 86400 * 7,  # 7 days ago
-            },
-            "exc_3": {
-                "excerpt": "JavaScript runs in the browser and on Node.js servers.",
-                "summary": "About JavaScript.",
-                "importance": 0.5,
-                "confidence": 0.6,
-                "indexed_at": time.time() - 86400 * 30,  # 30 days ago
-            },
-        }
-        return data.get(key)
+    _excerpt_data = {
+        "exc_1": {
+            "excerpt": "Python is a programming language.",
+            "summary": "About Python.",
+            "importance": 0.9,
+            "confidence": 0.95,
+            "indexed_at": time.time() - 86400,  # 1 day ago
+        },
+        "exc_2": {
+            "excerpt": "FastAPI is a web framework built with Python.",
+            "summary": "About FastAPI.",
+            "importance": 0.7,
+            "confidence": 0.8,
+            "indexed_at": time.time() - 86400 * 7,  # 7 days ago
+        },
+        "exc_3": {
+            "excerpt": "JavaScript runs in the browser and on Node.js servers.",
+            "summary": "About JavaScript.",
+            "importance": 0.5,
+            "confidence": 0.6,
+            "indexed_at": time.time() - 86400 * 30,  # 30 days ago
+        },
+    }
 
-    mock.excerpt_kv = MagicMock()
-    mock.excerpt_kv.get_by_key = AsyncMock(side_effect=get_excerpt)
+    async def get_excerpt(key):
+        return _excerpt_data.get(key)
+
+    mock.get_excerpt = AsyncMock(side_effect=get_excerpt)
+    mock.get_all_excerpts = AsyncMock(return_value={})
     return mock
 
 

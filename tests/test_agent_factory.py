@@ -585,7 +585,7 @@ class TestAgentFactory:
             },
         ])
         llm.completion_model = "gpt-test"
-        mock_smol_rag.excerpt_kv.get_all = AsyncMock(return_value={
+        mock_smol_rag.get_all_excerpts = AsyncMock(return_value={
             "exc-1": {
                 "memory_type": "episode",
                 "indexed_at": 9999999999,

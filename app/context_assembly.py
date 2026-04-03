@@ -113,12 +113,12 @@ class ContextAssembler(ContextBuilder):
         # 1. Vector similarity (primary)
         try:
             embedding = await self.smol_rag.rate_limited_get_embedding(query)
-            vector_results = await self.smol_rag.embeddings_db.query(embedding, top_k=top_k)
+            vector_results = await self.smol_rag.vector_search(embedding, top_k=top_k)
             for r in vector_results:
                 excerpt_id = r.get("__id__")
                 if not excerpt_id or excerpt_id in seen_ids:
                     continue
-                excerpt_data = await self.smol_rag.excerpt_kv.get_by_key(excerpt_id)
+                excerpt_data = await self.smol_rag.get_excerpt(excerpt_id)
                 if not excerpt_data:
                     continue
                 seen_ids.add(excerpt_id)
@@ -149,8 +149,8 @@ class ContextAssembler(ContextBuilder):
                 kw_result = await self.smol_rag.rate_limited_get_completion(prompt)
                 keyword_data = extract_json_from_text(kw_result) or {}
 
-            ll_dataset, ll_entity_excerpts, _ = await self.smol_rag._get_low_level_dataset(keyword_data)
-            _, _, hl_entity_excerpts = await self.smol_rag._get_high_level_dataset(keyword_data)
+            ll_dataset, ll_entity_excerpts, _ = await self.smol_rag.get_low_level_dataset(keyword_data)
+            _, _, hl_entity_excerpts = await self.smol_rag.get_high_level_dataset(keyword_data)
             await _add_excerpts(ll_entity_excerpts)
             await _add_excerpts(hl_entity_excerpts)
         except Exception as e:
@@ -169,7 +169,7 @@ class ContextAssembler(ContextBuilder):
         """Gather all tier-0 (identity) excerpts — always included regardless of query."""
         t0_items = []
         try:
-            all_excerpts = await self.smol_rag.excerpt_kv.get_all()
+            all_excerpts = await self.smol_rag.get_all_excerpts()
             for excerpt_id, data in all_excerpts.items():
                 if isinstance(data, dict) and data.get("tier") == 0:
                     t0_items.append((excerpt_id, data))
@@ -266,17 +266,16 @@ class ContextAssembler(ContextBuilder):
             system_prompt += f"\n\n--- Relevant Memories ---\n{context_text}"
 
         # Surface pending contradiction count as a lightweight nudge
-        if hasattr(self.smol_rag, 'contradiction_detector') and self.smol_rag.contradiction_detector:
-            try:
-                count = await self.smol_rag.contradiction_detector.get_count("pending")
-                if count > 0:
-                    system_prompt += (
-                        f"\n\n--- Knowledge Conflicts ---\n"
-                        f"{count} unresolved contradiction(s) in memory. "
-                        f"Use contradiction_review tool to inspect and resolve when relevant."
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to check contradiction count: {e}")
+        try:
+            count = await self.smol_rag.get_pending_contradiction_count()
+            if count > 0:
+                system_prompt += (
+                    f"\n\n--- Knowledge Conflicts ---\n"
+                    f"{count} unresolved contradiction(s) in memory. "
+                    f"Use contradiction_review tool to inspect and resolve when relevant."
+                )
+        except Exception as e:
+            logger.warning(f"Failed to check contradiction count: {e}")
 
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(history)
