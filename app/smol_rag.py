@@ -83,7 +83,6 @@ class SmolRag:
             graph=graph_db or NetworkXGraphStore(graph_path or KG_DB),
             contradiction_detector=contradiction_detector,
         )
-        self._current_ingest_source = "extraction"
 
         self.query_engine = QueryEngine(
             stores=self.stores,

@@ -40,14 +40,14 @@ async def test_import_documents_skips_unchanged_source(temp_dir, mock_openai_llm
     with patch("app.ingestion.get_docs", return_value=[doc_path]):
         await rag.import_documents()
 
-    rag._embed_document = AsyncMock()
-    rag._extract_entities = AsyncMock()
+    rag.ingestion._embed_document = AsyncMock()
+    rag.ingestion._extract_entities = AsyncMock()
 
     with patch("app.ingestion.get_docs", return_value=[doc_path]):
         await rag.import_documents()
 
-    rag._embed_document.assert_not_called()
-    rag._extract_entities.assert_not_called()
+    rag.ingestion._embed_document.assert_not_called()
+    rag.ingestion._extract_entities.assert_not_called()
 
 
 @pytest.mark.asyncio
