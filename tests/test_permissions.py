@@ -323,6 +323,7 @@ class TestPermissionBlockedMapping:
 
     def test_plan_blocks_expected_tools(self):
         expected = {
+            "apply_patch",
             "write_file",
             "edit_file",
             "exec",
@@ -341,6 +342,7 @@ class TestPermissionBlockedMapping:
 
     def test_research_blocks_expected_tools(self):
         expected = {
+            "apply_patch",
             "write_file",
             "edit_file",
             "exec",
@@ -354,6 +356,7 @@ class TestPermissionBlockedMapping:
 
     def test_delegate_only_blocks_expected_tools(self):
         expected = {
+            "apply_patch",
             "write_file",
             "edit_file",
             "exec",

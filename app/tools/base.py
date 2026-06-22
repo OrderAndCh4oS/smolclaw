@@ -21,6 +21,7 @@ class ToolRuntimeContext:
     smol_rag: Any = None
     workspace: Any = None
     session_key: Optional[str] = None
+    goal_store: Any = None
     child_agent_factory: Any = None
     loop_registrar: Any = None
     shared_state: dict[str, Any] = field(default_factory=dict)

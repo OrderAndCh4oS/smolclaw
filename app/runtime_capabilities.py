@@ -1,6 +1,6 @@
 from typing import Final, Iterable, Literal
 
-Capability = Literal["filesystem", "web", "memory", "orchestration", "subagents", "shell"]
+Capability = Literal["filesystem", "web", "memory", "orchestration", "subagents", "shell", "command", "goal"]
 Transport = Literal["direct", "mcp"]
 
 CAPABILITY_FILESYSTEM: Final[str] = "filesystem"
@@ -9,6 +9,8 @@ CAPABILITY_MEMORY: Final[str] = "memory"
 CAPABILITY_ORCHESTRATION: Final[str] = "orchestration"
 CAPABILITY_SUBAGENTS: Final[str] = "subagents"
 CAPABILITY_SHELL: Final[str] = "shell"
+CAPABILITY_COMMAND: Final[str] = "command"
+CAPABILITY_GOAL: Final[str] = "goal"
 
 KNOWN_CAPABILITIES: Final[frozenset[str]] = frozenset({
     CAPABILITY_FILESYSTEM,
@@ -17,6 +19,8 @@ KNOWN_CAPABILITIES: Final[frozenset[str]] = frozenset({
     CAPABILITY_ORCHESTRATION,
     CAPABILITY_SUBAGENTS,
     CAPABILITY_SHELL,
+    CAPABILITY_COMMAND,
+    CAPABILITY_GOAL,
 })
 
 DEFAULT_CAPABILITIES: Final[tuple[str, ...]] = (

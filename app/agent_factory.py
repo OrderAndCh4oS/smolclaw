@@ -10,6 +10,7 @@ from app.agent_loop import AgentLoop
 from app.behaviors import load_behaviors, resolve_behavior_names
 from app.context_builder import ContextBuilder
 from app.definitions import PROJECT_ROOT
+from app.goal import GoalStore
 from app.hooks import HookRunner, ON_AFTER_TOOL
 from app.llm import create_llm
 from app.session import SessionManager
@@ -154,6 +155,7 @@ def build_agent_loop(
         configure_hook_runner(hook_runner)
 
     resolved_session_key = session_key or f"{config.name}-{session_key_prefix}"
+    goal_store = GoalStore(session_manager.sessions_dir) if session_manager else None
     runtime_ctx = ToolRuntimeContext(
         llm=llm,
         hook_runner=hook_runner,
@@ -161,6 +163,7 @@ def build_agent_loop(
         smol_rag=agent_smol_rag,
         workspace=workspace,
         session_key=resolved_session_key,
+        goal_store=goal_store,
         loop_registrar=child_loop_registrar,
     )
     runtime_ctx.child_agent_factory = ChildAgentFactory(
@@ -226,6 +229,7 @@ def build_agent_loop(
         reflection=config.reflection,
         planning=config.planning,
         behaviors=load_behaviors(resolve_behavior_names(config)),
+        goal_store=goal_store,
     )
     for resource in runtime_ctx.owned_resources:
         loop.add_owned_resource(resource)

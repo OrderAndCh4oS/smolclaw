@@ -45,6 +45,10 @@ Only use tools that are actually exposed in your current tool list. Some agents 
 - **read_file / write_file / edit_file / list_dir** — Workspace file operations, when available.
 - Some runtimes may also expose execution or remote-provider tools. Only rely on what is actually present in your live tool list.
 
+### Goals
+- **goal_status** — Inspect the current session goal when one is active.
+- **goal_update** — Mark the current session goal complete or blocked when you have actually reached that state.
+
 ### Multi-Agent Delegation
 When a task benefits from a specialist and delegation tools are available, delegate rather than doing everything yourself.
 

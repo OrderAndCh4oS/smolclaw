@@ -10,11 +10,19 @@ agents:
       - memory_search
       - memory_graph_query
       - memory_recall
+      - find_files
       - read_file
+      - grep_search
+      - git_status
+      - git_diff
+      - goal_status
+      - goal_update
       - web_search
       - web_fetch
     capabilities:
       - filesystem
+      - command
+      - goal
       - web
       - memory
     permission_mode: plan
@@ -42,9 +50,17 @@ agents:
       - memory_recall
       - web_search
       - web_fetch
+      - find_files
       - read_file
+      - grep_search
+      - git_status
+      - git_diff
+      - goal_status
+      - goal_update
     capabilities:
       - filesystem
+      - command
+      - goal
       - web
       - memory
     permission_mode: research
@@ -68,13 +84,23 @@ agents:
       - memory_graph_query
       - memory_recall
       - memory_store
+      - find_files
       - read_file
+      - grep_search
+      - git_status
+      - git_diff
+      - goal_status
+      - goal_update
       - write_file
       - edit_file
+      - apply_patch
+      - run_command
       - web_search
       - web_fetch
     capabilities:
       - filesystem
+      - command
+      - goal
       - web
       - memory
     permission_mode: execute

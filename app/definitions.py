@@ -10,7 +10,7 @@ ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 # Project root — everything hangs off this
 PROJECT_ROOT = os.path.dirname(ROOT_DIR)
 
-DEFAULT_WORKSPACE_ROOT = os.getenv("SMOLCLAW_WORKSPACE", os.path.join(PROJECT_ROOT, "workspace"))
+DEFAULT_WORKSPACE_ROOT = os.getenv("SMOLCLAW_WORKSPACE") or os.getcwd()
 
 
 @dataclass(frozen=True)

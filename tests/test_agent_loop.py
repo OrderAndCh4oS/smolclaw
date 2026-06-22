@@ -6,6 +6,7 @@ import pytest
 
 from app.agent_loop import AgentLoop
 from app.context_builder import ContextBuilder
+from app.goal import GoalStore
 from app.session import Session, SessionManager
 from app.tools.base import ToolResult
 from app.tools.registry import ToolRegistry
@@ -98,6 +99,46 @@ class TestAgentLoop:
             history=[],
             user_content="hello",
         )
+
+    @pytest.mark.asyncio
+    async def test_process_injects_active_goal_context(self, temp_dir):
+        llm = MagicMock()
+        captured_messages = []
+
+        async def capture_call(**kwargs):
+            captured_messages.extend(kwargs.get("messages", []))
+            return {
+                "content": "ok",
+                "tool_calls": None,
+                "has_tool_calls": False,
+            }
+
+        llm.get_tool_completion = AsyncMock(side_effect=capture_call)
+
+        registry = ToolRegistry()
+        builder = ContextBuilder()
+        session = Session(key="goal-context")
+        sm = SessionManager(temp_dir)
+        goal_store = GoalStore(temp_dir)
+        goal_store.start(session.key, "Ship goal loop")
+
+        loop = AgentLoop(
+            llm=llm,
+            tool_registry=registry,
+            context_builder=builder,
+            session=session,
+            session_manager=sm,
+            goal_store=goal_store,
+        )
+        await loop.process("continue")
+
+        goal_messages = [
+            message for message in captured_messages
+            if message["role"] == "system" and "Current session goal:" in message["content"]
+        ]
+        assert len(goal_messages) == 1
+        assert "Ship goal loop" in goal_messages[0]["content"]
+        assert "Goal turns: 1" in goal_messages[0]["content"]
 
     @pytest.mark.asyncio
     async def test_process_returns_response(self, mock_tool_llm, temp_dir):

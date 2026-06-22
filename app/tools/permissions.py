@@ -8,10 +8,12 @@ from app.tools.middleware import NextFn
 
 MUTATES_STATE: Final[str] = "mutates_state"
 DELEGATES: Final[str] = "delegates"
+COMMAND_EXECUTION: Final[str] = "command_execution"
 
 DIRECT_MUTATION_TOOLS: Final[Set[str]] = {
     "write_file",
     "edit_file",
+    "apply_patch",
     "exec",
     "memory_store",
     "memory_relate",
@@ -38,7 +40,7 @@ PERMISSION_MODES: Final[Dict[str, PermissionModeConfig]] = {
     ),
     "plan": PermissionModeConfig(
         blocked_tools=frozenset(DIRECT_MUTATION_TOOLS | DELEGATION_TOOLS),
-        blocked_capabilities=frozenset({MUTATES_STATE, DELEGATES}),
+        blocked_capabilities=frozenset({MUTATES_STATE, DELEGATES, COMMAND_EXECUTION}),
     ),
     "execute": PermissionModeConfig(
         blocked_tools=frozenset(DELEGATION_TOOLS),
@@ -46,6 +48,7 @@ PERMISSION_MODES: Final[Dict[str, PermissionModeConfig]] = {
     ),
     "research": PermissionModeConfig(
         blocked_tools=frozenset({
+            "apply_patch",
             "write_file",
             "edit_file",
             "exec",
@@ -55,7 +58,7 @@ PERMISSION_MODES: Final[Dict[str, PermissionModeConfig]] = {
             "route",
             "spawn_agent",
         }),
-        blocked_capabilities=frozenset({MUTATES_STATE, DELEGATES}),
+        blocked_capabilities=frozenset({MUTATES_STATE, DELEGATES, COMMAND_EXECUTION}),
         capability_exempt_tools=frozenset({"memory_store"}),
     ),
     "delegate_only": PermissionModeConfig(

@@ -203,25 +203,33 @@ class TestRepoAgentsConfig:
         yaml_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "agents.yaml")
         configs = AgentConfigLoader.load(yaml_path)
 
-        assert configs["default"].capabilities == ["filesystem", "web", "memory"]
+        assert configs["default"].capabilities == ["filesystem", "command", "goal", "web", "memory"]
         assert configs["default"].permission_mode == "plan"
         assert "write_file" not in configs["default"].tools
         assert "edit_file" not in configs["default"].tools
         assert "exec" not in configs["default"].tools
         assert "list_dir" not in configs["default"].tools
+        assert "git_status" in configs["default"].tools
+        assert "goal_status" in configs["default"].tools
+        assert "run_command" not in configs["default"].tools
 
-        assert configs["researcher"].capabilities == ["filesystem", "web", "memory"]
+        assert configs["researcher"].capabilities == ["filesystem", "command", "goal", "web", "memory"]
         assert configs["researcher"].permission_mode == "research"
         assert "memory_store" in configs["researcher"].tools
         assert "exec" not in configs["researcher"].tools
         assert "list_dir" not in configs["researcher"].tools
+        assert "git_diff" in configs["researcher"].tools
+        assert "goal_update" in configs["researcher"].tools
 
-        assert configs["coder"].capabilities == ["filesystem", "web", "memory"]
+        assert configs["coder"].capabilities == ["filesystem", "command", "goal", "web", "memory"]
         assert configs["coder"].permission_mode == "execute"
+        assert "apply_patch" in configs["coder"].tools
+        assert "run_command" in configs["coder"].tools
         assert "exec" not in configs["coder"].tools
         assert "write_file" in configs["coder"].tools
         assert "edit_file" in configs["coder"].tools
         assert "list_dir" not in configs["coder"].tools
+        assert "goal_update" in configs["coder"].tools
 
         assert configs["orchestrator"].capabilities == ["memory", "orchestration", "subagents"]
         assert configs["orchestrator"].permission_mode == "delegate_only"

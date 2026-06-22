@@ -10,15 +10,18 @@ class ContextBuilder:
         persona: str = None,
         shared_bootstrap_path: str = None,
         skills_paths: Optional[List[str]] = None,
+        instruction_paths: Optional[List[str]] = None,
     ):
         self.bootstrap_path = bootstrap_path
         self.persona = persona
         self.shared_bootstrap_path = shared_bootstrap_path
         self.skills_paths = skills_paths or []
+        self.instruction_paths = instruction_paths or []
 
     def _load_file(self, path: str) -> str | None:
-        if path and os.path.exists(path):
-            with open(path) as f:
+        expanded = os.path.expanduser(path) if path else None
+        if expanded and os.path.exists(expanded):
+            with open(expanded) as f:
                 content = f.read().strip()
             return content or None
         return None
@@ -45,6 +48,11 @@ class ContextBuilder:
             parts.append(f"\n--- Shared Bootstrap ---\n{shared}")
         if agent and agent != shared:
             parts.append(f"\n--- Agent Bootstrap ---\n{agent}")
+
+        for instruction_path in self.instruction_paths:
+            content = self._load_file(instruction_path)
+            if content:
+                parts.append(f"\n--- Project Instructions: {instruction_path} ---\n{content}")
 
         # Inject preloaded skills as domain knowledge
         for skill_path in self.skills_paths:

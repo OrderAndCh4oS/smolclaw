@@ -1,5 +1,7 @@
 .env
 .venv
+.venv*/
+.nltk_data/
 .idea
 .obsidian/
 __pycache__/

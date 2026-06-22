@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass, replace
 from typing import Callable, Dict, Optional, Sequence
 
@@ -8,6 +9,7 @@ from app.context_builder import ContextBuilder
 from app.definitions import PROJECT_ROOT
 from app.hooks import HookRunner, ON_AFTER_TOOL
 from app.runtime_capabilities import (
+    CAPABILITY_GOAL,
     CAPABILITY_MEMORY,
     CAPABILITY_ORCHESTRATION,
     CAPABILITY_SUBAGENTS,
@@ -19,6 +21,23 @@ from app.tools.factory import build_tool_registry
 from app.workspace import WorkspaceContext
 
 _SHARED_BOOTSTRAP_PATH = f"{PROJECT_ROOT}/AGENT.md"
+
+
+def _instruction_paths_for_workspace(workspace: WorkspaceContext) -> list[str]:
+    paths = []
+    global_agents = "~/.config/smolclaw/AGENTS.md"
+    paths.append(global_agents)
+
+    project_agents = workspace.resolve_path("AGENTS.md")
+    project_claude = workspace.resolve_path("CLAUDE.md")
+    if os.path.exists(project_agents):
+        paths.append(project_agents)
+    elif os.path.exists(project_claude):
+        paths.append(project_claude)
+
+    local_instructions = workspace.resolve_path(".smolclaw/instructions.md")
+    paths.append(local_instructions)
+    return paths
 
 
 @dataclass(frozen=True)
@@ -57,6 +76,8 @@ def resolve_capability_names(config: AgentConfig, env: RuntimeEnvironment) -> li
         return list(dict.fromkeys(config.capabilities))
 
     capability_names = list(DEFAULT_CAPABILITIES)
+    if env.session_manager:
+        capability_names.append(CAPABILITY_GOAL)
     if env.smol_rag is not None:
         capability_names.append(CAPABILITY_MEMORY)
     if env.agent_configs and env.session_manager:
@@ -98,6 +119,7 @@ def resolve_hook_runner_configurers(
 def build_context_builder_factory(env: RuntimeEnvironment):
     def _build(config: AgentConfig) -> ContextBuilder:
         skills_paths = [f"{PROJECT_ROOT}/skills/{skill}" for skill in config.skills]
+        instruction_paths = _instruction_paths_for_workspace(env.workspace)
         agent_smol_rag = resolve_agent_smol_rag(config, env)
         if agent_smol_rag is not None:
             return ContextAssembler(
@@ -107,12 +129,14 @@ def build_context_builder_factory(env: RuntimeEnvironment):
                 persona=config.persona,
                 shared_bootstrap_path=_SHARED_BOOTSTRAP_PATH,
                 skills_paths=skills_paths,
+                instruction_paths=instruction_paths,
             )
         return ContextBuilder(
             bootstrap_path=config.bootstrap_path,
             persona=config.persona,
             shared_bootstrap_path=_SHARED_BOOTSTRAP_PATH,
             skills_paths=skills_paths,
+            instruction_paths=instruction_paths,
         )
 
     return _build

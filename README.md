@@ -100,6 +100,17 @@ python -m cli.main chat --workspace "$WS" --session my-project --model gpt-4o
 python -m cli.main chat --workspace "$WS" --agent researcher
 ```
 
+Interactive chat also supports a session-bound goal loop:
+
+```text
+/goal start Add grep search within the current workspace
+/goal run 3
+/goal status
+/goal complete implemented and tested
+```
+
+The active goal is stored beside the session in `stores/sessions/`, injected into each agent turn, and available to agents through `goal_status` and `goal_update`.
+
 ### Document Ingestion
 
 Ingest a single file or an entire directory into the knowledge graph and vector store. The usual pattern is to keep source material in `research/`.
@@ -196,7 +207,11 @@ Every agent draws from a shared tool registry. The available tools cover several
 
 **Memory** tools let agents search the knowledge graph with `memory_search` (hybrid vector + KG retrieval with optional memory type filtering), query specific entities and their relationships with `memory_graph_query`, store new memories with taxonomy classification via `memory_store`, create explicit graph edges between entities with `memory_relate`, retrieve past sessions with `memory_recall`, fetch a specific excerpt with `memory_get`, and review contradictions with `contradiction_review`.
 
-**Filesystem** tools provide `read_file`, `write_file`, `edit_file`, and `list_dir` within the active workspace root.
+**Filesystem** tools provide `read_file`, `write_file`, `edit_file`, `apply_patch`, `list_dir`, `find_files`, and `grep_search` within the active workspace root.
+
+**Command** tools provide read-only Git status/diff helpers and a constrained `run_command` tool for allowlisted project checks such as tests and builds.
+
+**Goal** tools provide `goal_status` and `goal_update` so an agent can inspect the active session objective and mark it complete or blocked during a goal loop.
 
 **Web** tools include `web_search` for internet queries and `web_fetch` for retrieving and reading web page content.
 

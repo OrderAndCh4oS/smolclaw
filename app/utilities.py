@@ -14,6 +14,11 @@ from app.definitions import COMPLETION_MODEL
 tiktoken_encoders = {}
 
 
+class _FallbackEncoding:
+    def encode(self, text: str) -> list[str]:
+        return re.findall(r"\w+|[^\w\s]", text)
+
+
 def read_file(file_path):
     with open(file_path, "r") as f:
         return f.read()
@@ -79,9 +84,12 @@ def get_encoded_tokens(text, model=COMPLETION_MODEL):
     if not model in tiktoken_encoders:
         try:
             tiktoken_encoders[model] = tiktoken.encoding_for_model(model)
-        except KeyError:
+        except Exception:
             # Keep compatibility with newer model ids not yet known by local tiktoken.
-            tiktoken_encoders[model] = tiktoken.get_encoding("o200k_base")
+            try:
+                tiktoken_encoders[model] = tiktoken.get_encoding("o200k_base")
+            except Exception:
+                tiktoken_encoders[model] = _FallbackEncoding()
 
     return tiktoken_encoders[model].encode(text)
 

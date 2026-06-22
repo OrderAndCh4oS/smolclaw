@@ -22,6 +22,7 @@ from app.agent_loop import AgentLoop
 from app.definitions import (
     AGENT_MODEL, WORKSPACE_DIR,
 )
+from app.goal import GoalState, GoalStore
 from app.logger import clear_logs
 from app.runtime_builder import build_runtime_services
 from app.session_export_hook import SessionExportHook
@@ -95,6 +96,12 @@ SLASH_COMMANDS_HELP = "\n".join([
     "  / or /help or /commands  Show this command list",
     "  /remember <text>         Store a memory immediately",
     "  /remember-thread         Export the current chat thread to memory",
+    "  /goal status             Show the current session goal",
+    "  /goal start <objective>  Set the session goal",
+    "  /goal run [max_turns]    Continue the goal loop (default: 3)",
+    "  /goal complete [note]    Mark the goal complete",
+    "  /goal block [note]       Mark the goal blocked",
+    "  /goal clear              Clear the session goal",
     "  /clear                   Clear the current chat session",
     "  /quit or /exit           Exit chat",
 ])
@@ -172,6 +179,39 @@ def _print_usage_summary(console, session_usage):
                 f"({data['count']} call{'s' if data['count'] != 1 else ''}, "
                 f"{data['duration_ms'] / 1000:.1f}s)"
             )
+
+
+def _format_goal_status(goal: GoalState | None) -> str:
+    if goal is None:
+        return "No goal is set for this session."
+    lines = [
+        f"Goal: {goal.objective}",
+        f"Status: {goal.status}",
+        f"Turns: {goal.turn_count}",
+    ]
+    if goal.note:
+        lines.append(f"Note: {goal.note}")
+    return "\n".join(lines)
+
+
+def _parse_goal_run_count(value: str) -> int:
+    if not value:
+        return 3
+    try:
+        turns = int(value)
+    except ValueError as exc:
+        raise typer.BadParameter("/goal run expects a positive integer max_turns") from exc
+    if turns <= 0:
+        raise typer.BadParameter("/goal run expects a positive integer max_turns")
+    return min(turns, 20)
+
+
+def _build_goal_loop_prompt() -> str:
+    return (
+        "Continue working toward the active session goal. "
+        "Use the available read/search tools to assess the next concrete step. "
+        "If the goal is complete or blocked, call goal_update with the appropriate status and a brief note."
+    )
 
 
 def _workspace_context(workspace_root: str) -> WorkspaceContext:
@@ -467,6 +507,7 @@ async def _chat_loop(
     paths = workspace_ctx.paths
     smol_rag = runtime.smol_rag
     session_manager = runtime.session_manager
+    goal_store = GoalStore(paths.sessions_dir)
     memory_dir = ensure_dir(paths.memory_docs_dir)
     register_session_end_hooks = _make_session_end_hook_registrar(paths, memory_dir, auto_export)
 
@@ -512,6 +553,39 @@ async def _chat_loop(
 
     console.print(f"[bold green]{label}[/bold green] ready. Type /help for commands, /quit to exit.\n")
 
+    async def _run_agent_turn(prompt: str) -> str:
+        streamed = False
+
+        async def on_output(chunk: str):
+            nonlocal streamed
+            if not streamed:
+                console.print()  # blank line before response
+                streamed = True
+            console.file.write(chunk)
+            console.file.flush()
+
+        async def on_event(event: dict):
+            if not show_actions:
+                return
+            line = _format_action_event(event)
+            if line:
+                console.print(f"[dim]{line}[/dim]")
+
+        if show_actions:
+            response = await agent.process(prompt, on_output=on_output, on_event=on_event)
+        else:
+            response = await agent.process(prompt, on_output=on_output)
+
+        if streamed:
+            console.file.write("\n")
+            console.file.flush()
+            console.print()
+        else:
+            console.print()
+            console.print(Markdown(response))
+            console.print()
+        return response
+
     try:
         while True:
             try:
@@ -535,6 +609,67 @@ async def _chat_loop(
                 session_manager.save(agent.session)
                 console.print("[dim]Session cleared.[/dim]")
                 continue
+            if command == "/goal":
+                sub_parts = command_arg.split(maxsplit=1)
+                subcommand = sub_parts[0] if sub_parts else "status"
+                sub_arg = sub_parts[1].strip() if len(sub_parts) > 1 else ""
+                if subcommand in ("", "status"):
+                    console.print(f"[dim]{_format_goal_status(goal_store.load(agent.session.key))}[/dim]")
+                    continue
+                if subcommand == "start":
+                    if not sub_arg:
+                        console.print("[dim]Usage: /goal start <objective>[/dim]")
+                        continue
+                    goal = goal_store.start(agent.session.key, sub_arg)
+                    console.print(f"[dim]Goal set: {goal.objective}[/dim]")
+                    continue
+                if subcommand == "complete":
+                    try:
+                        goal = goal_store.update(agent.session.key, status="complete", note=sub_arg)
+                    except ValueError as exc:
+                        console.print(f"[dim]Error: {exc}[/dim]")
+                        continue
+                    console.print(f"[dim]{_format_goal_status(goal)}[/dim]")
+                    continue
+                if subcommand == "block":
+                    try:
+                        goal = goal_store.update(agent.session.key, status="blocked", note=sub_arg)
+                    except ValueError as exc:
+                        console.print(f"[dim]Error: {exc}[/dim]")
+                        continue
+                    console.print(f"[dim]{_format_goal_status(goal)}[/dim]")
+                    continue
+                if subcommand == "clear":
+                    removed = goal_store.clear(agent.session.key)
+                    message = "Goal cleared." if removed else "No goal was set."
+                    console.print(f"[dim]{message}[/dim]")
+                    continue
+                if subcommand == "run":
+                    try:
+                        max_turns = _parse_goal_run_count(sub_arg)
+                    except typer.BadParameter as exc:
+                        console.print(f"[dim]{exc}[/dim]")
+                        continue
+                    goal = goal_store.load(agent.session.key)
+                    if goal is None or goal.status != "active":
+                        console.print("[dim]No active goal to run.[/dim]")
+                        continue
+                    for turn_index in range(max_turns):
+                        goal = goal_store.load(agent.session.key)
+                        if goal is None or goal.status != "active":
+                            break
+                        console.print(f"[bold cyan]Goal turn {turn_index + 1}/{max_turns}[/bold cyan]")
+                        await _run_agent_turn(_build_goal_loop_prompt())
+                        goal = goal_store.load(agent.session.key)
+                        if goal is None:
+                            console.print("[dim]Goal cleared.[/dim]")
+                            break
+                        if goal.status != "active":
+                            console.print(f"[dim]{_format_goal_status(goal)}[/dim]")
+                            break
+                    continue
+                console.print("[dim]Usage: /goal status|start|run|complete|block|clear[/dim]")
+                continue
             if command == "/remember":
                 if not command_arg:
                     console.print("[dim]Usage: /remember <text>[/dim]")
@@ -552,36 +687,7 @@ async def _chat_loop(
                 console.print("[dim]Current thread exported to memory.[/dim]")
                 continue
 
-            streamed = False
-
-            async def on_output(chunk: str):
-                nonlocal streamed
-                if not streamed:
-                    console.print()  # blank line before response
-                    streamed = True
-                console.file.write(chunk)
-                console.file.flush()
-
-            async def on_event(event: dict):
-                if not show_actions:
-                    return
-                line = _format_action_event(event)
-                if line:
-                    console.print(f"[dim]{line}[/dim]")
-
-            if show_actions:
-                response = await agent.process(user_input, on_output=on_output, on_event=on_event)
-            else:
-                response = await agent.process(user_input, on_output=on_output)
-
-            if streamed:
-                console.file.write("\n")
-                console.file.flush()
-                console.print()
-            else:
-                console.print()
-                console.print(Markdown(response))
-                console.print()
+            await _run_agent_turn(user_input)
     finally:
         try:
             if auto_export:
@@ -969,5 +1075,35 @@ def clear_logs_command(
         console.print("[dim]No log files to delete.[/dim]")
 
 
-if __name__ == "__main__":
+def _smolcode_main(
+    session_key: str = typer.Option("default", "--session", "-s", help="Session key"),
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root"),
+    model: str = typer.Option(AGENT_MODEL, "--model", "-m", help="LLM model to use"),
+    agents_config: str = typer.Option(DEFAULT_AGENTS_CONFIG, "--agents-config", help="Path to agents YAML config"),
+    auto_export: bool = typer.Option(True, "--auto-export/--no-auto-export", help="Auto-export session on close"),
+    show_actions: bool = typer.Option(True, "--show-actions/--hide-actions", help="Show live tool activity while the agent works"),
+):
+    """Start SmolClaw's coding harness in the current workspace."""
+    asyncio.run(
+        _chat_loop(
+            session_key=session_key,
+            workspace=workspace,
+            model=model,
+            agent_name="coder",
+            agents_config=agents_config,
+            auto_export=auto_export,
+            show_actions=show_actions,
+        )
+    )
+
+
+def entrypoint():
     app()
+
+
+def code_entrypoint():
+    typer.run(_smolcode_main)
+
+
+if __name__ == "__main__":
+    entrypoint()

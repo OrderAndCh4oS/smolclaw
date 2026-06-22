@@ -3,7 +3,9 @@
 from typing import Dict, List, Optional
 
 from app.runtime_capabilities import (
+    CAPABILITY_COMMAND,
     CAPABILITY_FILESYSTEM,
+    CAPABILITY_GOAL,
     CAPABILITY_MEMORY,
     CAPABILITY_ORCHESTRATION,
     CAPABILITY_SHELL,
@@ -39,6 +41,8 @@ def build_tool_registry(
 
     if capability_names is None:
         capability_names = list(DEFAULT_CAPABILITIES)
+        if session_manager is not None:
+            capability_names.append(CAPABILITY_GOAL)
         if smol_rag is not None:
             capability_names.append(CAPABILITY_MEMORY)
         if agent_configs and session_manager:
@@ -54,6 +58,7 @@ def build_tool_registry(
         )
 
     requires_local_workspace = {
+        CAPABILITY_COMMAND,
         CAPABILITY_FILESYSTEM,
         CAPABILITY_MEMORY,
     }
@@ -66,13 +71,24 @@ def build_tool_registry(
 
     for capability_name in capability_names:
         if capability_name == CAPABILITY_FILESYSTEM:
-            from app.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
+            from app.tools.filesystem import (
+                ApplyPatchTool,
+                EditFileTool,
+                FindFilesTool,
+                GrepSearchTool,
+                ListDirTool,
+                ReadFileTool,
+                WriteFileTool,
+            )
 
             if transport == "direct":
                 registry.register(ReadFileTool(workspace=workspace), capability_name=capability_name)
                 registry.register(WriteFileTool(workspace=workspace), capability_name=capability_name)
                 registry.register(EditFileTool(workspace=workspace), capability_name=capability_name)
                 registry.register(ListDirTool(workspace=workspace), capability_name=capability_name)
+                registry.register(FindFilesTool(workspace=workspace), capability_name=capability_name)
+                registry.register(ApplyPatchTool(workspace=workspace), capability_name=capability_name)
+                registry.register(GrepSearchTool(workspace=workspace), capability_name=capability_name)
             else:
                 from app.tools.mcp_tools import (
                     McpEditFileTool, McpFileReadTool, McpFileWriteTool,
@@ -103,6 +119,18 @@ def build_tool_registry(
                 McpShellExecTool,
             )
             registry.register(McpShellExecTool(token_issuer_url, gateway_url), capability_name=capability_name)
+        elif capability_name == CAPABILITY_COMMAND:
+            if transport == "direct":
+                from app.tools.command import GitDiffTool, GitStatusTool, RunCommandTool
+
+                registry.register(GitStatusTool(workspace), capability_name=capability_name)
+                registry.register(GitDiffTool(workspace), capability_name=capability_name)
+                registry.register(RunCommandTool(workspace), capability_name=capability_name)
+        elif capability_name == CAPABILITY_GOAL and session_manager:
+            from app.tools.goal import GoalStatusTool, GoalUpdateTool
+
+            registry.register(GoalStatusTool(), capability_name=capability_name)
+            registry.register(GoalUpdateTool(), capability_name=capability_name)
         elif capability_name == CAPABILITY_MEMORY and smol_rag is not None:
             from app.tools.memory_tools import (
                 MemorySearchTool, MemoryGraphQueryTool, MemoryStoreTool,
@@ -140,6 +168,8 @@ def build_tool_registry(
             CAPABILITY_ORCHESTRATION,
             CAPABILITY_SUBAGENTS,
             CAPABILITY_SHELL,
+            CAPABILITY_COMMAND,
+            CAPABILITY_GOAL,
         }:
             continue
 

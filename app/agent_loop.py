@@ -29,6 +29,7 @@ class AgentLoop:
         reflection: bool = False,
         planning: bool = False,
         behaviors: Optional[list[LoopBehavior]] = None,
+        goal_store=None,
     ):
         self.llm = llm
         self.tool_registry = tool_registry
@@ -41,6 +42,7 @@ class AgentLoop:
         self.reflection = reflection
         self.planning = planning
         self.behaviors = list(behaviors or [])
+        self.goal_store = goal_store
         if not self.behaviors:
             legacy_behavior_names = []
             if planning:
@@ -133,6 +135,14 @@ class AgentLoop:
                 return normalize_tool_result(await maybe_result)
         return normalize_tool_result(await self.tool_registry.execute(name, arguments))
 
+    def _goal_context_message(self) -> dict | None:
+        if self.goal_store is None:
+            return None
+        goal = self.goal_store.load(self.session.key)
+        if goal is None or goal.status != "active":
+            return None
+        return {"role": "system", "content": goal.render_for_prompt()}
+
     async def process(
         self,
         user_content: str,
@@ -151,6 +161,8 @@ class AgentLoop:
             })
 
         self.session.add_message({"role": "user", "content": user_content})
+        if self.goal_store is not None:
+            self.goal_store.increment_turn_count(self.session.key)
 
         await self._maybe_consolidate()
 
@@ -163,6 +175,9 @@ class AgentLoop:
             history=history,
             user_content=user_content,
         )
+        goal_message = self._goal_context_message()
+        if goal_message is not None:
+            messages.insert(1 if messages and messages[0].get("role") == "system" else 0, goal_message)
 
         from app.tracing import get_tracer
 
