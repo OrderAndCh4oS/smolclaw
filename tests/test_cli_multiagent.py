@@ -819,7 +819,7 @@ class TestCliMultiagent:
 
     @pytest.mark.asyncio
     async def test_chat_loop_goal_run_continues_until_goal_completes(self, temp_dir):
-        from cli.main import DEFAULT_AGENTS_CONFIG, _chat_loop
+        from cli.main import DEFAULT_AGENTS_CONFIG, _build_goal_loop_prompt, _chat_loop
         from app.goal import GoalStore
 
         class FakePromptSession:
@@ -874,7 +874,7 @@ class TestCliMultiagent:
             await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True, show_actions=True)
 
         assert len(prompt_outputs) == 2
-        assert prompt_outputs[0] == "Continue working toward the active session goal. Use git_status, or run_command with git status if git_status is unavailable, plus the available read/search tools to inspect the codebase before editing. Read any existing target file before changing it. If the goal is complete or blocked, call goal_update with the appropriate status and a brief note."
+        assert prompt_outputs[0] == _build_goal_loop_prompt()
         assert prompt_outputs[1] == prompt_outputs[0]
         assert goal_store.load("default").status == "complete"
         output = "\n".join(fake_console.lines)

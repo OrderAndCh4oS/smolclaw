@@ -210,6 +210,7 @@ class TestRepoAgentsConfig:
         assert "exec" not in configs["default"].tools
         assert "list_dir" not in configs["default"].tools
         assert "git_status" in configs["default"].tools
+        assert "goal_start" in configs["default"].tools
         assert "goal_status" in configs["default"].tools
         assert "run_command" not in configs["default"].tools
 
@@ -219,6 +220,7 @@ class TestRepoAgentsConfig:
         assert "exec" not in configs["researcher"].tools
         assert "list_dir" not in configs["researcher"].tools
         assert "git_diff" in configs["researcher"].tools
+        assert "goal_start" in configs["researcher"].tools
         assert "goal_update" in configs["researcher"].tools
 
         assert configs["coder"].capabilities == ["filesystem", "command", "goal", "web", "memory"]
@@ -230,6 +232,7 @@ class TestRepoAgentsConfig:
         assert "write_file" in configs["coder"].tools
         assert "edit_file" in configs["coder"].tools
         assert "list_dir" not in configs["coder"].tools
+        assert "goal_start" in configs["coder"].tools
         assert "goal_update" in configs["coder"].tools
 
         assert configs["orchestrator"].capabilities == ["memory", "orchestration", "subagents"]

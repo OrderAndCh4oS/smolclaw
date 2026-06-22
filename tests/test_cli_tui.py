@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import asyncio
 import logging
@@ -105,6 +105,17 @@ def test_tui_spinner_is_idle_marker_when_idle():
     assert "spin:." in bottom
 
 
+def test_tui_spinner_runs_while_shutting_down():
+    tui = _fake_tui()
+    tui.state.activity = "shutting down"
+    tui.state.spinner_index = 1
+
+    bottom = "".join(text for _, text in tui._render_bottom_bar())
+
+    assert "spin:/" in bottom
+    assert "status:shutting down" in bottom
+
+
 @pytest.mark.asyncio
 async def test_tui_spinner_advances_while_active():
     tui = _fake_tui()
@@ -119,6 +130,78 @@ async def test_tui_spinner_advances_while_active():
             await task
 
     assert tui.state.spinner_index != 0
+
+
+@pytest.mark.asyncio
+async def test_tui_shutdown_reports_close_phases():
+    tui = _fake_tui()
+    tui.agent.close = AsyncMock()
+    tui.smol_rag.close = AsyncMock()
+
+    await tui._shutdown()
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    activity = "\n".join(entry.text for entry in tui.state.activity_log)
+    assert "Closing agent session and hooks." in rendered
+    assert "Closing memory stores." in rendered
+    assert "Shutdown complete." in activity
+    assert tui.state.run_state == "idle"
+    assert tui.state.activity == "idle"
+
+
+@pytest.mark.asyncio
+async def test_tui_shutdown_stops_running_agent_turn():
+    tui = _fake_tui()
+    never_finishes = asyncio.create_task(asyncio.sleep(60))
+    tui._agent_task = never_finishes
+    tui.agent.close = AsyncMock()
+    tui.smol_rag.close = AsyncMock()
+
+    await tui._shutdown()
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Stopping active agent turn." in rendered
+    tui.agent.request_stop.assert_called_once()
+    assert never_finishes.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_tui_shutdown_times_out_hung_agent_close(monkeypatch):
+    tui = _fake_tui()
+    monkeypatch.setattr("cli.tui.SHUTDOWN_PHASE_TIMEOUT", 0.01)
+
+    async def never_closes():
+        await asyncio.sleep(60)
+
+    tui.agent.close = never_closes
+    tui.smol_rag.close = AsyncMock()
+
+    await tui._shutdown()
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Timed out while closing agent session and hooks; continuing shutdown." in rendered
+    assert "Closing memory stores." in rendered
+    assert tui.state.run_state == "idle"
+    assert tui.state.activity == "idle"
+
+
+@pytest.mark.asyncio
+async def test_tui_force_exit_cancels_active_shutdown():
+    tui = _fake_tui()
+    tui._app = MagicMock()
+    tui.state.run_state = "shutting_down"
+    tui.state.activity = "shutting down"
+    shutdown_task = asyncio.create_task(asyncio.sleep(60))
+    tui._shutdown_task = shutdown_task
+
+    tui._force_exit()
+    await asyncio.sleep(0)
+
+    assert shutdown_task.cancelled()
+    assert tui._shutdown_forced is True
+    assert tui.state.run_state == "idle"
+    assert tui.state.activity == "idle"
+    tui._app.exit.assert_called_once()
 
 
 def test_fit_line_removes_stale_suffix_when_value_shrinks():

@@ -127,8 +127,9 @@ def build_tool_registry(
                 registry.register(GitDiffTool(workspace), capability_name=capability_name)
                 registry.register(RunCommandTool(workspace), capability_name=capability_name)
         elif capability_name == CAPABILITY_GOAL and session_manager:
-            from app.tools.goal import GoalStatusTool, GoalUpdateTool
+            from app.tools.goal import GoalStartTool, GoalStatusTool, GoalUpdateTool
 
+            registry.register(GoalStartTool(), capability_name=capability_name)
             registry.register(GoalStatusTool(), capability_name=capability_name)
             registry.register(GoalUpdateTool(), capability_name=capability_name)
         elif capability_name == CAPABILITY_MEMORY and smol_rag is not None:

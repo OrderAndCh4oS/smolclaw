@@ -37,6 +37,7 @@ from app.model_settings import (
 SPINNER_FRAMES = ("|", "/", "-", "\\")
 DETAILS_HEIGHT = 4
 MAX_ACTIVITY_ENTRIES = 80
+SHUTDOWN_PHASE_TIMEOUT = 8.0
 
 
 @dataclass
@@ -181,10 +182,14 @@ class CoderTui:
         self._app: Application | None = None
         self._agent_task: asyncio.Task | None = None
         self._spinner_task: asyncio.Task | None = None
+        self._shutdown_task: asyncio.Task | None = None
         self._invalidate_handle = None
         self._pending_llm_output = ""
         self._scroll_offset = 0
         self._terminal_log_handler = logging.NullHandler()
+        self._shutdown_started = False
+        self._shutdown_complete = False
+        self._shutdown_forced = False
 
     async def run(self):
         self._refresh_goal_state()
@@ -195,11 +200,11 @@ class CoderTui:
             with self._suppress_terminal_logs(), self._handle_loop_exceptions(), self._capture_stderr():
                 await self._app.run_async()
         finally:
+            await self._shutdown()
             if self._spinner_task is not None:
                 self._spinner_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await self._spinner_task
-            await self._shutdown()
 
     def _build_app(self) -> Application:
         key_bindings = KeyBindings()
@@ -226,8 +231,10 @@ class CoderTui:
                 if callable(request_stop):
                     request_stop()
                 self._invalidate()
+            elif self.state.run_state in {"stopping", "shutting_down"}:
+                self._force_exit()
             else:
-                event.app.exit()
+                self._begin_exit()
 
         @key_bindings.add("pageup")
         def _(event):
@@ -254,13 +261,13 @@ class CoderTui:
         @key_bindings.add("c-d")
         def _(event):
             if not self.input_buffer.text:
-                event.app.exit()
+                self._begin_exit()
                 return
             self._scroll_page(up=False)
 
         @key_bindings.add("c-q")
         def _(event):
-            event.app.exit()
+            self._begin_exit()
 
         self._transcript_window = Window(
             FormattedTextControl(self._render_transcript),
@@ -352,8 +359,7 @@ class CoderTui:
             self._append("system", self.slash_commands_help)
             return
         if text in ("/quit", "/exit"):
-            if self._app is not None:
-                self._app.exit()
+            self._begin_exit()
             return
         if text == "/clear":
             self.agent.session.clear()
@@ -569,25 +575,115 @@ class CoderTui:
                 self._record_activity("tool", line)
             self._invalidate()
 
+    def _begin_exit(self):
+        if self._shutdown_task is not None and not self._shutdown_task.done():
+            self._set_shutdown_phase("Shutdown already in progress. Press Ctrl+C to force exit.")
+            return
+        self._shutdown_task = asyncio.create_task(self._graceful_exit())
+
+    async def _graceful_exit(self):
+        self._set_shutdown_phase("Shutdown requested.")
+        try:
+            await self._shutdown()
+        finally:
+            if self._app is not None:
+                self._app.exit()
+
+    def _force_exit(self):
+        self._shutdown_forced = True
+        self._shutdown_complete = True
+        for task in (self._agent_task, self._shutdown_task):
+            if task is not None and not task.done() and task is not asyncio.current_task():
+                task.cancel()
+                task.add_done_callback(self._drain_task)
+        self.state.run_state = "idle"
+        self.state.activity = "idle"
+        self.state.active_tool = "idle"
+        self._record_activity("system", "Forced exit requested; cleanup was abandoned.")
+        self._append("system", "Forced exit requested; cleanup was abandoned.")
+        if self._app is not None:
+            self._app.exit()
+        self._invalidate()
+
+    def _set_shutdown_phase(self, message: str, *, active_tool: str = "shutdown"):
+        self.state.run_state = "shutting_down"
+        self.state.activity = "shutting down"
+        self.state.active_tool = active_tool
+        self._record_activity("system", message)
+        self._append("system", message)
+
     async def _shutdown(self):
+        if self._shutdown_forced or self._shutdown_complete:
+            return
+        if self._shutdown_started:
+            return
+        self._shutdown_started = True
         if self._agent_task is not None and not self._agent_task.done():
             request_stop = getattr(self.agent, "request_stop", None)
             if callable(request_stop):
                 request_stop()
             self._agent_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._agent_task
+            await self._await_shutdown_step(
+                "Stopping active agent turn.",
+                self._agent_task,
+                active_tool="agent",
+            )
         try:
-            if self.auto_export:
-                await self.agent.close()
-            else:
-                await self.agent.close()
+            await self._await_shutdown_step(
+                "Closing agent session and hooks.",
+                self.agent.close(),
+                active_tool="agent",
+            )
         finally:
             close_fn = getattr(self.smol_rag, "close", None)
             if callable(close_fn):
                 result = close_fn()
-                if asyncio.iscoroutine(result):
-                    await result
+                if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
+                    await self._await_shutdown_step(
+                        "Closing memory stores.",
+                        result,
+                        active_tool="memory",
+                    )
+            if not self._shutdown_forced:
+                self._shutdown_complete = True
+                self.state.run_state = "idle"
+                self.state.active_tool = "idle"
+                self.state.activity = "idle"
+                self._record_activity("system", "Shutdown complete.")
+                self._invalidate()
+
+    async def _await_shutdown_step(self, message: str, awaitable, *, active_tool: str) -> bool:
+        if self._shutdown_forced:
+            return False
+        self._set_shutdown_phase(message, active_tool=active_tool)
+        task = awaitable if isinstance(awaitable, asyncio.Future) else asyncio.create_task(awaitable)
+        done, _pending = await asyncio.wait({task}, timeout=SHUTDOWN_PHASE_TIMEOUT)
+        if task not in done:
+            task.cancel()
+            task.add_done_callback(self._drain_task)
+            self._set_shutdown_phase(
+                f"Timed out while {message[0].lower() + message[1:].rstrip('.')}; continuing shutdown.",
+                active_tool=active_tool,
+            )
+            return False
+        try:
+            await task
+            return True
+        except asyncio.CancelledError:
+            return False
+        except Exception as exc:
+            incident_id = diagnostics.record_exception(
+                exc,
+                boundary="tui.shutdown",
+                session_key=getattr(getattr(self.agent, "session", None), "key", ""),
+            )
+            self._append("error", diagnostics.user_error_message(incident_id, str(exc)))
+            return False
+
+    @staticmethod
+    def _drain_task(task: asyncio.Future):
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            task.exception()
 
     def _append(self, kind: str, text: str, title: str = ""):
         self._scroll_offset = 0

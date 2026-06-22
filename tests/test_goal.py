@@ -2,7 +2,8 @@ import pytest
 
 from app.goal import GoalState, GoalStore
 from app.tools.base import ToolRuntimeContext
-from app.tools.goal import GoalStatusTool, GoalUpdateTool
+from app.tools.factory import build_tool_registry
+from app.tools.goal import GoalStartTool, GoalStatusTool, GoalUpdateTool
 from cli.main import _format_goal_status, _parse_goal_run_count
 
 
@@ -31,16 +32,32 @@ def test_goal_store_rejects_empty_objective(temp_dir):
         store.start("session-a", "   ")
 
 
+def test_goal_capability_registers_goal_start_when_session_manager_available(temp_dir):
+    registry = build_tool_registry(
+        smol_rag=None,
+        session_manager=object(),
+        capability_names=["goal"],
+    )
+
+    assert "goal_start" in registry.tool_names()
+    assert "goal_status" in registry.tool_names()
+    assert "goal_update" in registry.tool_names()
+
+
 @pytest.mark.asyncio
 async def test_goal_tools_bind_to_runtime_context(temp_dir):
     store = GoalStore(temp_dir)
     store.start("session-a", "Write code")
     runtime = ToolRuntimeContext(goal_store=store, session_key="session-a")
 
+    start_tool = GoalStartTool().bind(runtime)
     status_tool = GoalStatusTool().bind(runtime)
     update_tool = GoalUpdateTool().bind(runtime)
 
-    assert "Write code" in await status_tool.execute()
+    assert await start_tool.execute(objective="Ship the goal tool") == "Goal set: Ship the goal tool"
+    assert store.load("session-a").objective == "Ship the goal tool"
+
+    assert "Ship the goal tool" in await status_tool.execute()
 
     result = await update_tool.execute(status="blocked", note="waiting on API key")
     assert result == "Goal marked blocked. Note: waiting on API key"

@@ -223,6 +223,7 @@ def _build_goal_loop_prompt() -> str:
         "Continue working toward the active session goal. "
         "Use git_status, or run_command with git status if git_status is unavailable, plus the available read/search tools to inspect the codebase before editing. "
         "Read any existing target file before changing it. "
+        "If the user asks to make something the active goal, call goal_start with the concrete objective. "
         "If the goal is complete or blocked, call goal_update with the appropriate status and a brief note."
     )
 
