@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 from app.agent_config import AgentConfigLoader
 from app.definitions import build_workspace_paths
 from app.agent_loop import AgentLoop
+from app.model_settings import RuntimeModelSettings
 from app.tools.registry import ToolRegistry
 from cli.main import _build_cli_tool_registry, _build_default_chat_agent, _build_multiagent
 from app.hooks import ON_SESSION_END, HookRunner
@@ -659,6 +660,59 @@ class TestCliMultiagent:
         fake_agent.close.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_chat_loop_model_subagents_command_updates_subagent_default(self):
+        from cli.main import DEFAULT_AGENTS_CONFIG, _chat_loop
+
+        class FakePromptSession:
+            def __init__(self, **kwargs):
+                self._inputs = iter(["/model subagents gpt-5.4-pro high", "/quit"])
+
+            async def prompt_async(self, _prompt):
+                try:
+                    return next(self._inputs)
+                except StopIteration:
+                    raise EOFError
+
+        class FakeConsole:
+            def __init__(self):
+                self.lines = []
+
+            def status(self, *args, **kwargs):
+                return nullcontext()
+
+            def print(self, *args, **kwargs):
+                self.lines.append(" ".join(str(arg) for arg in args))
+
+        fake_console = FakeConsole()
+        fake_agent = MagicMock()
+        fake_agent.llm = MagicMock()
+        fake_agent.llm.completion_model = "gpt-test"
+        fake_agent.llm.reasoning_effort = None
+        fake_agent.model_settings = RuntimeModelSettings()
+        fake_agent.hook_runner = HookRunner()
+        fake_agent.close = AsyncMock()
+        fake_agent.process = AsyncMock()
+        fake_agent.session = MagicMock()
+        fake_agent.session_usage = None
+
+        smol_rag = MagicMock()
+        session_manager = MagicMock()
+
+        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
+            patch("cli.main.PromptSession", FakePromptSession), \
+            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
+            patch("cli.main.console", fake_console):
+            await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+
+        selection = fake_agent.model_settings.resolve("fallback", subagent=True)
+        assert selection.model == "gpt-5.4-pro"
+        assert selection.reasoning_effort == "high"
+        assert fake_agent.llm.completion_model == "gpt-test"
+        assert "Switched subagents model:gpt-5.4-pro effort:high" in "\n".join(fake_console.lines)
+        fake_agent.process.assert_not_called()
+        fake_agent.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_chat_loop_close_releases_agent_llm(self, temp_dir):
         from cli.main import DEFAULT_AGENTS_CONFIG, _chat_loop
 
@@ -820,7 +874,7 @@ class TestCliMultiagent:
             await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True, show_actions=True)
 
         assert len(prompt_outputs) == 2
-        assert prompt_outputs[0] == "Continue working toward the active session goal. Use git_status plus the available read/search tools to inspect the codebase before editing. Read any existing target file before changing it. If the goal is complete or blocked, call goal_update with the appropriate status and a brief note."
+        assert prompt_outputs[0] == "Continue working toward the active session goal. Use git_status, or run_command with git status if git_status is unavailable, plus the available read/search tools to inspect the codebase before editing. Read any existing target file before changing it. If the goal is complete or blocked, call goal_update with the appropriate status and a brief note."
         assert prompt_outputs[1] == prompt_outputs[0]
         assert goal_store.load("default").status == "complete"
         output = "\n".join(fake_console.lines)

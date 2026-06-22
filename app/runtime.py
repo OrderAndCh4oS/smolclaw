@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Callable, Dict, Optional, Sequence
 
 from app.agent_config import AgentConfig
@@ -8,6 +8,7 @@ from app.context_assembly import ContextAssembler
 from app.context_builder import ContextBuilder
 from app.definitions import PROJECT_ROOT
 from app.hooks import HookRunner, ON_AFTER_TOOL
+from app.model_settings import RuntimeModelSettings
 from app.runtime_capabilities import (
     CAPABILITY_GOAL,
     CAPABILITY_MEMORY,
@@ -51,6 +52,7 @@ class RuntimeEnvironment:
     agent_configs: Optional[Dict[str, AgentConfig]] = None
     enable_subagents: bool = False
     llm: object = None
+    model_settings: RuntimeModelSettings = field(default_factory=RuntimeModelSettings)
 
     @property
     def memory_docs_dir(self) -> str:
@@ -216,4 +218,5 @@ def build_configured_agent(
         child_smol_rag_resolver=lambda agent_config: resolve_agent_smol_rag(agent_config, env),
         child_hook_runner_configurers_resolver=lambda agent_config: resolve_hook_runner_configurers(agent_config, env),
         llm_factory_kwargs=llm_factory_kwargs,
+        model_settings=env.model_settings,
     )

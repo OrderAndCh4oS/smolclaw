@@ -54,7 +54,7 @@ class TestSafetyMiddleware:
         )
 
         assert result.startswith("Error: safety gate blocked")
-        assert "run git_status" in result
+        assert "run git_status or run_command git status" in result
         assert "find_files or grep_search" in result
         assert "read target file first: app.py" in result
 
@@ -71,6 +71,27 @@ class TestSafetyMiddleware:
             FakeTool("read_file", ToolCallPolicy(tags=frozenset({FILESYSTEM_READ}))),
             {"path": "app.py"},
         )
+        result = await chain.run(
+            FakeTool("edit_file", ToolCallPolicy(mutates_state=True, tags=frozenset({FILESYSTEM_WRITE}))),
+            {"path": "app.py", "old_text": "hi", "new_text": "bye"},
+        )
+
+        assert result == "edit_file ok"
+
+    @pytest.mark.asyncio
+    async def test_run_command_git_status_satisfies_status_requirement(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        with open(os.path.join(temp_dir, "app.py"), "w") as f:
+            f.write("print('hi')\n")
+        _, chain = _chain(workspace)
+
+        await chain.run(FakeTool("run_command"), {"command": "git status"})
+        await chain.run(FakeTool("find_files"), {"path": ".", "pattern": "*.py"})
+        await chain.run(
+            FakeTool("read_file", ToolCallPolicy(tags=frozenset({FILESYSTEM_READ}))),
+            {"path": "app.py"},
+        )
+
         result = await chain.run(
             FakeTool("edit_file", ToolCallPolicy(mutates_state=True, tags=frozenset({FILESYSTEM_WRITE}))),
             {"path": "app.py", "old_text": "hi", "new_text": "bye"},
@@ -108,7 +129,7 @@ class TestSafetyMiddleware:
         )
 
         assert result.startswith("Error: safety gate blocked")
-        assert "run git_status" in result
+        assert "run git_status or run_command git status" in result
 
     def test_begin_task_resets_normal_turn_state(self, temp_dir):
         workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()

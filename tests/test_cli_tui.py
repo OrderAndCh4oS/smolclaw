@@ -6,12 +6,15 @@ import os
 import sys
 import pytest
 
-from cli.tui import CoderTui, TranscriptEntry, UiState, _fit_line
+from cli.tui import ActivityEntry, CoderTui, DETAILS_HEIGHT, TranscriptEntry, UiState, _fit_line
+from app.model_settings import RuntimeModelSettings
 
 
-def _fake_tui():
+def _fake_tui(show_actions=False):
     agent = MagicMock()
     agent.llm.completion_model = "gpt-test"
+    agent.llm.reasoning_effort = None
+    agent.model_settings = RuntimeModelSettings()
     agent.session.key = "session"
     agent.safety_state = object()
     goal_store = MagicMock()
@@ -26,7 +29,7 @@ def _fake_tui():
         workspace_root=".",
         model="fallback-model",
         auto_export=True,
-        show_actions=True,
+        show_actions=show_actions,
         slash_commands_help="help",
         format_goal_status=lambda goal: "No goal" if goal is None else goal.status,
         parse_goal_run_count=lambda value: int(value or "3"),
@@ -64,7 +67,18 @@ def test_tui_status_bars_include_satellite_info():
     assert "tok:12,400" in bottom
     assert "tools:grep_search" in bottom
     assert "safety:gated" in bottom
+    assert "spin:|" in bottom
+    assert "details:off" in bottom
     assert "status:searching" in bottom
+
+
+def test_tui_top_bar_shows_reasoning_effort_when_set():
+    tui = _fake_tui()
+    tui.state.reasoning_effort = "high"
+
+    top = "".join(text for _, text in tui._render_top_bar())
+
+    assert "effort:high" in top
 
 
 def test_tui_status_bars_pad_to_terminal_width(monkeypatch):
@@ -81,6 +95,32 @@ def test_tui_status_bars_pad_to_terminal_width(monkeypatch):
     assert short_bottom.endswith(" ")
 
 
+def test_tui_spinner_is_idle_marker_when_idle():
+    tui = _fake_tui()
+    tui.state.activity = "idle"
+    tui.state.spinner_index = 2
+
+    bottom = "".join(text for _, text in tui._render_bottom_bar())
+
+    assert "spin:." in bottom
+
+
+@pytest.mark.asyncio
+async def test_tui_spinner_advances_while_active():
+    tui = _fake_tui()
+    tui.state.activity = "running"
+    task = asyncio.create_task(tui._animate_spinner())
+
+    try:
+        await asyncio.sleep(0.25)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert tui.state.spinner_index != 0
+
+
 def test_fit_line_removes_stale_suffix_when_value_shrinks():
     previous = _fit_line("tools:memory_search running", 16)
     current = _fit_line("tools:idle", 16)
@@ -90,12 +130,12 @@ def test_fit_line_removes_stale_suffix_when_value_shrinks():
     assert current == "tools:idle      "
 
 
-def test_tui_transcript_renders_user_assistant_tool_and_errors():
+def test_tui_transcript_renders_user_assistant_system_and_errors():
     tui = _fake_tui()
     tui.state.transcript = [
         TranscriptEntry(kind="user", title="you", text="hello"),
         TranscriptEntry(kind="assistant", title="smolclaw", text="hi"),
-        TranscriptEntry(kind="tool", text="action: grep_search query=test"),
+        TranscriptEntry(kind="system", text="Session note"),
         TranscriptEntry(kind="error", text="Error: failed"),
     ]
 
@@ -105,7 +145,7 @@ def test_tui_transcript_renders_user_assistant_tool_and_errors():
     assert "hello" in rendered
     assert "smolclaw" in rendered
     assert "hi" in rendered
-    assert "action: grep_search query=test" in rendered
+    assert "Session note" in rendered
     assert "Error: failed" in rendered
 
 
@@ -149,16 +189,108 @@ def test_tui_layout_keeps_bars_and_input_exact_height():
     tui = _fake_tui()
 
     app = tui._build_app()
-    top_bar, transcript, bottom_bar, input_area = app.layout.container.children
+    top_bar, transcript, details, bottom_bar, input_area = app.layout.container.children
     prompt_window, input_window = input_area.children
 
     assert top_bar.height.min == top_bar.height.max == 1
+    assert details.content.height.min == details.content.height.max == DETAILS_HEIGHT
     assert bottom_bar.height.min == bottom_bar.height.max == 1
     assert input_area.height.min == input_area.height.max == 3
     assert prompt_window.height.min == prompt_window.height.max == 3
     assert input_window.height.min == input_window.height.max == 3
     assert transcript.dont_extend_height()
     assert input_window.ignore_content_height()
+
+
+@pytest.mark.asyncio
+async def test_tui_details_command_toggles_activity_pane():
+    tui = _fake_tui()
+
+    assert tui.state.details_visible is False
+
+    await tui.submit("/details")
+
+    assert tui.state.details_visible is True
+    assert "Tool details shown." in "".join(text for _, text in tui._render_transcript())
+    assert "details:on" in "".join(text for _, text in tui._render_bottom_bar())
+
+    await tui.submit("/details")
+
+    assert tui.state.details_visible is False
+    assert "Tool details hidden." in "".join(text for _, text in tui._render_transcript())
+    assert "details:off" in "".join(text for _, text in tui._render_bottom_bar())
+
+
+@pytest.mark.asyncio
+async def test_tui_model_command_switches_model_and_effort():
+    tui = _fake_tui()
+
+    await tui.submit("/model gpt-5.5 high")
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert tui.agent.llm.completion_model == "gpt-5.5"
+    assert tui.agent.llm.reasoning_effort == "high"
+    assert tui.state.model == "gpt-5.5"
+    assert tui.state.reasoning_effort == "high"
+    assert "Switched model:gpt-5.5 effort:high" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_model_subagents_command_switches_subagent_default_only():
+    tui = _fake_tui()
+
+    await tui.submit("/model subagents gpt-5.4-pro high")
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    subagent_selection = tui.agent.model_settings.resolve("fallback", subagent=True)
+    assert subagent_selection.model == "gpt-5.4-pro"
+    assert subagent_selection.reasoning_effort == "high"
+    assert tui.agent.llm.completion_model == "gpt-test"
+    assert tui.state.model == "gpt-test"
+    assert "Switched subagents model:gpt-5.4-pro effort:high" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_model_command_rejects_non_gpt_54_or_55_model():
+    tui = _fake_tui()
+
+    await tui.submit("/model gpt-4.1 high")
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Error: Model must start with gpt-5.4 or gpt-5.5." in rendered
+    assert tui.agent.llm.completion_model == "gpt-test"
+
+
+def test_tui_details_pane_renders_recent_activity_without_transcript():
+    tui = _fake_tui()
+    tui.state.activity_log = [
+        ActivityEntry(kind="system", text="thinking..."),
+        ActivityEntry(kind="tool", text="action: grep_search query=hello"),
+        ActivityEntry(kind="tool", text="done: grep_search (0.1s)"),
+        ActivityEntry(kind="tool", text="failed: web_search (1.0s) - timeout"),
+    ]
+
+    details = "".join(text for _, text in tui._render_details())
+    transcript = "".join(text for _, text in tui._render_transcript())
+
+    assert "details  /details to hide" in details
+    assert "action: grep_search query=hello" in details
+    assert "done: grep_search (0.1s)" in details
+    assert "failed: web_search (1.0s) - timeout" in details
+    assert "action: grep_search query=hello" not in transcript
+
+
+def test_tui_transcript_height_accounts_for_details_pane(monkeypatch):
+    tui = _fake_tui()
+    monkeypatch.setattr("cli.tui.shutil.get_terminal_size", lambda fallback: os.terminal_size((40, 12)))
+
+    tui.state.details_visible = False
+    hidden_height = tui._transcript_height()
+    tui.state.details_visible = True
+    visible_height = tui._transcript_height()
+
+    assert hidden_height == 7
+    assert visible_height == 3
 
 
 def test_tui_transcript_scrolls_and_clamps(monkeypatch):
@@ -247,7 +379,15 @@ async def test_tui_submit_streams_agent_events_without_real_llm():
     async def fake_process(prompt, on_output=None, on_event=None):
         process_prompts.append(prompt)
         await on_event({"type": "llm", "phase": "start", "line": "thinking..."})
-        await on_output("hello")
+        await on_output("Plan: search the repo first.")
+        await on_event({
+            "type": "llm",
+            "phase": "end",
+            "model": "gpt-test",
+            "total_tokens": 3,
+            "has_tool_calls": True,
+            "line": "thought: 3 tokens",
+        })
         await on_event({
             "type": "tool",
             "phase": "start",
@@ -260,15 +400,17 @@ async def test_tui_submit_streams_agent_events_without_real_llm():
             "name": "grep_search",
             "line": "done: grep_search (0.1s)",
         })
-        await on_output(" world")
+        await on_event({"type": "llm", "phase": "start", "line": "thinking..."})
+        await on_output("Final answer.")
         await on_event({
             "type": "llm",
             "phase": "end",
             "model": "gpt-test",
-            "total_tokens": 7,
-            "line": "thought: 7 tokens",
+            "total_tokens": 4,
+            "has_tool_calls": False,
+            "line": "thought: 4 tokens",
         })
-        return "hello world"
+        return "Final answer."
 
     tui.agent.process = fake_process
 
@@ -277,9 +419,18 @@ async def test_tui_submit_streams_agent_events_without_real_llm():
     rendered = "".join(text for _, text in tui._render_transcript())
     assert process_prompts == ["say hello"]
     assert "say hello" in rendered
-    assert "hello world" in rendered
-    assert "action: grep_search query=hello" in rendered
-    assert "done: grep_search (0.1s)" in rendered
+    assert "Final answer." in rendered
+    assert "Plan: search the repo first." not in rendered
+    details = "".join(text for _, text in tui._render_details())
+    assert "action: grep_search query=hello" not in rendered
+    assert "done: grep_search (0.1s)" not in rendered
+    assert "thought: 4 tokens" not in rendered
+    assert any(entry.text == "Plan: search the repo first." for entry in tui.state.activity_log)
+    activity_text = "\n".join(entry.text for entry in tui.state.activity_log)
+    assert "action: grep_search query=hello" in activity_text
+    assert "done: grep_search (0.1s)" in activity_text
+    assert "thought: 3 tokens" in activity_text
+    assert "thought: 4 tokens" in details
     assert tui.state.token_total == 7
     assert tui.state.active_tool == "idle"
     assert tui.state.run_state == "idle"
@@ -317,3 +468,10 @@ async def test_tui_bottom_bar_shows_thinking_and_tool_activity():
 
     assert "tools:idle" in bottom
     assert "status:running" in bottom
+
+
+@pytest.mark.asyncio
+async def test_tui_show_actions_starts_with_details_visible():
+    tui = _fake_tui(show_actions=True)
+
+    assert tui.state.details_visible is True

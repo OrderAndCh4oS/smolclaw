@@ -32,6 +32,7 @@ class AgentLoop:
         behaviors: Optional[list[LoopBehavior]] = None,
         goal_store=None,
         safety_state=None,
+        model_settings=None,
     ):
         self.llm = llm
         self.tool_registry = tool_registry
@@ -46,6 +47,7 @@ class AgentLoop:
         self.behaviors = list(behaviors or [])
         self.goal_store = goal_store
         self.safety_state = safety_state
+        self.model_settings = model_settings
         if not self.behaviors:
             legacy_behavior_names = []
             if planning:
@@ -295,6 +297,7 @@ class AgentLoop:
             await self._emit_event(on_event, {
                 "type": "llm", "phase": "end", "iteration": iteration,
                 "duration_ms": llm_duration_ms,
+                "has_tool_calls": bool(result["has_tool_calls"]),
                 "prompt_tokens": sum(r.prompt_tokens for r in llm_records),
                 "completion_tokens": sum(r.completion_tokens for r in llm_records),
                 "total_tokens": sum(r.total_tokens for r in llm_records),

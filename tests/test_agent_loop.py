@@ -625,4 +625,5 @@ class TestAgentLoop:
         assert len(llm_events) >= 2
         assert llm_events[0]["phase"] == "start"
         assert llm_events[1]["phase"] == "end"
+        assert llm_events[1]["has_tool_calls"] is True
         assert "total_tokens" in llm_events[1]

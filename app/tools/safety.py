@@ -37,7 +37,7 @@ class SafetyState:
         normalized = normalize_tool_result(result)
         if not normalized.ok:
             return
-        if tool_name in STATUS_TOOLS:
+        if tool_name in STATUS_TOOLS or self._is_status_command(tool_name, arguments):
             self.did_git_status = True
         if tool_name in SEARCH_TOOLS:
             self.did_search = True
@@ -67,10 +67,14 @@ class SafetyState:
     def exploration_errors(self) -> list[str]:
         errors = []
         if not self.did_git_status:
-            errors.append("run git_status")
+            errors.append("run git_status or run_command git status")
         if not self.did_search:
             errors.append("search the workspace with find_files or grep_search")
         return errors
+
+    def _is_status_command(self, tool_name: str, arguments: dict[str, Any]) -> bool:
+        command = str(arguments.get("command") or "").strip()
+        return tool_name == "run_command" and command in {"git status", "git status --short", "git status --porcelain"}
 
 
 class SafetyMiddleware:

@@ -6,6 +6,7 @@ import pytest
 from app.agent_config import AgentConfig
 from app.agent_factory import ChildAgentFactory, build_agent_loop
 from app.agent_loop import AgentLoop
+from app.model_settings import RuntimeModelSettings
 from app.session import SessionManager
 from app.tools.base import Tool
 from app.tools.factory import build_tool_registry
@@ -170,6 +171,7 @@ def writer_config():
 def _mock_create_llm(completion_model=None, **kwargs):
     mock = MagicMock()
     mock.completion_model = completion_model
+    mock.reasoning_effort = None
     return mock
 
 
@@ -189,6 +191,25 @@ class TestAgentFactory:
         sm = SessionManager(sessions_dir)
         loop = build_agent_loop(researcher_config, master_registry, mock_smol_rag, sm)
         assert loop.llm.completion_model == "gpt-5.2-instant"
+
+    @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
+    def test_build_agent_loop_uses_subagent_model_default_for_children(
+        self, _mock_create, researcher_config, master_registry, mock_smol_rag, sessions_dir
+    ):
+        sm = SessionManager(sessions_dir)
+        settings = RuntimeModelSettings()
+
+        loop = build_agent_loop(
+            researcher_config,
+            master_registry,
+            mock_smol_rag,
+            sm,
+            model_settings=settings,
+            is_child_agent=True,
+        )
+
+        assert loop.llm.completion_model == "gpt-5.5"
+        assert loop.llm.reasoning_effort == "medium"
 
     @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     def test_build_agent_loop_filters_tools(

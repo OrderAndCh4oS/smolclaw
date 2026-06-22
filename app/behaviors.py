@@ -15,11 +15,11 @@ PLANNING_BEHAVIOR = LoopBehavior(
         "Before acting, think through your approach: "
         "What is the user asking for? What information do you need? "
         "What's the best sequence of steps? Which tools should you use and in what order? "
-        "State your plan briefly, then execute it."
+        "Keep this planning internal; do not narrate it to the user. Execute with tools, then answer when done."
     ),
     after_tools_prompt=(
         "Review the tool results above. What did you learn? "
-        "Does this change your approach? Do you need more information or can you answer now?"
+        "Does this change your approach? Keep this assessment internal. Continue with tools if needed, otherwise answer."
     ),
 )
 
@@ -28,7 +28,7 @@ REFLECTION_BEHAVIOR = LoopBehavior(
     after_tools_prompt=(
         "Before continuing, assess: Have you gathered enough information to answer completely? "
         "Are your findings verified against sources? Is anything missing or uncertain? "
-        "If incomplete, continue working. If complete, provide your final answer."
+        "Keep this assessment internal. If incomplete, continue working with tools. If complete, provide your final answer."
     ),
 )
 

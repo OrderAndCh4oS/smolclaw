@@ -28,6 +28,7 @@ class OpenAiLlm:
         self.embedding_cache_kv = embedding_cache_kv or SqliteKvStore(cache_db_path, "embedding_cache")
         self.completion_model = completion_model or COMPLETION_MODEL
         self.embedding_model = embedding_model or EMBEDDING_MODEL
+        self.reasoning_effort = None
         self.usage_collector = None
 
     def _record_usage(self, operation: str, model: str, prompt_tokens: int,
@@ -155,6 +156,8 @@ class OpenAiLlm:
         """
         model = model or self.completion_model
         kwargs = {"model": model, "messages": messages}
+        if self.reasoning_effort:
+            kwargs["reasoning_effort"] = self.reasoning_effort
         if tools:
             kwargs["tools"] = self._sanitize_tools(tools)
 

@@ -13,15 +13,30 @@ from prompt_toolkit import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import StyleAndTextTuples
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import Layout
-from prompt_toolkit.layout.containers import HSplit, ScrollOffsets, VSplit, Window, WindowAlign
+from prompt_toolkit.layout.containers import ConditionalContainer, HSplit, ScrollOffsets, VSplit, Window, WindowAlign
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.styles import Style
 
 from app import diagnostics
+from app.model_settings import (
+    apply_subagent_model_selection,
+    apply_runtime_model_selection,
+    get_reasoning_effort,
+    model_help,
+    model_list,
+    model_status,
+    parse_model_selection,
+    subagent_model_status,
+)
+
+SPINNER_FRAMES = ("|", "/", "-", "\\")
+DETAILS_HEIGHT = 4
+MAX_ACTIVITY_ENTRIES = 80
 
 
 @dataclass
@@ -32,20 +47,30 @@ class TranscriptEntry:
 
 
 @dataclass
+class ActivityEntry:
+    kind: str
+    text: str
+
+
+@dataclass
 class UiState:
     label: str = "smolclaw"
     mode: str = "coder"
     input_mode: str = "insert"
     model: str = "model"
+    reasoning_effort: str = ""
     cwd: str = "."
     git_state: str = "git:unknown"
     goal_state: str = ""
     token_total: int = 0
     active_tool: str = "idle"
     activity: str = "idle"
+    spinner_index: int = 0
     safety_state: str = "safety:gated"
     run_state: str = "idle"
+    details_visible: bool = False
     transcript: list[TranscriptEntry] = field(default_factory=list)
+    activity_log: list[ActivityEntry] = field(default_factory=list)
 
 
 def _compact_path(path: str, max_len: int = 36) -> str:
@@ -145,15 +170,19 @@ class CoderTui:
         self.state = UiState(
             label=label,
             model=getattr(getattr(agent, "llm", None), "completion_model", None) or model,
+            reasoning_effort=get_reasoning_effort(getattr(agent, "llm", None)) or "",
             cwd=_compact_path(self.workspace_root),
             git_state=_git_state(self.workspace_root),
             safety_state="safety:gated" if getattr(agent, "safety_state", None) is not None else "safety:n/a",
+            details_visible=show_actions,
         )
         self.input_buffer = Buffer(multiline=True)
         self._transcript_window: Window | None = None
         self._app: Application | None = None
         self._agent_task: asyncio.Task | None = None
+        self._spinner_task: asyncio.Task | None = None
         self._invalidate_handle = None
+        self._pending_llm_output = ""
         self._scroll_offset = 0
         self._terminal_log_handler = logging.NullHandler()
 
@@ -161,10 +190,15 @@ class CoderTui:
         self._refresh_goal_state()
         self._append("system", "SmolClaw ready. Type /help for commands, /quit to exit.")
         self._app = self._build_app()
+        self._spinner_task = asyncio.create_task(self._animate_spinner())
         try:
             with self._suppress_terminal_logs(), self._handle_loop_exceptions(), self._capture_stderr():
                 await self._app.run_async()
         finally:
+            if self._spinner_task is not None:
+                self._spinner_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._spinner_task
             await self._shutdown()
 
     def _build_app(self) -> Application:
@@ -234,6 +268,18 @@ class CoderTui:
             always_hide_cursor=True,
             dont_extend_height=True,
         )
+        details_window = ConditionalContainer(
+            Window(
+                FormattedTextControl(self._render_details),
+                height=Dimension.exact(DETAILS_HEIGHT),
+                wrap_lines=False,
+                always_hide_cursor=True,
+                dont_extend_height=True,
+                ignore_content_height=True,
+                style="class:details",
+            ),
+            filter=Condition(lambda: self.state.details_visible),
+        )
         input_window = Window(
             BufferControl(buffer=self.input_buffer),
             height=Dimension.exact(3),
@@ -263,6 +309,7 @@ class CoderTui:
                 style="class:bar.top",
             ),
             self._transcript_window,
+            details_window,
             Window(
                 FormattedTextControl(self._render_bottom_bar),
                 height=Dimension.exact(1),
@@ -282,6 +329,10 @@ class CoderTui:
             "role.tool": "ansiyellow",
             "role.error": "ansired bold",
             "text.dim": "ansibrightblack",
+            "details": "ansibrightblack",
+            "details.title": "ansibrightblack reverse",
+            "details.tool": "ansiyellow",
+            "details.error": "ansired",
         })
         return Application(
             layout=Layout(root, focused_element=input_area),
@@ -312,6 +363,14 @@ class CoderTui:
             return
         if text == "/logs":
             self._append("system", self._diagnostics_paths())
+            return
+        if command == "/model":
+            self._handle_model(command_arg)
+            return
+        if text == "/details":
+            self.state.details_visible = not self.state.details_visible
+            state = "shown" if self.state.details_visible else "hidden"
+            self._append("system", f"Tool details {state}.")
             return
         if command == "/goal":
             await self._handle_goal(command_arg)
@@ -434,13 +493,13 @@ class CoderTui:
         self.state.run_state = "running"
         self.state.active_tool = "idle"
         self.state.activity = "running"
+        self._pending_llm_output = ""
         assistant_entry = TranscriptEntry(kind="assistant", title="smolclaw", text="")
         self.state.transcript.append(assistant_entry)
         self._invalidate()
 
         async def on_output(chunk: str):
-            assistant_entry.text += chunk
-            self._scroll_offset = 0
+            self._pending_llm_output += chunk
             self._invalidate_throttled()
 
         async def on_event(event: dict):
@@ -450,8 +509,10 @@ class CoderTui:
             response = await self.agent.process(
                 prompt,
                 on_output=on_output,
-                on_event=on_event if self.show_actions else None,
+                on_event=on_event,
             )
+            if self._pending_llm_output and not assistant_entry.text.strip():
+                self._flush_pending_llm_output(has_tool_calls=False)
             if not assistant_entry.text.strip() and response:
                 assistant_entry.text = response
         except asyncio.CancelledError:
@@ -479,6 +540,7 @@ class CoderTui:
             if event.get("phase") == "start":
                 self.state.run_state = "thinking"
                 self.state.activity = "thinking"
+                self._pending_llm_output = ""
             elif event.get("phase") == "end":
                 self.state.run_state = "running"
                 self.state.activity = "running"
@@ -486,14 +548,17 @@ class CoderTui:
                 model = event.get("model")
                 if model:
                     self.state.model = str(model)
+                self.state.reasoning_effort = get_reasoning_effort(self.agent.llm) or ""
+                self._flush_pending_llm_output(has_tool_calls=bool(event.get("has_tool_calls")))
             line = self.format_action_event(event)
-            if line and event.get("phase") != "start":
-                self._append("system", line)
+            if line:
+                self._record_activity("system", line)
             self._invalidate()
             return
         if event.get("type") == "tool":
             name = str(event.get("name") or "tool")
             if event.get("phase") == "start":
+                self._flush_pending_llm_output(has_tool_calls=True)
                 self.state.active_tool = name
                 self.state.activity = self._activity_label(name)
             elif event.get("phase") == "end":
@@ -501,7 +566,7 @@ class CoderTui:
                 self.state.activity = "running"
             line = self.format_action_event(event)
             if line:
-                self._append("tool", line)
+                self._record_activity("tool", line)
             self._invalidate()
 
     async def _shutdown(self):
@@ -529,6 +594,61 @@ class CoderTui:
         self.state.transcript.append(TranscriptEntry(kind=kind, text=text, title=title))
         self._invalidate()
 
+    def _record_activity(self, kind: str, text: str):
+        self.state.activity_log.append(ActivityEntry(kind=kind, text=text))
+        if len(self.state.activity_log) > MAX_ACTIVITY_ENTRIES:
+            del self.state.activity_log[: len(self.state.activity_log) - MAX_ACTIVITY_ENTRIES]
+
+    def _flush_pending_llm_output(self, *, has_tool_calls: bool):
+        if not self._pending_llm_output:
+            return
+        text = self._pending_llm_output
+        self._pending_llm_output = ""
+        if has_tool_calls:
+            self._record_activity("system", text.strip())
+            return
+        assistant_entry = self._current_assistant_entry()
+        if assistant_entry is not None:
+            assistant_entry.text += text
+            self._scroll_offset = 0
+
+    def _current_assistant_entry(self) -> TranscriptEntry | None:
+        if not self.state.transcript:
+            return None
+        entry = self.state.transcript[-1]
+        return entry if entry.kind == "assistant" else None
+
+    def _handle_model(self, command_arg: str):
+        if not command_arg:
+            self._append("system", model_help(self.agent.llm, getattr(self.agent, "model_settings", None)))
+            return
+        if command_arg == "list":
+            self._append("system", model_list())
+            return
+        subagent_parts = command_arg.split(maxsplit=1)
+        if subagent_parts[0] == "subagents":
+            model_settings = getattr(self.agent, "model_settings", None)
+            if len(subagent_parts) == 1:
+                self._append("system", subagent_model_status(model_settings))
+                return
+            try:
+                selection = parse_model_selection(subagent_parts[1])
+            except ValueError as exc:
+                self._append("error", f"Error: {exc}")
+                return
+            apply_subagent_model_selection(selection, model_settings)
+            self._append("system", f"Switched {subagent_model_status(model_settings)}")
+            return
+        try:
+            selection = parse_model_selection(command_arg)
+        except ValueError as exc:
+            self._append("error", f"Error: {exc}")
+            return
+        apply_runtime_model_selection(self.agent.llm, selection, getattr(self.agent, "model_settings", None))
+        self.state.model = selection.model
+        self.state.reasoning_effort = get_reasoning_effort(self.agent.llm) or ""
+        self._append("system", f"Switched {model_status(self.agent.llm)}")
+
     def _refresh_goal_state(self):
         goal = self.goal_store.load(self.agent.session.key)
         if goal is None:
@@ -544,9 +664,13 @@ class CoderTui:
             self.state.label,
             self.state.mode,
             self.state.model,
+        ]
+        if self.state.reasoning_effort:
+            parts.append(f"effort:{self.state.reasoning_effort}")
+        parts.extend([
             self.state.cwd,
             self.state.git_state,
-        ]
+        ])
         if self.state.goal_state:
             parts.append(self.state.goal_state)
         return [("", _fit_line("  " + "  ".join(parts), width))]
@@ -559,9 +683,25 @@ class CoderTui:
             tokens,
             f"tools:{self.state.active_tool}",
             self.state.safety_state,
+            f"spin:{self._spinner_frame()}",
+            f"details:{'on' if self.state.details_visible else 'off'}",
             f"status:{self.state.activity}",
         ]
         return [("", _fit_line("  " + "  ".join(parts), width))]
+
+    def _render_details(self) -> StyleAndTextTuples:
+        width = self._terminal_width()
+        body_height = DETAILS_HEIGHT - 1
+        title = _fit_line("  details  /details to hide", width)
+        lines = self._activity_lines(width)
+        visible = lines[-body_height:] if body_height > 0 else []
+
+        output: StyleAndTextTuples = [("class:details.title", f"{title}\n")]
+        output.extend((style, f"{line}\n") for style, line in visible)
+        missing_rows = body_height - len(visible)
+        if missing_rows > 0:
+            output.append(("class:details", "\n" * missing_rows))
+        return output
 
     def _render_transcript(self) -> StyleAndTextTuples:
         width = self._terminal_width()
@@ -605,6 +745,20 @@ class CoderTui:
             lines.append((style, title))
             lines.extend(self._wrap_lines(entry.text.rstrip(), text_width, ""))
             lines.append(("", ""))
+        return lines
+
+    def _activity_lines(self, width: int) -> list[tuple[str, str]]:
+        lines: list[tuple[str, str]] = []
+        text_width = max(1, width)
+        for entry in self.state.activity_log:
+            style = {
+                "system": "class:details",
+                "tool": "class:details.tool",
+                "error": "class:details.error",
+            }.get(entry.kind, "class:details")
+            if entry.text.startswith("failed:"):
+                style = "class:details.error"
+            lines.extend(self._wrap_lines(entry.text, text_width, style))
         return lines
 
     def _wrap_lines(self, text: str, width: int, style: str) -> list[tuple[str, str]]:
@@ -651,7 +805,8 @@ class CoderTui:
         return max(1, int(shutil.get_terminal_size((100, 24)).lines))
 
     def _transcript_height(self) -> int:
-        return max(1, self._terminal_height() - 5)
+        details_height = DETAILS_HEIGHT if self.state.details_visible else 0
+        return max(1, self._terminal_height() - 5 - details_height)
 
     def _max_scroll_offset(self) -> int:
         return max(0, len(self._transcript_lines(self._terminal_width())) - self._transcript_height())
@@ -682,6 +837,22 @@ class CoderTui:
         if "memory" in name:
             return "remembering"
         return name
+
+    def _spinner_frame(self) -> str:
+        if self.state.activity == "idle":
+            return "."
+        return SPINNER_FRAMES[self.state.spinner_index % len(SPINNER_FRAMES)]
+
+    async def _animate_spinner(self):
+        while True:
+            await asyncio.sleep(0.2)
+            if self.state.activity == "idle":
+                if self.state.spinner_index != 0:
+                    self.state.spinner_index = 0
+                    self._invalidate()
+                continue
+            self.state.spinner_index = (self.state.spinner_index + 1) % len(SPINNER_FRAMES)
+            self._invalidate()
 
     def _diagnostics_paths(self) -> str:
         log_dir = os.path.join(self.workspace_root, "stores", "logs")

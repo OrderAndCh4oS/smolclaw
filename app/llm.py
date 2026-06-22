@@ -14,6 +14,10 @@ class CompositeLlm:
         return self.completion_provider.completion_model
 
     @property
+    def reasoning_effort(self):
+        return getattr(self.completion_provider, "reasoning_effort", None)
+
+    @property
     def usage_collector(self):
         return getattr(self.completion_provider, "usage_collector", None)
 

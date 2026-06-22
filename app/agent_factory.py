@@ -13,6 +13,7 @@ from app.definitions import PROJECT_ROOT
 from app.goal import GoalStore
 from app.hooks import HookRunner, ON_AFTER_TOOL
 from app.llm import create_llm
+from app.model_settings import ModelSelection, RuntimeModelSettings, apply_model_selection
 from app.session import SessionManager
 from app.tools.base import ToolRuntimeContext, normalize_tool_result
 from app.tools.middleware import HookFiringMiddleware
@@ -51,6 +52,7 @@ class ChildAgentFactory:
     session_manager: SessionManager
     parent_session_key: str
     llm_factory_kwargs: Optional[dict] = None
+    model_settings: RuntimeModelSettings | None = None
     registry_factory: Optional[Callable[[AgentConfig], ToolRegistry]] = None
     loop_registrar: Optional[Callable[[AgentLoop], None]] = None
     context_builder_factory: Optional[Callable[[AgentConfig], ContextBuilder]] = None
@@ -113,6 +115,8 @@ class ChildAgentFactory:
             child_smol_rag_resolver=self.smol_rag_resolver,
             child_hook_runner_configurers_resolver=self.hook_runner_configurers_resolver,
             llm_factory_kwargs=self.llm_factory_kwargs,
+            model_settings=self.model_settings,
+            is_child_agent=True,
         )
         if self.loop_registrar:
             self.loop_registrar(loop)
@@ -136,8 +140,17 @@ def build_agent_loop(
     child_smol_rag_resolver: Optional[SmolRagResolver] = None,
     child_hook_runner_configurers_resolver: Optional[HookRunnerConfigurersResolver] = None,
     llm_factory_kwargs: Optional[dict] = None,
+    model_selection: ModelSelection | None = None,
+    model_settings: RuntimeModelSettings | None = None,
+    is_child_agent: bool = False,
 ) -> AgentLoop:
-    llm = create_llm(completion_model=config.model, **(llm_factory_kwargs or {}))
+    selection = model_selection
+    if selection is None and model_settings is not None:
+        selection = model_settings.resolve(config.model, subagent=is_child_agent)
+    completion_model = selection.model if selection is not None else config.model
+    llm = create_llm(completion_model=completion_model, **(llm_factory_kwargs or {}))
+    if selection is not None:
+        apply_model_selection(llm, selection)
     agent_smol_rag = smol_rag
     if config.capabilities and "memory" not in config.capabilities:
         agent_smol_rag = None
@@ -182,6 +195,7 @@ def build_agent_loop(
         hook_runner_configurers=hook_runner_configurers,
         smol_rag_resolver=child_smol_rag_resolver,
         hook_runner_configurers_resolver=child_hook_runner_configurers_resolver,
+        model_settings=model_settings,
     )
     filtered_registry = master_registry.project_for_agent(
         config.tools,
@@ -235,6 +249,7 @@ def build_agent_loop(
         behaviors=load_behaviors(resolve_behavior_names(config)),
         goal_store=goal_store,
         safety_state=safety_state,
+        model_settings=model_settings,
     )
     for resource in runtime_ctx.owned_resources:
         loop.add_owned_resource(resource)

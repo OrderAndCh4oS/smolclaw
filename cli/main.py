@@ -24,6 +24,15 @@ from app.definitions import (
 )
 from app.goal import GoalState, GoalStore
 from app.logger import clear_logs
+from app.model_settings import (
+    apply_subagent_model_selection,
+    apply_runtime_model_selection,
+    model_help,
+    model_list,
+    model_status,
+    parse_model_selection,
+    subagent_model_status,
+)
 from app.runtime_builder import build_runtime_services
 from app.session_export_hook import SessionExportHook
 from app.runtime import RuntimeEnvironment, build_configured_agent, build_master_registry
@@ -97,6 +106,8 @@ SLASH_COMMANDS_HELP = "\n".join([
     "  /remember <text>         Store a memory immediately",
     "  /remember-thread         Export the current chat thread to memory",
     "  /logs                    Show workspace diagnostics log paths",
+    "  /details                 Toggle recent tool/thinking activity",
+    "  /model [model] [effort]  Show or switch gpt-5.4/gpt-5.5 model",
     "  /goal status             Show the current session goal",
     "  /goal start <objective>  Set the session goal",
     "  /goal run [max_turns]    Continue the goal loop (default: 3)",
@@ -210,7 +221,7 @@ def _parse_goal_run_count(value: str) -> int:
 def _build_goal_loop_prompt() -> str:
     return (
         "Continue working toward the active session goal. "
-        "Use git_status plus the available read/search tools to inspect the codebase before editing. "
+        "Use git_status, or run_command with git status if git_status is unavailable, plus the available read/search tools to inspect the codebase before editing. "
         "Read any existing target file before changing it. "
         "If the goal is complete or blocked, call goal_update with the appropriate status and a brief note."
     )
@@ -489,7 +500,7 @@ def chat(
     agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Agent name from agents.yaml"),
     agents_config: str = typer.Option(DEFAULT_AGENTS_CONFIG, "--agents-config", help="Path to agents YAML config"),
     auto_export: bool = typer.Option(True, "--auto-export/--no-auto-export", help="Auto-export session on close"),
-    show_actions: bool = typer.Option(True, "--show-actions/--hide-actions", help="Show live tool activity while the agent works"),
+    show_actions: bool = typer.Option(False, "--show-actions/--hide-actions", help="Show recent tool activity details while the agent works"),
 ):
     """Start an interactive chat session."""
     asyncio.run(_tui_chat_loop(session_key, workspace, model, agent, agents_config, auto_export, show_actions))
@@ -502,7 +513,7 @@ async def _tui_chat_loop(
     agent_name: Optional[str] = None,
     agents_config: str = DEFAULT_AGENTS_CONFIG,
     auto_export: bool = True,
-    show_actions: bool = True,
+    show_actions: bool = False,
     display_label: Optional[str] = None,
 ):
     runtime = _build_cli_runtime(workspace)
@@ -690,6 +701,34 @@ async def _chat_loop(
                 agent.session.clear()
                 session_manager.save(agent.session)
                 console.print("[dim]Session cleared.[/dim]")
+                continue
+            if command == "/model":
+                if not command_arg:
+                    console.print(f"[dim]{model_help(agent.llm, getattr(agent, 'model_settings', None))}[/dim]")
+                    continue
+                if command_arg == "list":
+                    console.print(f"[dim]{model_list()}[/dim]")
+                    continue
+                subagent_parts = command_arg.split(maxsplit=1)
+                if subagent_parts[0] == "subagents":
+                    if len(subagent_parts) == 1:
+                        console.print(f"[dim]{subagent_model_status(getattr(agent, 'model_settings', None))}[/dim]")
+                        continue
+                    try:
+                        selection = parse_model_selection(subagent_parts[1])
+                    except ValueError as exc:
+                        console.print(f"[dim]Error: {exc}[/dim]")
+                        continue
+                    apply_subagent_model_selection(selection, getattr(agent, "model_settings", None))
+                    console.print(f"[dim]Switched {subagent_model_status(getattr(agent, 'model_settings', None))}[/dim]")
+                    continue
+                try:
+                    selection = parse_model_selection(command_arg)
+                except ValueError as exc:
+                    console.print(f"[dim]Error: {exc}[/dim]")
+                    continue
+                apply_runtime_model_selection(agent.llm, selection, getattr(agent, "model_settings", None))
+                console.print(f"[dim]Switched {model_status(agent.llm)}[/dim]")
                 continue
             if command == "/goal":
                 sub_parts = command_arg.split(maxsplit=1)
@@ -1163,7 +1202,7 @@ def _smolclaw_main(
     model: str = typer.Option(AGENT_MODEL, "--model", "-m", help="LLM model to use"),
     agents_config: str = typer.Option(DEFAULT_AGENTS_CONFIG, "--agents-config", help="Path to agents YAML config"),
     auto_export: bool = typer.Option(True, "--auto-export/--no-auto-export", help="Auto-export session on close"),
-    show_actions: bool = typer.Option(True, "--show-actions/--hide-actions", help="Show live tool activity while the agent works"),
+    show_actions: bool = typer.Option(False, "--show-actions/--hide-actions", help="Show recent tool activity details while the agent works"),
 ):
     """Start SmolClaw's coding harness in the current workspace."""
     asyncio.run(
