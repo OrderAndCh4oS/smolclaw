@@ -1,7 +1,7 @@
 import os
 from dataclasses import dataclass
 
-COMPLETION_MODEL = os.getenv('COMPLETION_MODEL', 'gpt-5.4-mini')
+COMPLETION_MODEL = os.getenv('COMPLETION_MODEL', 'gpt-5.5')
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
 
 # app/ package dir
@@ -87,6 +87,6 @@ LOG_DIR = _DEFAULT_WORKSPACE_PATHS.log_dir
 RESEARCH_DOCS_DIR = _DEFAULT_WORKSPACE_PATHS.research_dir
 INPUT_DOCS_DIR = _DEFAULT_WORKSPACE_PATHS.input_docs_dir
 WORKSPACE_DIR = _DEFAULT_WORKSPACE_PATHS.root_dir
-AGENT_MODEL = os.getenv('AGENT_MODEL', 'gpt-4.1-mini')
+AGENT_MODEL = os.getenv('AGENT_MODEL', 'gpt-5.5')
 MAX_ITERATIONS = int(os.getenv('MAX_ITERATIONS', '15'))
 MEMORY_WINDOW = int(os.getenv('MEMORY_WINDOW', '20'))

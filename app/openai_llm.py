@@ -14,6 +14,18 @@ from app.utilities import make_hash
 
 load_dotenv()
 
+DEFAULT_REASONING_EFFORT = os.getenv("REASONING_EFFORT", "medium") or None
+
+
+def _default_reasoning_effort_for_model(model: str | None) -> str | None:
+    if model and model.startswith(("gpt-5.4", "gpt-5.5")):
+        return DEFAULT_REASONING_EFFORT
+    return None
+
+
+def _supports_reasoning_effort(model: str | None) -> bool:
+    return bool(model and model.startswith(("gpt-5.4", "gpt-5.5")))
+
 
 class OpenAiLlm:
     def __init__(self, completion_model=None, embedding_model=None, query_cache_kv=None, embedding_cache_kv=None,
@@ -28,7 +40,7 @@ class OpenAiLlm:
         self.embedding_cache_kv = embedding_cache_kv or SqliteKvStore(cache_db_path, "embedding_cache")
         self.completion_model = completion_model or COMPLETION_MODEL
         self.embedding_model = embedding_model or EMBEDDING_MODEL
-        self.reasoning_effort = None
+        self.reasoning_effort = _default_reasoning_effort_for_model(self.completion_model)
         self.usage_collector = None
 
     def _record_usage(self, operation: str, model: str, prompt_tokens: int,
@@ -156,8 +168,9 @@ class OpenAiLlm:
         """
         model = model or self.completion_model
         kwargs = {"model": model, "messages": messages}
-        if self.reasoning_effort:
-            kwargs["reasoning_effort"] = self.reasoning_effort
+        reasoning_effort = self.reasoning_effort or _default_reasoning_effort_for_model(model)
+        if reasoning_effort and _supports_reasoning_effort(model):
+            kwargs["reasoning_effort"] = reasoning_effort
         if tools:
             kwargs["tools"] = self._sanitize_tools(tools)
 

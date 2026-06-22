@@ -84,6 +84,21 @@ class TestGetToolCompletion:
             )
             call_kwargs = mock_client.chat.completions.create.call_args
             assert call_kwargs.kwargs["model"] == "gpt-4o"
+            assert "reasoning_effort" not in call_kwargs.kwargs
+
+    @pytest.mark.asyncio
+    async def test_get_tool_completion_defaults_to_medium_effort_for_gpt_55(self):
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = MagicMock(return_value=_make_mock_response("ok"))
+        with patch("app.openai_llm.OpenAI", return_value=mock_client):
+
+            llm = OpenAiLlm(openai_api_key="test-key")
+            await llm.get_tool_completion(
+                messages=[{"role": "user", "content": "hi"}],
+            )
+            call_kwargs = mock_client.chat.completions.create.call_args
+            assert call_kwargs.kwargs["model"] == "gpt-5.5"
+            assert call_kwargs.kwargs["reasoning_effort"] == "medium"
 
     @pytest.mark.asyncio
     async def test_get_tool_completion_sends_reasoning_effort_when_set(self):
