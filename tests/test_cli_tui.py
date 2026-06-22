@@ -44,6 +44,7 @@ def test_tui_status_bars_include_satellite_info():
         goal_state="goal:2",
         token_total=12400,
         active_tool="grep_search",
+        activity="searching",
         safety_state="safety:gated",
         run_state="running",
     )
@@ -60,7 +61,7 @@ def test_tui_status_bars_include_satellite_info():
     assert "tok:12,400" in bottom
     assert "tools:grep_search" in bottom
     assert "safety:gated" in bottom
-    assert "running" in bottom
+    assert "status:searching" in bottom
 
 
 def test_tui_status_bars_pad_to_terminal_width(monkeypatch):
@@ -173,3 +174,37 @@ async def test_tui_submit_streams_agent_events_without_real_llm():
     assert tui.state.token_total == 7
     assert tui.state.active_tool == "idle"
     assert tui.state.run_state == "idle"
+    assert tui.state.activity == "idle"
+
+
+@pytest.mark.asyncio
+async def test_tui_bottom_bar_shows_thinking_and_tool_activity():
+    tui = _fake_tui()
+
+    await tui._handle_agent_event({"type": "llm", "phase": "start", "line": "thinking..."})
+    bottom = "".join(text for _, text in tui._render_bottom_bar())
+
+    assert "status:thinking" in bottom
+    assert "thinking..." not in "".join(text for _, text in tui._render_transcript())
+
+    await tui._handle_agent_event({
+        "type": "tool",
+        "phase": "start",
+        "name": "web_search",
+        "line": "action: web_search query=editors",
+    })
+    bottom = "".join(text for _, text in tui._render_bottom_bar())
+
+    assert "tools:web_search" in bottom
+    assert "status:searching" in bottom
+
+    await tui._handle_agent_event({
+        "type": "tool",
+        "phase": "end",
+        "name": "web_search",
+        "line": "done: web_search (0.1s)",
+    })
+    bottom = "".join(text for _, text in tui._render_bottom_bar())
+
+    assert "tools:idle" in bottom
+    assert "status:running" in bottom

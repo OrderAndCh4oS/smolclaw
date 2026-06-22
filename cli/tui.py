@@ -37,9 +37,9 @@ class UiState:
     goal_state: str = ""
     token_total: int = 0
     active_tool: str = "idle"
+    activity: str = "idle"
     safety_state: str = "safety:gated"
     run_state: str = "idle"
-    status_message: str = ""
     transcript: list[TranscriptEntry] = field(default_factory=list)
 
 
@@ -180,7 +180,7 @@ class CoderTui:
         def _(event):
             if self.state.run_state in {"running", "thinking"}:
                 self.state.run_state = "stopping"
-                self.state.status_message = "stop requested"
+                self.state.activity = "stopping"
                 request_stop = getattr(self.agent, "request_stop", None)
                 if callable(request_stop):
                     request_stop()
@@ -354,19 +354,19 @@ class CoderTui:
             self._append("system", "Usage: /remember <text>")
             return
         self.state.run_state = "running"
-        self.state.status_message = "storing memory"
+        self.state.activity = "storing"
         self._invalidate()
         try:
             result = await self.memory_store_tool.execute(content=command_arg)
             self._append("system", str(result))
         finally:
             self.state.run_state = "idle"
-            self.state.status_message = ""
+            self.state.activity = "idle"
             self._invalidate()
 
     async def _handle_remember_thread(self):
         self.state.run_state = "running"
-        self.state.status_message = "exporting thread"
+        self.state.activity = "exporting"
         self._invalidate()
         try:
             await self.session_export_hook({
@@ -376,7 +376,7 @@ class CoderTui:
             self._append("system", "Current thread exported to memory.")
         finally:
             self.state.run_state = "idle"
-            self.state.status_message = ""
+            self.state.activity = "idle"
             self._invalidate()
 
     async def _start_agent_turn(self, prompt: str):
@@ -388,8 +388,8 @@ class CoderTui:
 
     async def _run_agent_turn(self, prompt: str):
         self.state.run_state = "running"
-        self.state.status_message = ""
         self.state.active_tool = "idle"
+        self.state.activity = "running"
         assistant_entry = TranscriptEntry(kind="assistant", title="smolclaw", text="")
         self.state.transcript.append(assistant_entry)
         self._invalidate()
@@ -420,7 +420,7 @@ class CoderTui:
                     self.state.transcript.remove(assistant_entry)
             self.state.run_state = "idle"
             self.state.active_tool = "idle"
-            self.state.status_message = ""
+            self.state.activity = "idle"
             self._refresh_goal_state()
             self.state.git_state = _git_state(self.workspace_root)
             self._invalidate()
@@ -429,16 +429,16 @@ class CoderTui:
         if event.get("type") == "llm":
             if event.get("phase") == "start":
                 self.state.run_state = "thinking"
-                self.state.status_message = "thinking"
+                self.state.activity = "thinking"
             elif event.get("phase") == "end":
                 self.state.run_state = "running"
-                self.state.status_message = ""
+                self.state.activity = "running"
                 self.state.token_total += int(event.get("total_tokens") or 0)
                 model = event.get("model")
                 if model:
                     self.state.model = str(model)
             line = self.format_action_event(event)
-            if line:
+            if line and event.get("phase") != "start":
                 self._append("system", line)
             self._invalidate()
             return
@@ -446,8 +446,10 @@ class CoderTui:
             name = str(event.get("name") or "tool")
             if event.get("phase") == "start":
                 self.state.active_tool = name
+                self.state.activity = self._activity_label(name)
             elif event.get("phase") == "end":
                 self.state.active_tool = "idle"
+                self.state.activity = "running"
             line = self.format_action_event(event)
             if line:
                 self._append("tool", line)
@@ -508,10 +510,8 @@ class CoderTui:
             tokens,
             f"tools:{self.state.active_tool}",
             self.state.safety_state,
-            self.state.run_state,
+            f"status:{self.state.activity}",
         ]
-        if self.state.status_message:
-            parts.append(self.state.status_message)
         return [("", _fit_line("  " + "  ".join(parts), width))]
 
     def _render_transcript(self) -> StyleAndTextTuples:
@@ -603,3 +603,19 @@ class CoderTui:
 
     def _transcript_height(self) -> int:
         return max(1, self._terminal_height() - 5)
+
+    def _activity_label(self, tool_name: str) -> str:
+        name = tool_name.lower()
+        if "search" in name or "grep" in name or "find" in name:
+            return "searching"
+        if "fetch" in name or "web" in name:
+            return "fetching"
+        if "read" in name or "recall" in name:
+            return "reading"
+        if "write" in name or "edit" in name or "patch" in name:
+            return "editing"
+        if "git" in name:
+            return "checking"
+        if "memory" in name:
+            return "remembering"
+        return name
