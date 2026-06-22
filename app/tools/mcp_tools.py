@@ -3,6 +3,7 @@ from typing import Any, Dict
 
 from app.mcp_client import McpClient, McpDeniedException
 from app.tools.base import Tool, ToolCallPolicy
+from app.tools.permissions import COMMAND_EXECUTION, FILESYSTEM_READ, FILESYSTEM_WRITE, SHELL_WRITE
 
 
 class McpToolBase(Tool):
@@ -38,6 +39,10 @@ class McpToolBase(Tool):
 
 class McpFileReadTool(McpToolBase):
     @property
+    def default_call_policy(self) -> ToolCallPolicy:
+        return ToolCallPolicy(tags=frozenset({FILESYSTEM_READ}))
+
+    @property
     def name(self) -> str:
         return "read_file"
 
@@ -66,7 +71,7 @@ class McpFileReadTool(McpToolBase):
 class McpFileWriteTool(McpToolBase):
     @property
     def default_call_policy(self) -> ToolCallPolicy:
-        return ToolCallPolicy(mutates_state=True, tags=frozenset({"filesystem", "write"}))
+        return ToolCallPolicy(mutates_state=True, tags=frozenset({"filesystem", "write", FILESYSTEM_WRITE}))
 
     @property
     def name(self) -> str:
@@ -98,7 +103,7 @@ class McpFileWriteTool(McpToolBase):
 class McpEditFileTool(McpToolBase):
     @property
     def default_call_policy(self) -> ToolCallPolicy:
-        return ToolCallPolicy(mutates_state=True, tags=frozenset({"filesystem", "write"}))
+        return ToolCallPolicy(mutates_state=True, tags=frozenset({"filesystem", "write", FILESYSTEM_WRITE}))
 
     @property
     def name(self) -> str:
@@ -146,7 +151,7 @@ class McpEditFileTool(McpToolBase):
 class McpShellExecTool(McpToolBase):
     @property
     def default_call_policy(self) -> ToolCallPolicy:
-        return ToolCallPolicy(mutates_state=True, tags=frozenset({"shell"}))
+        return ToolCallPolicy(mutates_state=True, tags=frozenset({"shell", COMMAND_EXECUTION, SHELL_WRITE}))
 
     @property
     def name(self) -> str:

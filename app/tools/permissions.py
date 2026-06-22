@@ -9,6 +9,12 @@ from app.tools.middleware import NextFn
 MUTATES_STATE: Final[str] = "mutates_state"
 DELEGATES: Final[str] = "delegates"
 COMMAND_EXECUTION: Final[str] = "command_execution"
+FILESYSTEM_READ: Final[str] = "filesystem_read"
+FILESYSTEM_WRITE: Final[str] = "filesystem_write"
+SHELL_READ: Final[str] = "shell_read"
+SHELL_WRITE: Final[str] = "shell_write"
+EXTERNAL_PATH: Final[str] = "external_path"
+DELETE: Final[str] = "delete"
 
 DIRECT_MUTATION_TOOLS: Final[Set[str]] = {
     "write_file",

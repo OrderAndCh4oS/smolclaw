@@ -18,6 +18,7 @@ from app.tools.base import ToolRuntimeContext, normalize_tool_result
 from app.tools.middleware import HookFiringMiddleware
 from app.tools.memory_tools import _promote_accessed_excerpts
 from app.tools.registry import ToolRegistry
+from app.tools.safety import SafetyMiddleware, SafetyState
 from app.workspace import WorkspaceContext
 
 _SHARED_BOOTSTRAP_PATH = os.path.join(PROJECT_ROOT, "AGENT.md")
@@ -166,6 +167,8 @@ def build_agent_loop(
         goal_store=goal_store,
         loop_registrar=child_loop_registrar,
     )
+    safety_state = SafetyState(workspace=workspace)
+    runtime_ctx.shared_state["safety_state"] = safety_state
     runtime_ctx.child_agent_factory = ChildAgentFactory(
         master_registry=master_registry,
         registry_factory=registry_factory,
@@ -191,6 +194,7 @@ def build_agent_loop(
     if config.permission_mode != "full":
         from app.tools.permissions import PermissionMiddleware
         filtered_registry.use(PermissionMiddleware(config.permission_mode))
+    filtered_registry.use(SafetyMiddleware(safety_state))
 
     # Resolve skill paths
     skills_paths = [
@@ -230,6 +234,7 @@ def build_agent_loop(
         planning=config.planning,
         behaviors=load_behaviors(resolve_behavior_names(config)),
         goal_store=goal_store,
+        safety_state=safety_state,
     )
     for resource in runtime_ctx.owned_resources:
         loop.add_owned_resource(resource)

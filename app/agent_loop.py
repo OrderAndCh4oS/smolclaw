@@ -30,6 +30,7 @@ class AgentLoop:
         planning: bool = False,
         behaviors: Optional[list[LoopBehavior]] = None,
         goal_store=None,
+        safety_state=None,
     ):
         self.llm = llm
         self.tool_registry = tool_registry
@@ -43,6 +44,7 @@ class AgentLoop:
         self.planning = planning
         self.behaviors = list(behaviors or [])
         self.goal_store = goal_store
+        self.safety_state = safety_state
         if not self.behaviors:
             legacy_behavior_names = []
             if planning:
@@ -159,6 +161,8 @@ class AgentLoop:
             await self.hook_runner.fire(ON_SESSION_START, {
                 "session_key": self.session.key,
             })
+
+        self._begin_safety_task()
 
         self.session.add_message({"role": "user", "content": user_content})
         if self.goal_store is not None:
@@ -343,6 +347,16 @@ class AgentLoop:
         self.session.add_message({"role": "assistant", "content": msg})
         self.session_manager.save(self.session)
         return msg
+
+    def _begin_safety_task(self):
+        if self.safety_state is None:
+            return
+        goal = self.goal_store.load(self.session.key) if self.goal_store is not None else None
+        if goal is not None and goal.status == "active":
+            task_key = f"goal:{self.session.key}:{goal.created_at}:{goal.objective}"
+        else:
+            task_key = f"turn:{self.session.key}:{len(self.session.messages)}"
+        self.safety_state.begin_task(task_key)
 
     def request_stop(self):
         """Signal the loop to stop after the current iteration completes."""

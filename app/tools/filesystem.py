@@ -3,6 +3,7 @@ import fnmatch
 import re
 
 from app.tools.base import Tool, ToolCallPolicy
+from app.tools.permissions import FILESYSTEM_READ, FILESYSTEM_WRITE
 from app.workspace import WorkspaceContext
 
 
@@ -23,6 +24,10 @@ class _WorkspacePathMixin:
 
 
 class ReadFileTool(_WorkspacePathMixin, Tool):
+    @property
+    def default_call_policy(self) -> ToolCallPolicy:
+        return ToolCallPolicy(tags=frozenset({FILESYSTEM_READ}))
+
     @property
     def name(self) -> str:
         return "read_file"
@@ -60,7 +65,7 @@ class ReadFileTool(_WorkspacePathMixin, Tool):
 class WriteFileTool(_WorkspacePathMixin, Tool):
     @property
     def default_call_policy(self) -> ToolCallPolicy:
-        return ToolCallPolicy(mutates_state=True, tags=frozenset({"filesystem", "write"}))
+        return ToolCallPolicy(mutates_state=True, tags=frozenset({"filesystem", "write", FILESYSTEM_WRITE}))
 
     @property
     def name(self) -> str:
@@ -101,7 +106,7 @@ class WriteFileTool(_WorkspacePathMixin, Tool):
 class EditFileTool(_WorkspacePathMixin, Tool):
     @property
     def default_call_policy(self) -> ToolCallPolicy:
-        return ToolCallPolicy(mutates_state=True, tags=frozenset({"filesystem", "write"}))
+        return ToolCallPolicy(mutates_state=True, tags=frozenset({"filesystem", "write", FILESYSTEM_WRITE}))
 
     @property
     def name(self) -> str:
@@ -285,7 +290,7 @@ class FindFilesTool(_WorkspacePathMixin, Tool):
 class ApplyPatchTool(_WorkspacePathMixin, Tool):
     @property
     def default_call_policy(self) -> ToolCallPolicy:
-        return ToolCallPolicy(mutates_state=True, tags=frozenset({"filesystem", "write"}))
+        return ToolCallPolicy(mutates_state=True, tags=frozenset({"filesystem", "write", FILESYSTEM_WRITE}))
 
     @property
     def name(self) -> str:

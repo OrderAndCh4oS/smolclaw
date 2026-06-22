@@ -209,7 +209,8 @@ def _parse_goal_run_count(value: str) -> int:
 def _build_goal_loop_prompt() -> str:
     return (
         "Continue working toward the active session goal. "
-        "Use the available read/search tools to assess the next concrete step. "
+        "Use git_status plus the available read/search tools to inspect the codebase before editing. "
+        "Read any existing target file before changing it. "
         "If the goal is complete or blocked, call goal_update with the appropriate status and a brief note."
     )
 

@@ -223,6 +223,7 @@ class TestRepoAgentsConfig:
 
         assert configs["coder"].capabilities == ["filesystem", "command", "goal", "web", "memory"]
         assert configs["coder"].permission_mode == "execute"
+        assert configs["coder"].behaviors == ["plan", "reflect"]
         assert "apply_patch" in configs["coder"].tools
         assert "run_command" in configs["coder"].tools
         assert "exec" not in configs["coder"].tools

@@ -711,3 +711,69 @@ class TestCliMultiagent:
         assert "action: web_fetch url=https://example.com/docs" in output
         assert "done: web_fetch (0.4s)" in output
         fake_agent.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_chat_loop_goal_run_continues_until_goal_completes(self, temp_dir):
+        from cli.main import DEFAULT_AGENTS_CONFIG, _chat_loop
+        from app.goal import GoalStore
+
+        class FakePromptSession:
+            def __init__(self, **kwargs):
+                self._inputs = iter(["/goal start Finish the goal loop", "/goal run 3", "/quit"])
+
+            async def prompt_async(self, _prompt):
+                try:
+                    return next(self._inputs)
+                except StopIteration:
+                    raise EOFError
+
+        class FakeConsole:
+            def __init__(self):
+                self.lines = []
+
+            def status(self, *args, **kwargs):
+                return nullcontext()
+
+            def print(self, *args, **kwargs):
+                self.lines.append(" ".join(str(arg) for arg in args))
+
+        prompt_outputs = []
+        goal_store = GoalStore(os.path.join(temp_dir, "sessions"))
+
+        async def fake_process(message, on_output=None, on_event=None):
+            prompt_outputs.append(message)
+            if len(prompt_outputs) == 2:
+                goal_store.update("default", status="complete", note="done")
+            return f"response {len(prompt_outputs)}"
+
+        fake_console = FakeConsole()
+        fake_agent = MagicMock()
+        fake_agent.llm = MagicMock()
+        fake_agent.hook_runner = HookRunner()
+        fake_agent.close = AsyncMock()
+        fake_agent.process = AsyncMock(side_effect=fake_process)
+        fake_agent.session = MagicMock()
+        fake_agent.session.key = "default"
+        fake_agent.session.clear = MagicMock()
+        fake_agent.session_usage = None
+
+        smol_rag = MagicMock()
+        smol_rag.contradiction_detector = None
+        session_manager = MagicMock()
+
+        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
+            patch("cli.main.PromptSession", FakePromptSession), \
+            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
+            patch("cli.main.GoalStore", return_value=goal_store), \
+            patch("cli.main.console", fake_console):
+            await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True, show_actions=True)
+
+        assert len(prompt_outputs) == 2
+        assert prompt_outputs[0] == "Continue working toward the active session goal. Use git_status plus the available read/search tools to inspect the codebase before editing. Read any existing target file before changing it. If the goal is complete or blocked, call goal_update with the appropriate status and a brief note."
+        assert prompt_outputs[1] == prompt_outputs[0]
+        assert goal_store.load("default").status == "complete"
+        output = "\n".join(fake_console.lines)
+        assert "Goal turn 1/3" in output
+        assert "Goal turn 2/3" in output
+        assert "Status: complete" in output
+        fake_agent.close.assert_awaited_once()

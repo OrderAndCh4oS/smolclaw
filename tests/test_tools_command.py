@@ -75,3 +75,19 @@ class TestRunCommandTool:
 
         assert result.startswith("Error:")
         assert "outside workspace" in result
+
+    def test_redirect_command_policy_is_mutating(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        tool = RunCommandTool(workspace)
+
+        policy = tool.get_call_policy({"command": "echo hi > out.txt"})
+
+        assert policy.mutates_state is True
+
+    def test_package_build_script_policy_is_mutating(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        tool = RunCommandTool(workspace)
+
+        policy = tool.get_call_policy({"command": "npm run build"})
+
+        assert policy.mutates_state is True

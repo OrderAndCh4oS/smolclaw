@@ -3,6 +3,7 @@ import os
 import re
 
 from app.tools.base import Tool, ToolCallPolicy
+from app.tools.permissions import COMMAND_EXECUTION, SHELL_WRITE
 
 BLOCKED_PATTERNS = [
     re.compile(r"\brm\s+-rf\s+/"),
@@ -18,7 +19,7 @@ MAX_OUTPUT = 10000
 class ExecTool(Tool):
     @property
     def default_call_policy(self) -> ToolCallPolicy:
-        return ToolCallPolicy(mutates_state=True, tags=frozenset({"shell"}))
+        return ToolCallPolicy(mutates_state=True, tags=frozenset({"shell", COMMAND_EXECUTION, SHELL_WRITE}))
 
     @property
     def name(self) -> str:

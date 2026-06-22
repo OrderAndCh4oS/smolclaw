@@ -106,6 +106,7 @@ agents:
     permission_mode: execute
     bootstrap_path: agents/coder.md
     behaviors:
+      - plan
       - reflect
     max_iterations: 20
     memory_window: 20

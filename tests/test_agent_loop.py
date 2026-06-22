@@ -10,7 +10,10 @@ from app.goal import GoalStore
 from app.session import Session, SessionManager
 from app.tools.base import ToolResult
 from app.tools.registry import ToolRegistry
-from app.tools.base import Tool
+from app.tools.base import Tool, ToolCallPolicy
+from app.tools.permissions import FILESYSTEM_WRITE
+from app.tools.safety import SafetyMiddleware, SafetyState
+from app.workspace import WorkspaceContext
 
 
 class EchoTool(Tool):
@@ -57,6 +60,27 @@ class MemoryLookupTool(Tool):
             content="remembered summary",
             metadata={"accessed_excerpt_ids": ["exc-1", "exc-2", "exc-1"]},
         )
+
+
+class FakeEditTool(Tool):
+    @property
+    def name(self) -> str:
+        return "edit_file"
+
+    @property
+    def description(self) -> str:
+        return "Fake edit"
+
+    @property
+    def parameters(self) -> dict:
+        return {"type": "object", "properties": {}}
+
+    @property
+    def default_call_policy(self) -> ToolCallPolicy:
+        return ToolCallPolicy(mutates_state=True, tags=frozenset({FILESYSTEM_WRITE}))
+
+    async def execute(self, **kwargs) -> str:
+        return "edited"
 
 
 def _make_tool_call(name, arguments):
@@ -187,6 +211,57 @@ class TestAgentLoop:
         result = await loop.process("do echo")
         assert result == "Done echoing"
         assert llm.get_tool_completion.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_process_safety_blocks_edit_first_tool_call(self, temp_dir):
+        with open(os.path.join(temp_dir, "app.py"), "w") as f:
+            f.write("print('hi')\n")
+        llm = MagicMock()
+        captured_messages = []
+
+        async def fake_completion(**kwargs):
+            captured_messages.append(kwargs["messages"])
+            if len(captured_messages) == 1:
+                return {
+                    "content": None,
+                    "tool_calls": [
+                        _make_tool_call(
+                            "edit_file",
+                            {"path": "app.py", "old_text": "hi", "new_text": "bye"},
+                        ),
+                    ],
+                    "has_tool_calls": True,
+                }
+            return {
+                "content": "blocked",
+                "tool_calls": None,
+                "has_tool_calls": False,
+            }
+
+        llm.get_tool_completion = AsyncMock(side_effect=fake_completion)
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        safety_state = SafetyState(workspace=workspace)
+        registry = ToolRegistry()
+        registry.register(FakeEditTool())
+        registry.use(SafetyMiddleware(safety_state))
+        loop = AgentLoop(
+            llm=llm,
+            tool_registry=registry,
+            context_builder=ContextBuilder(),
+            session=Session(key="safety-edit-first"),
+            session_manager=SessionManager(temp_dir),
+            safety_state=safety_state,
+        )
+
+        result = await loop.process("change app.py")
+
+        assert result == "blocked"
+        tool_messages = [
+            message
+            for message in captured_messages[1]
+            if message.get("role") == "tool"
+        ]
+        assert "safety gate blocked" in tool_messages[-1]["content"]
 
     @pytest.mark.asyncio
     async def test_process_max_iterations(self, temp_dir):
