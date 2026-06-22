@@ -491,10 +491,10 @@ def chat(
     show_actions: bool = typer.Option(True, "--show-actions/--hide-actions", help="Show live tool activity while the agent works"),
 ):
     """Start an interactive chat session."""
-    asyncio.run(_chat_loop(session_key, workspace, model, agent, agents_config, auto_export, show_actions))
+    asyncio.run(_tui_chat_loop(session_key, workspace, model, agent, agents_config, auto_export, show_actions))
 
 
-async def _chat_loop(
+async def _tui_chat_loop(
     session_key: str,
     workspace: str,
     model: str,
@@ -502,6 +502,7 @@ async def _chat_loop(
     agents_config: str = DEFAULT_AGENTS_CONFIG,
     auto_export: bool = True,
     show_actions: bool = True,
+    display_label: Optional[str] = None,
 ):
     runtime = _build_cli_runtime(workspace)
     workspace_ctx = runtime.workspace
@@ -523,7 +524,7 @@ async def _chat_loop(
             auto_export,
             child_loop_registrar=register_session_end_hooks,
         )
-        label = agent_name.capitalize()
+        label = display_label or agent_name.capitalize()
     else:
         agent = _build_default_chat_agent(
             agents_config_path=agents_config,
@@ -534,7 +535,86 @@ async def _chat_loop(
             session_manager=session_manager,
             child_loop_registrar=register_session_end_hooks,
         )
-        label = "SmolClaw"
+        label = display_label or "SmolClaw"
+
+    register_session_end_hooks(agent)
+
+    memory_store_tool = MemoryStoreTool(
+        smol_rag=smol_rag,
+        memory_docs_dir=memory_dir,
+        llm=agent.llm,
+    )
+    session_export_hook = SessionExportHook(
+        smol_rag=smol_rag,
+        llm=agent.llm,
+        memory_dir=memory_dir,
+    )
+
+    from cli.tui import CoderTui
+
+    tui = CoderTui(
+        agent=agent,
+        goal_store=goal_store,
+        session_manager=session_manager,
+        memory_store_tool=memory_store_tool,
+        session_export_hook=session_export_hook,
+        smol_rag=smol_rag,
+        workspace_root=workspace_ctx.root_dir,
+        model=model,
+        auto_export=auto_export,
+        show_actions=show_actions,
+        slash_commands_help=SLASH_COMMANDS_HELP,
+        format_goal_status=_format_goal_status,
+        parse_goal_run_count=_parse_goal_run_count,
+        build_goal_loop_prompt=_build_goal_loop_prompt,
+        format_action_event=_format_action_event,
+        label=label,
+    )
+    await tui.run()
+
+
+async def _chat_loop(
+    session_key: str,
+    workspace: str,
+    model: str,
+    agent_name: Optional[str] = None,
+    agents_config: str = DEFAULT_AGENTS_CONFIG,
+    auto_export: bool = True,
+    show_actions: bool = True,
+    display_label: Optional[str] = None,
+):
+    runtime = _build_cli_runtime(workspace)
+    workspace_ctx = runtime.workspace
+    paths = workspace_ctx.paths
+    smol_rag = runtime.smol_rag
+    session_manager = runtime.session_manager
+    goal_store = GoalStore(paths.sessions_dir)
+    memory_dir = ensure_dir(paths.memory_docs_dir)
+    register_session_end_hooks = _make_session_end_hook_registrar(paths, memory_dir, auto_export)
+
+    if agent_name:
+        agent = _build_multiagent(
+            agent_name,
+            agents_config,
+            session_key,
+            smol_rag,
+            workspace,
+            session_manager,
+            auto_export,
+            child_loop_registrar=register_session_end_hooks,
+        )
+        label = display_label or agent_name.capitalize()
+    else:
+        agent = _build_default_chat_agent(
+            agents_config_path=agents_config,
+            session_key=session_key,
+            model=model,
+            smol_rag=smol_rag,
+            workspace=workspace,
+            session_manager=session_manager,
+            child_loop_registrar=register_session_end_hooks,
+        )
+        label = display_label or "SmolClaw"
 
     register_session_end_hooks(agent)
 
@@ -1076,9 +1156,9 @@ def clear_logs_command(
         console.print("[dim]No log files to delete.[/dim]")
 
 
-def _smolcode_main(
+def _smolclaw_main(
     session_key: str = typer.Option("default", "--session", "-s", help="Session key"),
-    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root"),
+    workspace: str = typer.Option(".", "--workspace", "-w", help="Workspace root"),
     model: str = typer.Option(AGENT_MODEL, "--model", "-m", help="LLM model to use"),
     agents_config: str = typer.Option(DEFAULT_AGENTS_CONFIG, "--agents-config", help="Path to agents YAML config"),
     auto_export: bool = typer.Option(True, "--auto-export/--no-auto-export", help="Auto-export session on close"),
@@ -1086,7 +1166,7 @@ def _smolcode_main(
 ):
     """Start SmolClaw's coding harness in the current workspace."""
     asyncio.run(
-        _chat_loop(
+        _tui_chat_loop(
             session_key=session_key,
             workspace=workspace,
             model=model,
@@ -1094,16 +1174,25 @@ def _smolcode_main(
             agents_config=agents_config,
             auto_export=auto_export,
             show_actions=show_actions,
+            display_label="SmolClaw",
         )
     )
 
 
+def _should_start_default_harness(argv: list[str] | None = None) -> bool:
+    args = list(sys.argv if argv is None else argv)
+    return len(args) == 1
+
+
 def entrypoint():
+    if _should_start_default_harness():
+        typer.run(_smolclaw_main)
+        return
     app()
 
 
 def code_entrypoint():
-    typer.run(_smolcode_main)
+    typer.run(_smolclaw_main)
 
 
 if __name__ == "__main__":

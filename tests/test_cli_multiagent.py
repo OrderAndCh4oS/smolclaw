@@ -72,6 +72,57 @@ class TestCliMultiagent:
         assert "Start an interactive chat session." in result.stdout
         assert "--session" in result.stdout
 
+    def test_smolclaw_main_uses_tui_coder_harness(self):
+        from cli.main import _smolclaw_main
+
+        async def fake_coro():
+            return None
+
+        coro = fake_coro()
+        mock_tui = MagicMock(return_value=coro)
+        with patch("cli.main._tui_chat_loop", new=mock_tui), \
+            patch("cli.main.asyncio.run") as mock_run:
+            _smolclaw_main(
+                session_key="default",
+                workspace=".",
+                model="model",
+                agents_config="agents.yaml",
+                auto_export=True,
+                show_actions=True,
+            )
+
+        mock_tui.assert_called_once_with(
+            session_key="default",
+            workspace=".",
+            model="model",
+            agent_name="coder",
+            agents_config="agents.yaml",
+            auto_export=True,
+            show_actions=True,
+            display_label="SmolClaw",
+        )
+        mock_run.assert_called_once_with(coro)
+        coro.close()
+
+    def test_chat_command_uses_tui_loop(self):
+        from cli.main import app
+
+        async def fake_coro():
+            return None
+
+        coro = fake_coro()
+        mock_tui = MagicMock(return_value=coro)
+        with patch("cli.main._tui_chat_loop", new=mock_tui), \
+            patch("cli.main.asyncio.run") as mock_run:
+            result = CliRunner().invoke(app, ["chat", "--session", "s", "--workspace", ".", "--model", "m"])
+
+        assert result.exit_code == 0
+        mock_tui.assert_called_once()
+        assert mock_tui.call_args.kwargs == {}
+        assert mock_tui.call_args.args[:3] == ("s", ".", "m")
+        mock_run.assert_called_once_with(coro)
+        coro.close()
+
     def test_runtime_default_agent_includes_memory_recall(self):
         configs = AgentConfigLoader.load(os.path.join(os.path.dirname(os.path.dirname(__file__)), "agents.yaml"))
         assert "memory_recall" in configs["default"].tools
