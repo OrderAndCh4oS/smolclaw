@@ -117,6 +117,24 @@ class TestGetToolCompletion:
             assert call_kwargs.kwargs["reasoning_effort"] == "high"
 
     @pytest.mark.asyncio
+    async def test_get_tool_completion_omits_reasoning_effort_when_tools_are_present(self):
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = MagicMock(return_value=_make_mock_response("ok"))
+        with patch("app.openai_llm.OpenAI", return_value=mock_client):
+
+            llm = OpenAiLlm(openai_api_key="test-key")
+            llm.completion_model = "gpt-5.5"
+            llm.reasoning_effort = "high"
+            await llm.get_tool_completion(
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[{"type": "function", "function": {"name": "read_file"}}],
+            )
+            call_kwargs = mock_client.chat.completions.create.call_args
+            assert call_kwargs.kwargs["model"] == "gpt-5.5"
+            assert "tools" in call_kwargs.kwargs
+            assert "reasoning_effort" not in call_kwargs.kwargs
+
+    @pytest.mark.asyncio
     async def test_get_tool_completion_sanitizes_unsupported_function_fields(self):
         mock_client = MagicMock()
         mock_client.chat.completions.create = MagicMock(return_value=_make_mock_response("ok"))

@@ -168,11 +168,11 @@ class OpenAiLlm:
         """
         model = model or self.completion_model
         kwargs = {"model": model, "messages": messages}
-        reasoning_effort = self.reasoning_effort or _default_reasoning_effort_for_model(model)
-        if reasoning_effort and _supports_reasoning_effort(model):
-            kwargs["reasoning_effort"] = reasoning_effort
         if tools:
             kwargs["tools"] = self._sanitize_tools(tools)
+        reasoning_effort = self.reasoning_effort or _default_reasoning_effort_for_model(model)
+        if reasoning_effort and _supports_reasoning_effort(model) and not tools:
+            kwargs["reasoning_effort"] = reasoning_effort
 
         if stream and on_chunk:
             return await self._stream_tool_completion(kwargs, model, on_chunk)
