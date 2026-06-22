@@ -3,6 +3,7 @@ import contextlib
 import os
 import shutil
 import subprocess
+import textwrap
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
 
@@ -59,9 +60,16 @@ def _compact_path(path: str, max_len: int = 36) -> str:
 
 
 def _truncate(value: str, width: int) -> str:
+    value = value.replace("\n", " ")
     if width <= 1:
         return value[:width]
-    return value if len(value) <= width else value[: width - 1] + "…"
+    return value if len(value) <= width else value[: width - 3] + "..."
+
+
+def _fit_line(value: str, width: int) -> str:
+    if width <= 0:
+        return ""
+    return _truncate(value, width).ljust(width)
 
 
 def _git_state(cwd: str) -> str:
@@ -141,6 +149,7 @@ class CoderTui:
         self._app: Application | None = None
         self._agent_task: asyncio.Task | None = None
         self._invalidate_handle = None
+        self._scroll_offset = 0
 
     async def run(self):
         self._refresh_goal_state()
@@ -186,15 +195,13 @@ class CoderTui:
 
         @key_bindings.add("pageup")
         def _(event):
-            if self._transcript_window is not None:
-                self._transcript_window.vertical_scroll = max(0, self._transcript_window.vertical_scroll - 10)
-                self._invalidate()
+            self._scroll_offset += 10
+            self._invalidate()
 
         @key_bindings.add("pagedown")
         def _(event):
-            if self._transcript_window is not None:
-                self._transcript_window.vertical_scroll += 10
-                self._invalidate()
+            self._scroll_offset = max(0, self._scroll_offset - 10)
+            self._invalidate()
 
         @key_bindings.add("c-q")
         def _(event):
@@ -214,10 +221,10 @@ class CoderTui:
             ),
             Window(
                 BufferControl(buffer=self.input_buffer),
-                height=Dimension(min=1, max=5),
+                height=3,
                 wrap_lines=True,
             ),
-        ], height=Dimension(min=1, max=5))
+        ], height=3)
         root = HSplit([
             Window(FormattedTextControl(self._render_top_bar), height=1, style="class:bar.top"),
             self._transcript_window,
@@ -389,6 +396,7 @@ class CoderTui:
 
         async def on_output(chunk: str):
             assistant_entry.text += chunk
+            self._scroll_offset = 0
             self._invalidate_throttled()
 
         async def on_event(event: dict):
@@ -466,6 +474,7 @@ class CoderTui:
                     await result
 
     def _append(self, kind: str, text: str, title: str = ""):
+        self._scroll_offset = 0
         self.state.transcript.append(TranscriptEntry(kind=kind, text=text, title=title))
         self._invalidate()
 
@@ -479,7 +488,7 @@ class CoderTui:
             self.state.goal_state = f"goal:{goal.status}"
 
     def _render_top_bar(self) -> StyleAndTextTuples:
-        width = shutil.get_terminal_size((100, 24)).columns
+        width = self._terminal_width()
         parts = [
             self.state.label,
             self.state.mode,
@@ -489,10 +498,10 @@ class CoderTui:
         ]
         if self.state.goal_state:
             parts.append(self.state.goal_state)
-        return [("", _truncate("  " + "  ".join(parts), width))]
+        return [("", _fit_line("  " + "  ".join(parts), width))]
 
     def _render_bottom_bar(self) -> StyleAndTextTuples:
-        width = shutil.get_terminal_size((100, 24)).columns
+        width = self._terminal_width()
         tokens = f"tok:{self.state.token_total:,}" if self.state.token_total else "tok:0"
         parts = [
             self.state.input_mode,
@@ -503,10 +512,31 @@ class CoderTui:
         ]
         if self.state.status_message:
             parts.append(self.state.status_message)
-        return [("", _truncate("  " + "  ".join(parts), width))]
+        return [("", _fit_line("  " + "  ".join(parts), width))]
 
     def _render_transcript(self) -> StyleAndTextTuples:
+        width = self._terminal_width()
+        height = self._transcript_height()
+        lines = self._transcript_lines(width)
+        if not lines:
+            return [("class:text.dim", "")]
+
+        self._scroll_offset = min(self._scroll_offset, max(0, len(lines) - height))
+        end = max(0, len(lines) - self._scroll_offset)
+        start = max(0, end - height)
+        visible = lines[start:end]
+
         output: StyleAndTextTuples = []
+        for style, line in visible:
+            output.append((style, f"{line}\n"))
+        missing_rows = height - len(visible)
+        if missing_rows > 0:
+            output.append(("", "\n" * missing_rows))
+        return output
+
+    def _transcript_lines(self, width: int) -> list[tuple[str, str]]:
+        lines: list[tuple[str, str]] = []
+        text_width = max(1, width)
         for entry in self.state.transcript:
             style = {
                 "user": "class:role.user",
@@ -517,20 +547,32 @@ class CoderTui:
             }.get(entry.kind, "")
             title = entry.title or entry.kind
             if entry.kind == "tool":
-                output.append((style, f"{entry.text}\n"))
+                lines.extend(self._wrap_lines(entry.text, text_width, style))
                 continue
             if entry.kind == "system":
-                output.append((style, f"{entry.text}\n\n"))
+                lines.extend(self._wrap_lines(entry.text, text_width, style))
+                lines.append(("", ""))
                 continue
-            output.append((style, f"{title}\n"))
-            output.append(("", f"{entry.text.rstrip()}\n\n"))
-        if not output:
-            output.append(("class:text.dim", ""))
-        return output
+            lines.append((style, title))
+            lines.extend(self._wrap_lines(entry.text.rstrip(), text_width, ""))
+            lines.append(("", ""))
+        return lines
+
+    def _wrap_lines(self, text: str, width: int, style: str) -> list[tuple[str, str]]:
+        wrapped: list[tuple[str, str]] = []
+        for raw_line in text.splitlines() or [""]:
+            chunks = textwrap.wrap(
+                raw_line,
+                width=max(1, width),
+                replace_whitespace=False,
+                drop_whitespace=False,
+                break_long_words=True,
+                break_on_hyphens=False,
+            ) or [""]
+            wrapped.extend((style, chunk) for chunk in chunks)
+        return wrapped
 
     def _invalidate(self):
-        if self._transcript_window is not None:
-            self._transcript_window.vertical_scroll = 10**9
         if self._app is not None:
             self._app.invalidate()
 
@@ -546,3 +588,18 @@ class CoderTui:
             self._invalidate()
 
         self._invalidate_handle = loop.call_later(0.05, _flush)
+
+    def _terminal_width(self) -> int:
+        if self._app is not None:
+            with contextlib.suppress(Exception):
+                return max(1, int(self._app.output.get_size().columns))
+        return max(1, int(shutil.get_terminal_size((100, 24)).columns))
+
+    def _terminal_height(self) -> int:
+        if self._app is not None:
+            with contextlib.suppress(Exception):
+                return max(1, int(self._app.output.get_size().rows))
+        return max(1, int(shutil.get_terminal_size((100, 24)).lines))
+
+    def _transcript_height(self) -> int:
+        return max(1, self._terminal_height() - 5)

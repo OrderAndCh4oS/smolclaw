@@ -1,8 +1,9 @@
 from unittest.mock import MagicMock
 
+import os
 import pytest
 
-from cli.tui import CoderTui, TranscriptEntry, UiState
+from cli.tui import CoderTui, TranscriptEntry, UiState, _fit_line
 
 
 def _fake_tui():
@@ -62,6 +63,29 @@ def test_tui_status_bars_include_satellite_info():
     assert "running" in bottom
 
 
+def test_tui_status_bars_pad_to_terminal_width(monkeypatch):
+    tui = _fake_tui()
+    monkeypatch.setattr("cli.tui.shutil.get_terminal_size", lambda fallback: os.terminal_size((80, 10)))
+
+    long_bottom = "".join(text for _, text in tui._render_bottom_bar())
+    tui.state.active_tool = "idle"
+    tui.state.run_state = "idle"
+    short_bottom = "".join(text for _, text in tui._render_bottom_bar())
+
+    assert len(long_bottom) == 80
+    assert len(short_bottom) == 80
+    assert short_bottom.endswith(" ")
+
+
+def test_fit_line_removes_stale_suffix_when_value_shrinks():
+    previous = _fit_line("tools:memory_search running", 16)
+    current = _fit_line("tools:idle", 16)
+
+    assert len(previous) == 16
+    assert len(current) == 16
+    assert current == "tools:idle      "
+
+
 def test_tui_transcript_renders_user_assistant_tool_and_errors():
     tui = _fake_tui()
     tui.state.transcript = [
@@ -79,6 +103,21 @@ def test_tui_transcript_renders_user_assistant_tool_and_errors():
     assert "hi" in rendered
     assert "action: grep_search query=test" in rendered
     assert "Error: failed" in rendered
+
+
+def test_tui_transcript_clips_to_available_terminal_height(monkeypatch):
+    tui = _fake_tui()
+    monkeypatch.setattr("cli.tui.shutil.get_terminal_size", lambda fallback: os.terminal_size((40, 9)))
+    tui.state.transcript = [
+        TranscriptEntry(kind="system", text=f"line {index}")
+        for index in range(20)
+    ]
+
+    rendered_lines = "".join(text for _, text in tui._render_transcript()).splitlines()
+
+    assert len(rendered_lines) <= 4
+    assert "line 19" in "\n".join(rendered_lines)
+    assert "line 0" not in "\n".join(rendered_lines)
 
 
 def test_tui_builds_prompt_toolkit_application():
