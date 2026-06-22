@@ -1,9 +1,17 @@
 import os
 import re
+from pathlib import Path
 
 import httpx
+from dotenv import load_dotenv
 
 from app.tools.base import Tool
+
+
+def _load_web_env():
+    load_dotenv(Path.cwd() / ".env", override=False)
+    config_dir = os.getenv("SMOLCLAW_CONFIG_DIR", "~/.config/smolclaw")
+    load_dotenv(Path(config_dir).expanduser() / ".env", override=False)
 
 
 class WebSearchTool(Tool):
@@ -30,6 +38,7 @@ class WebSearchTool(Tool):
         }
 
     def __init__(self, api_key: str = None):
+        _load_web_env()
         self.api_key = api_key or os.getenv("BRAVE_SEARCH_API_KEY")
 
     async def execute(self, **kwargs) -> str:

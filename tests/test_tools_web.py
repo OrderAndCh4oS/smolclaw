@@ -29,6 +29,18 @@ class _FakeJsonResponse:
 
 
 class TestWebSearchTool:
+    def test_web_search_loads_user_config_env(self, monkeypatch, tmp_path):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / ".env").write_text("BRAVE_SEARCH_API_KEY=user-key\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("SMOLCLAW_CONFIG_DIR", str(config_dir))
+        monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
+
+        tool = WebSearchTool(api_key=None)
+
+        assert tool.api_key == "user-key"
+
     @pytest.mark.asyncio
     async def test_web_search_returns_results(self):
         mock_response = _FakeJsonResponse({
