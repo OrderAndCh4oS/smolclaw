@@ -41,7 +41,11 @@ class TestLoggerManagement:
 
         deleted = logger_module.clear_logs(temp_dir)
 
-        assert sorted(os.path.basename(path) for path in deleted) == ["extra.log", "main.log"]
+        assert sorted(os.path.basename(path) for path in deleted) == [
+            "extra.log",
+            "main.log",
+            "smolclaw.log",
+        ]
         assert os.listdir(temp_dir) == []
         assert [
             handler for handler in logger_module.logger.handlers

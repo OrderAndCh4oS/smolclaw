@@ -8,6 +8,7 @@ from typing import Optional
 
 import websockets
 
+from app import diagnostics
 from app.agent_config import AgentConfigLoader
 from app.definitions import PROJECT_ROOT, WORKSPACE_DIR
 from app.hooks import ON_SESSION_END
@@ -45,6 +46,7 @@ class Gateway:
         self._smol_rag: Optional[SmolRag] = None
         self._session_manager = None
         self._workspace_ctx = WorkspaceContext.from_root(workspace).ensure_dirs()
+        diagnostics.configure(self._workspace_ctx.paths.log_dir)
 
     def _default_validate_token(self, token: str) -> bool:
         return bool(token)
@@ -99,6 +101,10 @@ class Gateway:
                 try:
                     await agent.close()
                 except Exception as e:
+                    diagnostics.record_exception(
+                        e,
+                        boundary="gateway.agent_close",
+                    )
                     logger.warning(f"Error closing agent: {e}")
             self._session_agents.clear()
 
@@ -156,6 +162,12 @@ class Gateway:
         try:
             agent = self._get_or_create_agent(session_key)
             self._active_loops[run_id] = agent
+            diagnostics.record_event(
+                "gateway.chat.start",
+                run_id=run_id,
+                session_key=session_key,
+                message_length=len(message or ""),
+            )
 
             async def on_output(content: str):
                 await websocket.send(json.dumps({
@@ -197,14 +209,29 @@ class Gateway:
                     "sessionKey": session_key,
                 },
             }))
+            diagnostics.record_event(
+                "gateway.chat.end",
+                run_id=run_id,
+                session_key=session_key,
+            )
         except Exception as e:
+            incident_id = diagnostics.record_exception(
+                e,
+                boundary="gateway.chat_send",
+                run_id=run_id,
+                session_key=session_key,
+            )
             logger.exception("Agent error")
             await websocket.send(json.dumps({
                 "type": "event",
                 "event": "agent",
                 "payload": {
                     "stream": "lifecycle",
-                    "data": {"phase": "error", "message": str(e)},
+                    "data": {
+                        "phase": "error",
+                        "message": diagnostics.user_error_message(incident_id, str(e)),
+                        "incidentId": incident_id,
+                    },
                     "runId": run_id,
                     "sessionKey": session_key,
                 },

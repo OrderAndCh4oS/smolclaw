@@ -4,11 +4,12 @@ import os
 import re
 from logging.handlers import RotatingFileHandler
 
+from app import diagnostics
 from app.definitions import LOG_DIR
 
 logger = logging.getLogger("mini-rag")
 _HANDLER_NAME = "smolclaw-log-file"
-_LOG_FILE_PATTERN = re.compile(r"^.+\.log(?:\.\d+)?$")
+_LOG_FILE_PATTERN = re.compile(r"^.+\.(?:log|jsonl)(?:\.\d+)?$")
 
 
 def _get_configured_int(env_var: str, default: int) -> int:
@@ -86,3 +87,4 @@ def set_logger(log_file: str, log_dir: str | None = None):
         existing_handler = file_handler
 
     existing_handler.setLevel(log_level)
+    diagnostics.configure(log_dir, log_file="smolclaw.log")

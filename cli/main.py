@@ -96,6 +96,7 @@ SLASH_COMMANDS_HELP = "\n".join([
     "  / or /help or /commands  Show this command list",
     "  /remember <text>         Store a memory immediately",
     "  /remember-thread         Export the current chat thread to memory",
+    "  /logs                    Show workspace diagnostics log paths",
     "  /goal status             Show the current session goal",
     "  /goal start <objective>  Set the session goal",
     "  /goal run [max_turns]    Continue the goal loop (default: 3)",

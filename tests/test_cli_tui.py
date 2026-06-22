@@ -1,6 +1,9 @@
 from unittest.mock import MagicMock
 
+import asyncio
+import logging
 import os
+import sys
 import pytest
 
 from cli.tui import CoderTui, TranscriptEntry, UiState, _fit_line
@@ -106,6 +109,18 @@ def test_tui_transcript_renders_user_assistant_tool_and_errors():
     assert "Error: failed" in rendered
 
 
+@pytest.mark.asyncio
+async def test_tui_logs_command_shows_workspace_diagnostics_paths():
+    tui = _fake_tui()
+
+    await tui.submit("/logs")
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Diagnostics logs:" in rendered
+    assert "events.jsonl" in rendered
+    assert "smolclaw.log" in rendered
+
+
 def test_tui_transcript_clips_to_available_terminal_height(monkeypatch):
     tui = _fake_tui()
     monkeypatch.setattr("cli.tui.shutil.get_terminal_size", lambda fallback: os.terminal_size((40, 9)))
@@ -128,6 +143,100 @@ def test_tui_builds_prompt_toolkit_application():
 
     assert app is not None
     assert app.full_screen is True
+
+
+def test_tui_layout_keeps_bars_and_input_exact_height():
+    tui = _fake_tui()
+
+    app = tui._build_app()
+    top_bar, transcript, bottom_bar, input_area = app.layout.container.children
+    prompt_window, input_window = input_area.children
+
+    assert top_bar.height.min == top_bar.height.max == 1
+    assert bottom_bar.height.min == bottom_bar.height.max == 1
+    assert input_area.height.min == input_area.height.max == 3
+    assert prompt_window.height.min == prompt_window.height.max == 3
+    assert input_window.height.min == input_window.height.max == 3
+    assert transcript.dont_extend_height()
+    assert input_window.ignore_content_height()
+
+
+def test_tui_transcript_scrolls_and_clamps(monkeypatch):
+    tui = _fake_tui()
+    monkeypatch.setattr("cli.tui.shutil.get_terminal_size", lambda fallback: os.terminal_size((40, 9)))
+    tui.state.transcript = [
+        TranscriptEntry(kind="system", text=f"line {index}")
+        for index in range(20)
+    ]
+
+    assert tui._scroll_offset == 0
+    tui._scroll_lines(3)
+    assert tui._scroll_offset == 3
+
+    tui._scroll_page(up=True)
+    assert tui._scroll_offset == 6
+
+    tui._scroll_lines(1000)
+    assert tui._scroll_offset == tui._max_scroll_offset()
+
+    tui._scroll_page(up=False)
+    assert tui._scroll_offset < tui._max_scroll_offset()
+
+    tui._scroll_lines(-1000)
+    assert tui._scroll_offset == 0
+
+
+def test_tui_suppresses_internal_logs_while_fullscreen_active():
+    tui = _fake_tui()
+    app_logger = logging.getLogger("app")
+    smolclaw_logger = logging.getLogger("smolclaw")
+    mini_rag_logger = logging.getLogger("mini-rag")
+    app_propagate = app_logger.propagate
+    smolclaw_propagate = smolclaw_logger.propagate
+    mini_rag_propagate = mini_rag_logger.propagate
+
+    with tui._suppress_terminal_logs():
+        assert tui._terminal_log_handler in app_logger.handlers
+        assert tui._terminal_log_handler in smolclaw_logger.handlers
+        assert tui._terminal_log_handler in mini_rag_logger.handlers
+        assert app_logger.propagate is False
+        assert smolclaw_logger.propagate is False
+        assert mini_rag_logger.propagate is False
+
+    assert tui._terminal_log_handler not in app_logger.handlers
+    assert tui._terminal_log_handler not in smolclaw_logger.handlers
+    assert tui._terminal_log_handler not in mini_rag_logger.handlers
+    assert app_logger.propagate is app_propagate
+    assert smolclaw_logger.propagate is smolclaw_propagate
+    assert mini_rag_logger.propagate is mini_rag_propagate
+
+
+@pytest.mark.asyncio
+async def test_tui_loop_exceptions_render_as_transcript_errors():
+    tui = _fake_tui()
+    loop = asyncio.get_running_loop()
+
+    with tui._handle_loop_exceptions():
+        loop.call_exception_handler({"exception": RuntimeError("layout safe")})
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Error: incident inc-" in rendered
+    assert "layout safe" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_captures_stderr_as_transcript_errors():
+    tui = _fake_tui()
+    original_stderr = sys.stderr
+
+    with tui._capture_stderr():
+        sys.stderr.write("raw traceback line\n")
+    await asyncio.sleep(0)
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert sys.stderr is original_stderr
+    assert "Error: incident inc-" in rendered
+    assert "raw traceback line" in rendered
 
 
 @pytest.mark.asyncio

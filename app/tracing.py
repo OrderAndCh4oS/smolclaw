@@ -57,7 +57,8 @@ def init_tracing(service_name: str = "smolclaw", endpoint: str | None = None):
     """Initialize OpenTelemetry tracing. No-op if OTEL SDK is not installed.
 
     :param service_name: The service name for OTEL resource.
-    :param endpoint: OTLP endpoint URL. Falls back to OTEL_EXPORTER_OTLP_ENDPOINT env var.
+    :param endpoint: OTLP endpoint URL. If omitted, export only happens when
+        SMOLCLAW_ENABLE_OTEL_EXPORT is truthy and OTEL_EXPORTER_OTLP_ENDPOINT is set.
     """
     global _tracer, _initialized
 
@@ -74,7 +75,15 @@ def init_tracing(service_name: str = "smolclaw", endpoint: str | None = None):
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
-        resolved_endpoint = endpoint or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+        export_enabled = os.environ.get("SMOLCLAW_ENABLE_OTEL_EXPORT", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        resolved_endpoint = endpoint or (
+            os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") if export_enabled else None
+        )
 
         resource = Resource.create({"service.name": service_name})
         provider = TracerProvider(resource=resource)

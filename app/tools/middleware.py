@@ -5,6 +5,7 @@ import logging
 import time
 from typing import Any, Awaitable, Callable, Dict, List
 
+from app import diagnostics
 from app.tools.base import Tool, ToolOutcome, normalize_tool_result
 
 logger = logging.getLogger(__name__)
@@ -50,21 +51,44 @@ def _wrap(mw: MiddlewareFn, next_fn: NextFn) -> NextFn:
 
 
 async def logging_middleware(tool: Tool, kwargs: Dict[str, Any], next_fn: NextFn) -> ToolOutcome:
-    args_summary = ", ".join(f"{k}={repr(v)[:60]}" for k, v in kwargs.items())
+    safe_kwargs = diagnostics.redact(kwargs)
+    args_summary = ", ".join(f"{k}={repr(v)[:60]}" for k, v in safe_kwargs.items())
     logger.info("tool.start %s(%s)", tool.name, args_summary)
+    diagnostics.record_event("tool.start", tool=tool.name, arguments=safe_kwargs)
     started = time.perf_counter()
     try:
         result = await next_fn(tool, kwargs)
         duration_ms = int((time.perf_counter() - started) * 1000)
-        success = normalize_tool_result(result).ok
+        normalized = normalize_tool_result(result)
+        success = normalized.ok
         logger.info(
             "tool.end %s duration=%dms success=%s",
             tool.name, duration_ms, success,
         )
+        diagnostics.record_event(
+            "tool.end",
+            tool=tool.name,
+            duration_ms=duration_ms,
+            success=success,
+            status=normalized.status,
+        )
         return result
-    except Exception:
+    except Exception as exc:
         duration_ms = int((time.perf_counter() - started) * 1000)
+        incident_id = diagnostics.record_exception(
+            exc,
+            boundary="tool",
+            tool=tool.name,
+            duration_ms=duration_ms,
+            arguments=safe_kwargs,
+        )
         logger.exception("tool.error %s duration=%dms", tool.name, duration_ms)
+        diagnostics.record_event(
+            "tool.error",
+            tool=tool.name,
+            duration_ms=duration_ms,
+            incident_id=incident_id,
+        )
         raise
 
 
@@ -185,7 +209,9 @@ class TracingMiddleware:
 
         tracer = get_tracer()
         with tracer.start_as_current_span(f"tool.{tool.name}") as span:
-            args_summary = ", ".join(f"{k}={repr(v)[:50]}" for k, v in kwargs.items())
+            args_summary = ", ".join(
+                f"{k}={repr(v)[:50]}" for k, v in diagnostics.redact(kwargs).items()
+            )
             span.set_attribute("tool.name", tool.name)
             span.set_attribute("tool.arguments", args_summary[:200])
             started = time.perf_counter()

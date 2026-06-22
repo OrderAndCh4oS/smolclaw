@@ -1,5 +1,6 @@
 from typing import Any, Dict, List, Optional, Set
 
+from app import diagnostics
 from app.tools.base import (
     Tool,
     ToolOutcome,
@@ -96,7 +97,16 @@ class ToolRegistry:
             result: ToolOutcome = await chain.run(tool, arguments)
             return normalize_tool_result(result)
         except Exception as e:
-            return ToolResult(status="error", content=f"Error: {e}")
+            incident_id = diagnostics.record_exception(
+                e,
+                boundary="tool_registry",
+                tool=name,
+                arguments=arguments,
+            )
+            return ToolResult(
+                status="error",
+                content=diagnostics.user_error_message(incident_id, str(e)),
+            )
 
     async def execute(self, name: str, arguments: Dict[str, Any]) -> str:
         return render_tool_result(await self.invoke(name, arguments))

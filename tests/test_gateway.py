@@ -153,6 +153,9 @@ class TestGatewayProtocol:
         phases = [e["payload"]["data"]["phase"] for e in lifecycle_events]
         assert "start" in phases
         assert "error" in phases
+        error_event = next(e for e in lifecycle_events if e["payload"]["data"]["phase"] == "error")
+        assert error_event["payload"]["data"]["incidentId"].startswith("inc-")
+        assert "Error: incident inc-" in error_event["payload"]["data"]["message"]
 
     @pytest.mark.asyncio
     async def test_chat_send_on_output_streams_messages(self, wired_gateway, fake_ws):

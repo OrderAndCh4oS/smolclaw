@@ -1,8 +1,10 @@
 import asyncio
 import contextlib
+import logging
 import os
 import shutil
 import subprocess
+import sys
 import textwrap
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
@@ -12,11 +14,14 @@ from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import Layout
-from prompt_toolkit.layout.containers import HSplit, VSplit, Window, WindowAlign
+from prompt_toolkit.layout.containers import HSplit, ScrollOffsets, VSplit, Window, WindowAlign
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.styles import Style
+
+from app import diagnostics
 
 
 @dataclass
@@ -150,13 +155,15 @@ class CoderTui:
         self._agent_task: asyncio.Task | None = None
         self._invalidate_handle = None
         self._scroll_offset = 0
+        self._terminal_log_handler = logging.NullHandler()
 
     async def run(self):
         self._refresh_goal_state()
         self._append("system", "SmolClaw ready. Type /help for commands, /quit to exit.")
         self._app = self._build_app()
         try:
-            await self._app.run_async()
+            with self._suppress_terminal_logs(), self._handle_loop_exceptions(), self._capture_stderr():
+                await self._app.run_async()
         finally:
             await self._shutdown()
 
@@ -188,20 +195,34 @@ class CoderTui:
             else:
                 event.app.exit()
 
+        @key_bindings.add("pageup")
+        def _(event):
+            self._scroll_page(up=True)
+
+        @key_bindings.add("pagedown")
+        def _(event):
+            self._scroll_page(up=False)
+
+        @key_bindings.add(Keys.ScrollUp)
+        @key_bindings.add(Keys.ShiftUp)
+        def _(event):
+            self._scroll_lines(3)
+
+        @key_bindings.add(Keys.ScrollDown)
+        @key_bindings.add(Keys.ShiftDown)
+        def _(event):
+            self._scroll_lines(-3)
+
+        @key_bindings.add("c-u")
+        def _(event):
+            self._scroll_page(up=True)
+
         @key_bindings.add("c-d")
         def _(event):
             if not self.input_buffer.text:
                 event.app.exit()
-
-        @key_bindings.add("pageup")
-        def _(event):
-            self._scroll_offset += 10
-            self._invalidate()
-
-        @key_bindings.add("pagedown")
-        def _(event):
-            self._scroll_offset = max(0, self._scroll_offset - 10)
-            self._invalidate()
+                return
+            self._scroll_page(up=False)
 
         @key_bindings.add("c-q")
         def _(event):
@@ -209,26 +230,46 @@ class CoderTui:
 
         self._transcript_window = Window(
             FormattedTextControl(self._render_transcript),
-            wrap_lines=True,
+            wrap_lines=False,
             always_hide_cursor=True,
+            dont_extend_height=True,
+        )
+        input_window = Window(
+            BufferControl(buffer=self.input_buffer),
+            height=Dimension.exact(3),
+            wrap_lines=True,
+            dont_extend_height=True,
+            ignore_content_height=True,
+            scroll_offsets=ScrollOffsets(top=0, bottom=0),
         )
         input_area = VSplit([
             Window(
                 FormattedTextControl([("class:prompt", "> ")]),
                 width=2,
+                height=Dimension.exact(3),
                 dont_extend_width=True,
+                dont_extend_height=True,
+                ignore_content_height=True,
                 align=WindowAlign.LEFT,
             ),
-            Window(
-                BufferControl(buffer=self.input_buffer),
-                height=3,
-                wrap_lines=True,
-            ),
-        ], height=3)
+            input_window,
+        ], height=Dimension.exact(3))
         root = HSplit([
-            Window(FormattedTextControl(self._render_top_bar), height=1, style="class:bar.top"),
+            Window(
+                FormattedTextControl(self._render_top_bar),
+                height=Dimension.exact(1),
+                dont_extend_height=True,
+                ignore_content_height=True,
+                style="class:bar.top",
+            ),
             self._transcript_window,
-            Window(FormattedTextControl(self._render_bottom_bar), height=1, style="class:bar.bottom"),
+            Window(
+                FormattedTextControl(self._render_bottom_bar),
+                height=Dimension.exact(1),
+                dont_extend_height=True,
+                ignore_content_height=True,
+                style="class:bar.bottom",
+            ),
             input_area,
         ])
         style = Style.from_dict({
@@ -268,6 +309,9 @@ class CoderTui:
             self.session_manager.save(self.agent.session)
             self.state.transcript.clear()
             self._append("system", "Session cleared.")
+            return
+        if text == "/logs":
+            self._append("system", self._diagnostics_paths())
             return
         if command == "/goal":
             await self._handle_goal(command_arg)
@@ -413,7 +457,12 @@ class CoderTui:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._append("error", f"Error: {exc}")
+            incident_id = diagnostics.record_exception(
+                exc,
+                boundary="tui.agent_turn",
+                session_key=getattr(getattr(self.agent, "session", None), "key", ""),
+            )
+            self._append("error", diagnostics.user_error_message(incident_id, str(exc)))
         finally:
             if not assistant_entry.text.strip():
                 with contextlib.suppress(ValueError):
@@ -604,6 +653,20 @@ class CoderTui:
     def _transcript_height(self) -> int:
         return max(1, self._terminal_height() - 5)
 
+    def _max_scroll_offset(self) -> int:
+        return max(0, len(self._transcript_lines(self._terminal_width())) - self._transcript_height())
+
+    def _scroll_lines(self, delta: int):
+        self._scroll_offset = min(
+            self._max_scroll_offset(),
+            max(0, self._scroll_offset + delta),
+        )
+        self._invalidate()
+
+    def _scroll_page(self, *, up: bool):
+        page = max(1, self._transcript_height() - 1)
+        self._scroll_lines(page if up else -page)
+
     def _activity_label(self, tool_name: str) -> str:
         name = tool_name.lower()
         if "search" in name or "grep" in name or "find" in name:
@@ -619,3 +682,98 @@ class CoderTui:
         if "memory" in name:
             return "remembering"
         return name
+
+    def _diagnostics_paths(self) -> str:
+        log_dir = os.path.join(self.workspace_root, "stores", "logs")
+        return "\n".join([
+            f"Diagnostics logs: {log_dir}",
+            f"Events: {os.path.join(log_dir, 'events.jsonl')}",
+            f"Text log: {os.path.join(log_dir, 'smolclaw.log')}",
+        ])
+
+    @contextlib.contextmanager
+    def _suppress_terminal_logs(self):
+        loggers = [
+            logging.getLogger("app"),
+            logging.getLogger("smolclaw"),
+            logging.getLogger("mini-rag"),
+        ]
+        previous_propagation = {logger: logger.propagate for logger in loggers}
+        for logger in loggers:
+            logger.addHandler(self._terminal_log_handler)
+            logger.propagate = False
+        try:
+            yield
+        finally:
+            for logger in loggers:
+                with contextlib.suppress(ValueError):
+                    logger.removeHandler(self._terminal_log_handler)
+                logger.propagate = previous_propagation[logger]
+
+    @contextlib.contextmanager
+    def _handle_loop_exceptions(self):
+        loop = asyncio.get_running_loop()
+        previous_handler = loop.get_exception_handler()
+
+        def _handler(_loop, context):
+            exception = context.get("exception")
+            if exception is None:
+                exception = RuntimeError(str(context.get("message") or "Unhandled error"))
+            incident_id = diagnostics.record_exception(
+                exception,
+                boundary="tui.event_loop",
+                session_key=getattr(getattr(self.agent, "session", None), "key", ""),
+            )
+            self._append("error", diagnostics.user_error_message(incident_id, str(exception)))
+
+        loop.set_exception_handler(_handler)
+        try:
+            yield
+        finally:
+            loop.set_exception_handler(previous_handler)
+
+    @contextlib.contextmanager
+    def _capture_stderr(self):
+        previous_stderr = sys.stderr
+        loop = asyncio.get_running_loop()
+        buffer: list[str] = []
+
+        def _emit(text: str):
+            clean = text.strip()
+            if clean:
+                incident_id = diagnostics.record_exception(
+                    RuntimeError(clean),
+                    boundary="tui.stderr",
+                    session_key=getattr(getattr(self.agent, "session", None), "key", ""),
+                )
+                self._append("error", diagnostics.user_error_message(incident_id, clean))
+
+        class _TuiStderr:
+            encoding = getattr(previous_stderr, "encoding", "utf-8")
+            errors = getattr(previous_stderr, "errors", "replace")
+
+            def write(self, text):
+                if not isinstance(text, str):
+                    text = str(text)
+                buffer.append(text)
+                return len(text)
+
+            def flush(self):
+                if not buffer:
+                    return
+                joined = "".join(buffer)
+                buffer.clear()
+                loop.call_soon_threadsafe(_emit, joined)
+
+            def isatty(self):
+                return False
+
+            def fileno(self):
+                return previous_stderr.fileno()
+
+        sys.stderr = _TuiStderr()
+        try:
+            yield
+        finally:
+            sys.stderr.flush()
+            sys.stderr = previous_stderr

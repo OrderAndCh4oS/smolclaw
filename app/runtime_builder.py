@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 
 from app.agent_config import AgentConfig
+from app import diagnostics
 from app.runtime import RuntimeEnvironment
 from app.runtime_capabilities import Transport
 from app.session import SessionManager
@@ -34,6 +35,7 @@ def build_runtime_services(
         if isinstance(workspace_root, WorkspaceContext)
         else WorkspaceContext.from_root(workspace_root)
     ).ensure_dirs()
+    diagnostics.configure(workspace.paths.log_dir)
 
     rag = smol_rag or create_smol_rag(
         db_path=workspace.paths.sqlite_db_path,

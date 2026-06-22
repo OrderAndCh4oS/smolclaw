@@ -31,7 +31,7 @@ class _WorkspaceCommandMixin:
         except FileNotFoundError:
             return f"Error: command not found: {args[0]}"
         except subprocess.TimeoutExpired as e:
-            output = (e.stdout or "") + (e.stderr or "")
+            output = self._decode_process_output(e.stdout) + self._decode_process_output(e.stderr)
             return self._format_output(124, output, max_output_chars, timed_out=True)
         return self._format_output(
             result.returncode,
@@ -52,6 +52,14 @@ class _WorkspaceCommandMixin:
         status = "timed out" if timed_out else f"exit code {exit_code}"
         body = output.rstrip() or "<no output>"
         return f"{status}\n{body}"
+
+    @staticmethod
+    def _decode_process_output(value) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return str(value)
 
 
 class GitStatusTool(_WorkspaceCommandMixin, Tool):

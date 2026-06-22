@@ -3,6 +3,7 @@ import json
 import time
 from typing import Awaitable, Callable, Optional
 
+from app import diagnostics
 from app.behaviors import LoopBehavior, load_behaviors
 from app.context_builder import ContextBuilder
 from app.definitions import MAX_ITERATIONS, MEMORY_WINDOW
@@ -151,6 +152,43 @@ class AgentLoop:
         on_output: Optional[Callable[[str], Awaitable[None]]] = None,
         on_event: Optional[Callable[[dict], Awaitable[None]]] = None,
     ) -> str:
+        diagnostics.record_event(
+            "agent.turn.start",
+            session_key=self.session.key,
+            message_length=len(user_content or ""),
+            model=getattr(self.llm, "completion_model", "unknown"),
+        )
+        started_at = time.perf_counter()
+        try:
+            response = await self._process_impl(user_content, on_output=on_output, on_event=on_event)
+        except Exception as exc:
+            incident_id = diagnostics.record_exception(
+                exc,
+                boundary="agent_loop",
+                session_key=self.session.key,
+                model=getattr(self.llm, "completion_model", "unknown"),
+            )
+            diagnostics.record_event(
+                "agent.error",
+                session_key=self.session.key,
+                incident_id=incident_id,
+            )
+            raise
+        diagnostics.record_event(
+            "agent.turn.end",
+            session_key=self.session.key,
+            duration_ms=int((time.perf_counter() - started_at) * 1000),
+            response_length=len(response or ""),
+            total_tokens=self.session_usage.total_tokens,
+        )
+        return response
+
+    async def _process_impl(
+        self,
+        user_content: str,
+        on_output: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_event: Optional[Callable[[dict], Awaitable[None]]] = None,
+    ) -> str:
         if not self._session_started:
             self._session_started = True
             # Wire usage collector to LLM(s)
@@ -240,6 +278,19 @@ class AgentLoop:
 
             llm_records = self._usage_collector.drain()
             turn.llm_calls.extend(llm_records)
+            for record in llm_records:
+                diagnostics.record_event(
+                    "llm.call",
+                    session_key=self.session.key,
+                    category=record.category,
+                    operation=record.operation,
+                    model=record.model,
+                    prompt_tokens=record.prompt_tokens,
+                    completion_tokens=record.completion_tokens,
+                    total_tokens=record.total_tokens,
+                    duration_ms=record.duration_ms,
+                    cached=record.cached,
+                )
 
             await self._emit_event(on_event, {
                 "type": "llm", "phase": "end", "iteration": iteration,
@@ -324,6 +375,19 @@ class AgentLoop:
             # Drain any usage from tool-initiated LLM calls (e.g. memory search context retrieval)
             tool_llm_records = self._usage_collector.drain()
             turn.llm_calls.extend(tool_llm_records)
+            for record in tool_llm_records:
+                diagnostics.record_event(
+                    "llm.call",
+                    session_key=self.session.key,
+                    category=record.category,
+                    operation=record.operation,
+                    model=record.model,
+                    prompt_tokens=record.prompt_tokens,
+                    completion_tokens=record.completion_tokens,
+                    total_tokens=record.total_tokens,
+                    duration_ms=record.duration_ms,
+                    cached=record.cached,
+                )
 
             for behavior in self.behaviors:
                 if behavior.after_tools_prompt:
