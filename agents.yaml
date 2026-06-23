@@ -17,6 +17,7 @@ agents:
       - grep_search
       - git_status
       - git_diff
+      - git_branch
       - goal_start
       - goal_status
       - goal_update
@@ -60,6 +61,7 @@ agents:
       - grep_search
       - git_status
       - git_diff
+      - git_branch
       - goal_start
       - goal_status
       - goal_update
@@ -95,6 +97,12 @@ agents:
       - grep_search
       - git_status
       - git_diff
+      - git_branch
+      - git_checkout
+      - git_pull
+      - git_add
+      - git_commit
+      - git_push
       - goal_start
       - goal_status
       - goal_update

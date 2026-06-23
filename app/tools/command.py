@@ -1,10 +1,33 @@
 import os
+import re
 import shlex
 import subprocess
 
 from app.tools.base import Tool, ToolCallPolicy
 from app.tools.permissions import COMMAND_EXECUTION, SHELL_READ, SHELL_WRITE
 from app.workspace import WorkspaceContext
+
+
+_GIT_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+
+
+def _validate_git_ref(value: str, *, label: str) -> str | None:
+    if not value:
+        return f"Error: {label} is required"
+    if (
+        value.startswith("-")
+        or value.endswith("/")
+        or ".." in value
+        or "@{" in value
+        or "\\" in value
+        or not _GIT_REF_RE.match(value)
+    ):
+        return f"Error: invalid {label}: {value}"
+    return None
+
+
+def _coerce_bool(value) -> bool:
+    return bool(value)
 
 
 class _WorkspaceCommandMixin:
@@ -159,6 +182,252 @@ class GitDiffTool(_WorkspaceCommandMixin, Tool):
             return min(max(int(value), 1000), 100000)
         except (TypeError, ValueError):
             return 30000
+
+
+class GitBranchTool(_WorkspaceCommandMixin, Tool):
+    @property
+    def default_call_policy(self) -> ToolCallPolicy:
+        return ToolCallPolicy(tags=frozenset({SHELL_READ}))
+
+    @property
+    def name(self) -> str:
+        return "git_branch"
+
+    @property
+    def description(self) -> str:
+        return "List local and remote Git branches for the workspace."
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string", "description": "Workspace-relative directory", "default": "."},
+                "all": {"type": "boolean", "description": "Include remote-tracking branches", "default": True},
+            },
+            "required": [],
+        }
+
+    async def execute(self, **kwargs) -> str:
+        cwd, err = self._resolve_cwd(kwargs.get("cwd"))
+        if err:
+            return err
+        args = ["git", "branch"]
+        if kwargs.get("all", True):
+            args.append("--all")
+        return self._run(args, cwd, timeout=10)
+
+
+class GitAddTool(_WorkspaceCommandMixin, Tool):
+    @property
+    def default_call_policy(self) -> ToolCallPolicy:
+        return ToolCallPolicy(mutates_state=True, tags=frozenset({COMMAND_EXECUTION, SHELL_WRITE}))
+
+    @property
+    def name(self) -> str:
+        return "git_add"
+
+    @property
+    def description(self) -> str:
+        return "Stage workspace files for commit."
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string", "description": "Workspace-relative directory", "default": "."},
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Workspace-relative files or directories to stage",
+                },
+            },
+            "required": ["paths"],
+        }
+
+    async def execute(self, **kwargs) -> str:
+        cwd, err = self._resolve_cwd(kwargs.get("cwd"))
+        if err:
+            return err
+        paths = list(kwargs.get("paths") or [])
+        if not paths:
+            return "Error: provide at least one path"
+        args = ["git", "add", "--"]
+        for path in paths:
+            resolved, err = self.workspace.resolve_contained_path(path, label="path")
+            if err:
+                return err
+            args.append(os.path.relpath(resolved, cwd))
+        return self._run(args, cwd, timeout=30)
+
+
+class GitCommitTool(_WorkspaceCommandMixin, Tool):
+    @property
+    def default_call_policy(self) -> ToolCallPolicy:
+        return ToolCallPolicy(mutates_state=True, tags=frozenset({COMMAND_EXECUTION, SHELL_WRITE}))
+
+    @property
+    def name(self) -> str:
+        return "git_commit"
+
+    @property
+    def description(self) -> str:
+        return "Create a Git commit from currently staged changes."
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string", "description": "Workspace-relative directory", "default": "."},
+                "message": {"type": "string", "description": "Commit message"},
+            },
+            "required": ["message"],
+        }
+
+    async def execute(self, **kwargs) -> str:
+        cwd, err = self._resolve_cwd(kwargs.get("cwd"))
+        if err:
+            return err
+        message = str(kwargs.get("message") or "").strip()
+        if not message:
+            return "Error: commit message is required"
+        return self._run(["git", "commit", "-m", message], cwd, timeout=60, max_output_chars=40000)
+
+
+class GitPushTool(_WorkspaceCommandMixin, Tool):
+    @property
+    def default_call_policy(self) -> ToolCallPolicy:
+        return ToolCallPolicy(mutates_state=True, tags=frozenset({COMMAND_EXECUTION, SHELL_WRITE}))
+
+    @property
+    def name(self) -> str:
+        return "git_push"
+
+    @property
+    def description(self) -> str:
+        return "Push the current or specified branch to a Git remote."
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string", "description": "Workspace-relative directory", "default": "."},
+                "remote": {"type": "string", "description": "Remote name", "default": "origin"},
+                "branch": {"type": "string", "description": "Branch to push; omit to push current branch"},
+                "set_upstream": {"type": "boolean", "description": "Set upstream for the branch", "default": False},
+            },
+            "required": [],
+        }
+
+    async def execute(self, **kwargs) -> str:
+        cwd, err = self._resolve_cwd(kwargs.get("cwd"))
+        if err:
+            return err
+        remote = str(kwargs.get("remote") or "origin").strip()
+        branch = str(kwargs.get("branch") or "").strip()
+        for label, value in (("remote", remote), ("branch", branch)):
+            if value:
+                ref_err = _validate_git_ref(value, label=label)
+                if ref_err:
+                    return ref_err
+        args = ["git", "push"]
+        if _coerce_bool(kwargs.get("set_upstream")):
+            args.append("--set-upstream")
+        if branch:
+            args.extend([remote, branch])
+        elif remote != "origin":
+            args.append(remote)
+        return self._run(args, cwd, timeout=120, max_output_chars=40000)
+
+
+class GitPullTool(_WorkspaceCommandMixin, Tool):
+    @property
+    def default_call_policy(self) -> ToolCallPolicy:
+        return ToolCallPolicy(mutates_state=True, tags=frozenset({COMMAND_EXECUTION, SHELL_WRITE}))
+
+    @property
+    def name(self) -> str:
+        return "git_pull"
+
+    @property
+    def description(self) -> str:
+        return "Pull changes from a Git remote into the current branch."
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string", "description": "Workspace-relative directory", "default": "."},
+                "remote": {"type": "string", "description": "Remote name", "default": "origin"},
+                "branch": {"type": "string", "description": "Optional branch to pull"},
+                "rebase": {"type": "boolean", "description": "Use git pull --rebase", "default": False},
+            },
+            "required": [],
+        }
+
+    async def execute(self, **kwargs) -> str:
+        cwd, err = self._resolve_cwd(kwargs.get("cwd"))
+        if err:
+            return err
+        remote = str(kwargs.get("remote") or "origin").strip()
+        branch = str(kwargs.get("branch") or "").strip()
+        for label, value in (("remote", remote), ("branch", branch)):
+            if value:
+                ref_err = _validate_git_ref(value, label=label)
+                if ref_err:
+                    return ref_err
+        args = ["git", "pull"]
+        if _coerce_bool(kwargs.get("rebase")):
+            args.append("--rebase")
+        if branch:
+            args.extend([remote, branch])
+        elif remote != "origin":
+            args.append(remote)
+        return self._run(args, cwd, timeout=120, max_output_chars=40000)
+
+
+class GitCheckoutTool(_WorkspaceCommandMixin, Tool):
+    @property
+    def default_call_policy(self) -> ToolCallPolicy:
+        return ToolCallPolicy(mutates_state=True, tags=frozenset({COMMAND_EXECUTION, SHELL_WRITE}))
+
+    @property
+    def name(self) -> str:
+        return "git_checkout"
+
+    @property
+    def description(self) -> str:
+        return "Check out an existing Git branch, or create and check out a new branch."
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string", "description": "Workspace-relative directory", "default": "."},
+                "branch": {"type": "string", "description": "Branch name to check out"},
+                "create": {"type": "boolean", "description": "Create the branch before checking it out", "default": False},
+            },
+            "required": ["branch"],
+        }
+
+    async def execute(self, **kwargs) -> str:
+        cwd, err = self._resolve_cwd(kwargs.get("cwd"))
+        if err:
+            return err
+        branch = str(kwargs.get("branch") or "").strip()
+        ref_err = _validate_git_ref(branch, label="branch")
+        if ref_err:
+            return ref_err
+        args = ["git", "checkout"]
+        if _coerce_bool(kwargs.get("create")):
+            args.append("-b")
+        args.append(branch)
+        return self._run(args, cwd, timeout=60, max_output_chars=40000)
 
 
 class RunCommandTool(_WorkspaceCommandMixin, Tool):

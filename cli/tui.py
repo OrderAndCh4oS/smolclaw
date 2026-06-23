@@ -39,7 +39,24 @@ from app.model_settings import (
 SPINNER_FRAMES = ("|", "/", "-", "\\")
 DETAILS_HEIGHT = 4
 MAX_ACTIVITY_ENTRIES = 80
+TRANSCRIPT_RENDER_MARGIN = 80
 SHUTDOWN_PHASE_TIMEOUT = 8.0
+ACTIVE_RUN_STATES = {
+    "running",
+    "thinking",
+    "storing",
+    "exporting",
+    "initializing",
+    "tracing",
+    "approving",
+    "checking",
+    "undoing",
+    "clearing",
+    "loading",
+    "stopping",
+    "shutting_down",
+}
+_TASK_FAILED = object()
 
 
 class _WorkerLoop:
@@ -85,6 +102,13 @@ class TranscriptEntry:
 class ActivityEntry:
     kind: str
     text: str
+
+
+@dataclass
+class _WrappedEntryCache:
+    signature: tuple[str, str, str]
+    width: int
+    lines: list[tuple[str, str]]
 
 
 @dataclass
@@ -221,7 +245,7 @@ class CoderTui:
             model=getattr(getattr(agent, "llm", None), "completion_model", None) or model,
             reasoning_effort=get_reasoning_effort(getattr(agent, "llm", None)) or "",
             cwd=_compact_path(self.workspace_root),
-            git_state=_git_state(self.workspace_root),
+            git_state="git:loading",
             safety_state="safety:gated" if getattr(agent, "safety_state", None) is not None else "safety:n/a",
             details_visible=show_actions,
         )
@@ -231,11 +255,15 @@ class CoderTui:
         self._ui_loop: asyncio.AbstractEventLoop | None = None
         self._worker_loop: _WorkerLoop | None = None
         self._agent_task: asyncio.Task | None = None
+        self._goal_refresh_task: asyncio.Task | None = None
+        self._git_refresh_task: asyncio.Task | None = None
         self._spinner_task: asyncio.Task | None = None
         self._shutdown_task: asyncio.Task | None = None
         self._invalidate_handle = None
         self._pending_llm_output = ""
         self._scroll_offset = 0
+        self._transcript_cache: dict[int, _WrappedEntryCache] = {}
+        self._activity_cache: dict[int, _WrappedEntryCache] = {}
         self._terminal_log_handler = logging.NullHandler()
         self._shutdown_started = False
         self._shutdown_complete = False
@@ -243,15 +271,24 @@ class CoderTui:
 
     async def run(self):
         self._ui_loop = asyncio.get_running_loop()
-        self._refresh_goal_state()
         self._append("system", "SmolClaw ready. Type /help for commands, /quit to exit.")
         self._app = self._build_app()
+        self._schedule_goal_refresh()
+        self._schedule_git_refresh()
         self._spinner_task = asyncio.create_task(self._animate_spinner())
         try:
             with self._suppress_terminal_logs(), self._handle_loop_exceptions(), self._capture_stderr():
                 await self._app.run_async()
         finally:
             await self._shutdown()
+            if self._goal_refresh_task is not None and not self._goal_refresh_task.done():
+                self._goal_refresh_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._goal_refresh_task
+            if self._git_refresh_task is not None and not self._git_refresh_task.done():
+                self._git_refresh_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._git_refresh_task
             if self._spinner_task is not None:
                 self._spinner_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -275,7 +312,7 @@ class CoderTui:
 
         @key_bindings.add("c-c")
         def _(event):
-            if self.state.run_state in {"running", "thinking"}:
+            if self.state.run_state in (ACTIVE_RUN_STATES - {"stopping", "shutting_down"}):
                 self.state.run_state = "stopping"
                 self.state.activity = "stopping"
                 request_stop = getattr(self.agent, "request_stop", None)
@@ -400,6 +437,85 @@ class CoderTui:
             style=style,
         )
 
+    def _is_active(self) -> bool:
+        if self.state.run_state in ACTIVE_RUN_STATES:
+            return True
+        if self._agent_task is not None and not self._agent_task.done():
+            return True
+        if self._shutdown_task is not None and not self._shutdown_task.done():
+            return True
+        return False
+
+    def _reject_if_active(self, command: str) -> bool:
+        if not self._is_active():
+            return False
+        self._append("system", f"{command} is unavailable while {self.state.activity}.")
+        return True
+
+    async def _run_status_task(
+        self,
+        *,
+        activity: str,
+        active_tool: str,
+        boundary: str,
+        worker_fn: Callable[[], object],
+        user_error_exceptions: tuple[type[Exception], ...] = (),
+    ):
+        self.state.run_state = activity
+        self.state.activity = activity
+        self.state.active_tool = active_tool
+        self._invalidate()
+        try:
+            return await self._run_in_worker(worker_fn)
+        except asyncio.CancelledError:
+            raise
+        except user_error_exceptions as exc:
+            self._append("error", f"Error: {exc}")
+            return _TASK_FAILED
+        except Exception as exc:
+            incident_id = diagnostics.record_exception(
+                exc,
+                boundary=boundary,
+                session_key=getattr(getattr(self.agent, "session", None), "key", ""),
+            )
+            self._append("error", diagnostics.user_error_message(incident_id, str(exc)))
+            return _TASK_FAILED
+        finally:
+            self.state.run_state = "idle"
+            self.state.activity = "idle"
+            self.state.active_tool = "idle"
+            self._invalidate()
+
+    def _schedule_git_refresh(self):
+        if self._app is None:
+            return
+        if self._shutdown_started or self._shutdown_forced:
+            return
+        if self._git_refresh_task is not None and not self._git_refresh_task.done():
+            return
+        self.state.git_state = "git:loading"
+        self._git_refresh_task = asyncio.create_task(self._refresh_git_state())
+        self._invalidate()
+
+    def _schedule_goal_refresh(self):
+        if self._app is None:
+            return
+        if self._shutdown_started or self._shutdown_forced:
+            return
+        if self._goal_refresh_task is not None and not self._goal_refresh_task.done():
+            return
+        self._goal_refresh_task = asyncio.create_task(self._refresh_goal_state())
+
+    async def _refresh_git_state(self):
+        try:
+            git_state = await self._run_in_worker(lambda: _git_state(self.workspace_root))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            git_state = "git:n/a"
+        self.state.git_state = git_state
+        self._invalidate()
+
     async def submit(self, text: str):
         if self._ui_loop is None:
             self._ui_loop = asyncio.get_running_loop()
@@ -414,37 +530,77 @@ class CoderTui:
         if text in ("/quit", "/exit"):
             self._begin_exit()
             return
-        if text == "/clear":
-            self.agent.session.clear()
-            self.session_manager.save(self.agent.session)
-            self.state.transcript.clear()
-            self._append("system", "Session cleared.")
-            return
         if text == "/logs":
             self._append("system", self._diagnostics_paths())
-            return
-        if text == "/init":
-            self._append("system", self.initialize_project())
-            return
-        if command == "/trace":
-            self._append("system", self.format_trace_status(self.agent.session.key, command_arg))
-            return
-        if command == "/approval":
-            self._append("system", self.resolve_approval_command(self.agent.session.key, command_arg))
-            return
-        if command == "/worktree":
-            self._append("system", self.resolve_worktree_command(command_arg))
-            return
-        if text == "/undo":
-            self._handle_undo()
-            return
-        if command == "/model":
-            self._handle_model(command_arg)
             return
         if text == "/details":
             self.state.details_visible = not self.state.details_visible
             state = "shown" if self.state.details_visible else "hidden"
             self._append("system", f"Tool details {state}.")
+            return
+
+        if command.startswith("/") and self._reject_if_active(command):
+            return
+
+        if text == "/clear":
+            result = await self._run_status_task(
+                activity="clearing",
+                active_tool="session",
+                boundary="tui.clear",
+                worker_fn=self._clear_session,
+            )
+            if result is not _TASK_FAILED:
+                self.state.transcript.clear()
+                self._invalidate_transcript_cache()
+                self._append("system", str(result))
+            return
+        if text == "/init":
+            result = await self._run_status_task(
+                activity="initializing",
+                active_tool="init",
+                boundary="tui.init",
+                worker_fn=self.initialize_project,
+            )
+            if result is not _TASK_FAILED:
+                self._append("system", str(result))
+            return
+        if command == "/trace":
+            result = await self._run_status_task(
+                activity="tracing",
+                active_tool="trace",
+                boundary="tui.trace",
+                worker_fn=lambda: self.format_trace_status(self.agent.session.key, command_arg),
+            )
+            if result is not _TASK_FAILED:
+                self._append("system", str(result))
+            return
+        if command == "/approval":
+            result = await self._run_status_task(
+                activity="approving",
+                active_tool="approval",
+                boundary="tui.approval",
+                worker_fn=lambda: self.resolve_approval_command(self.agent.session.key, command_arg),
+            )
+            if result is not _TASK_FAILED:
+                self._append("system", str(result))
+            return
+        if command == "/worktree":
+            result = await self._run_status_task(
+                activity="checking",
+                active_tool="worktree",
+                boundary="tui.worktree",
+                worker_fn=lambda: self.resolve_worktree_command(command_arg),
+            )
+            if result is not _TASK_FAILED:
+                self._append("system", str(result))
+            if command_arg.split(maxsplit=1)[0:1] in (["apply"], ["discard"]):
+                self._schedule_git_refresh()
+            return
+        if text == "/undo":
+            await self._handle_undo()
+            return
+        if command == "/model":
+            self._handle_model(command_arg)
             return
         if command == "/goal":
             await self._handle_goal(command_arg)
@@ -456,7 +612,14 @@ class CoderTui:
             await self._handle_remember_thread()
             return
 
+        if self._reject_if_active("Agent input"):
+            return
         await self._start_agent_turn(text)
+
+    def _clear_session(self) -> str:
+        self.agent.session.clear()
+        self.session_manager.save(self.agent.session)
+        return "Session cleared."
 
     async def _handle_goal(self, command_arg: str):
         sub_parts = command_arg.split(maxsplit=1)
@@ -464,39 +627,58 @@ class CoderTui:
         sub_arg = sub_parts[1].strip() if len(sub_parts) > 1 else ""
         session_key = self.agent.session.key
         if subcommand in ("", "status"):
-            self._append("system", self.format_goal_status(self.goal_store.load(session_key)))
-            self._refresh_goal_state()
+            goal = await self._run_status_task(
+                activity="loading",
+                active_tool="goal",
+                boundary="tui.goal",
+                worker_fn=lambda: self.goal_store.load(session_key),
+            )
+            if goal is _TASK_FAILED:
+                return
+            self._append("system", self.format_goal_status(goal))
+            self._apply_goal_state(goal)
             return
         if subcommand == "start":
             if not sub_arg:
                 self._append("system", "Usage: /goal start <objective>")
                 return
-            goal = self.goal_store.start(session_key, sub_arg)
+            goal = await self._run_status_task(
+                activity="loading",
+                active_tool="goal",
+                boundary="tui.goal",
+                worker_fn=lambda: self.goal_store.start(session_key, sub_arg),
+                user_error_exceptions=(ValueError,),
+            )
+            if goal is _TASK_FAILED:
+                return
             self._append("system", f"Goal set: {goal.objective}")
-            self._refresh_goal_state()
+            self._apply_goal_state(goal)
             return
         if subcommand == "complete":
-            try:
-                goal = self.goal_store.update(session_key, status="complete", note=sub_arg)
-            except ValueError as exc:
-                self._append("error", f"Error: {exc}")
+            goal = await self._run_goal_update(session_key, "complete", sub_arg)
+            if goal is _TASK_FAILED:
                 return
             self._append("system", self.format_goal_status(goal))
-            self._refresh_goal_state()
+            self._apply_goal_state(goal)
             return
         if subcommand == "block":
-            try:
-                goal = self.goal_store.update(session_key, status="blocked", note=sub_arg)
-            except ValueError as exc:
-                self._append("error", f"Error: {exc}")
+            goal = await self._run_goal_update(session_key, "blocked", sub_arg)
+            if goal is _TASK_FAILED:
                 return
             self._append("system", self.format_goal_status(goal))
-            self._refresh_goal_state()
+            self._apply_goal_state(goal)
             return
         if subcommand == "clear":
-            removed = self.goal_store.clear(session_key)
+            removed = await self._run_status_task(
+                activity="clearing",
+                active_tool="goal",
+                boundary="tui.goal",
+                worker_fn=lambda: self.goal_store.clear(session_key),
+            )
+            if removed is _TASK_FAILED:
+                return
             self._append("system", "Goal cleared." if removed else "No goal was set.")
-            self._refresh_goal_state()
+            self._apply_goal_state(None)
             return
         if subcommand == "run":
             try:
@@ -504,80 +686,92 @@ class CoderTui:
             except Exception as exc:
                 self._append("error", str(exc))
                 return
-            goal = self.goal_store.load(session_key)
+            goal = await self._load_goal(session_key)
+            if goal is _TASK_FAILED:
+                return
             if goal is None or goal.status != "active":
                 self._append("system", "No active goal to run.")
-                self._refresh_goal_state()
+                self._apply_goal_state(goal)
                 return
             for turn_index in range(max_turns):
-                goal = self.goal_store.load(session_key)
+                goal = await self._load_goal(session_key)
+                if goal is _TASK_FAILED:
+                    return
                 if goal is None or goal.status != "active":
                     break
                 self._append("system", f"Goal turn {turn_index + 1}/{max_turns}")
                 await self._start_agent_turn(self.build_goal_loop_prompt())
-                goal = self.goal_store.load(session_key)
+                goal = await self._load_goal(session_key)
+                if goal is _TASK_FAILED:
+                    return
                 if goal is None:
                     self._append("system", "Goal cleared.")
                     break
                 if goal.status != "active":
                     self._append("system", self.format_goal_status(goal))
                     break
-            self._refresh_goal_state()
+            self._apply_goal_state(goal)
             return
         self._append("system", "Usage: /goal status|start|run|complete|block|clear")
+
+    async def _load_goal(self, session_key: str):
+        return await self._run_status_task(
+            activity="loading",
+            active_tool="goal",
+            boundary="tui.goal",
+            worker_fn=lambda: self.goal_store.load(session_key),
+        )
+
+    async def _run_goal_update(self, session_key: str, status: str, note: str):
+        return await self._run_status_task(
+            activity="loading",
+            active_tool="goal",
+            boundary="tui.goal",
+            worker_fn=lambda: self.goal_store.update(session_key, status=status, note=note),
+            user_error_exceptions=(ValueError,),
+        )
 
     async def _handle_remember(self, command_arg: str):
         if not command_arg:
             self._append("system", "Usage: /remember <text>")
             return
-        self.state.run_state = "running"
-        self.state.activity = "storing"
-        self._invalidate()
-        try:
-            result = await self._run_in_worker(
-                lambda: self.memory_store_tool.execute(content=command_arg)
-            )
+        result = await self._run_status_task(
+            activity="storing",
+            active_tool="memory",
+            boundary="tui.remember",
+            worker_fn=lambda: self.memory_store_tool.execute(content=command_arg),
+        )
+        if result is not _TASK_FAILED:
             self._append("system", str(result))
-        finally:
-            self.state.run_state = "idle"
-            self.state.activity = "idle"
-            self._invalidate()
 
     async def _handle_remember_thread(self):
-        self.state.run_state = "running"
-        self.state.activity = "exporting"
         self._append(
             "system",
             "Exporting current thread to memory. This can take a while on long sessions.",
         )
-        self._invalidate()
-        try:
-            await self._run_in_worker(
-                lambda: self.session_export_hook({
-                    "session_key": self.agent.session.key,
-                    "session": self.agent.session,
-                })
-            )
+        result = await self._run_status_task(
+            activity="exporting",
+            active_tool="memory",
+            boundary="tui.remember_thread",
+            worker_fn=lambda: self.session_export_hook({
+                "session_key": self.agent.session.key,
+                "session": self.agent.session,
+            }),
+        )
+        if result is not _TASK_FAILED:
             self._append("system", "Current thread exported to memory.")
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            incident_id = diagnostics.record_exception(
-                exc,
-                boundary="tui.remember_thread",
-                session_key=getattr(getattr(self.agent, "session", None), "key", ""),
-            )
-            self._append("error", diagnostics.user_error_message(incident_id, str(exc)))
-        finally:
-            self.state.run_state = "idle"
-            self.state.activity = "idle"
-            self._invalidate()
 
-    def _handle_undo(self):
-        result = self.checkpoint_store.undo_last(session_key=self.agent.session.key)
+    async def _handle_undo(self):
+        result = await self._run_status_task(
+            activity="undoing",
+            active_tool="checkpoint",
+            boundary="tui.undo",
+            worker_fn=lambda: self.checkpoint_store.undo_last(session_key=self.agent.session.key),
+        )
+        if result is _TASK_FAILED:
+            return
         self._append("system" if result.ok else "error", self._format_undo_result(result))
-        self.state.git_state = _git_state(self.workspace_root)
-        self._invalidate()
+        self._schedule_git_refresh()
 
     async def _start_agent_turn(self, prompt: str):
         if self._agent_task is not None and not self._agent_task.done():
@@ -631,8 +825,8 @@ class CoderTui:
             self.state.run_state = "idle"
             self.state.active_tool = "idle"
             self.state.activity = "idle"
-            self._refresh_goal_state()
-            self.state.git_state = _git_state(self.workspace_root)
+            await self._refresh_goal_state()
+            self._schedule_git_refresh()
             self._invalidate()
 
     async def _handle_output_chunk(self, chunk: str):
@@ -652,10 +846,17 @@ class CoderTui:
         future = asyncio.run_coroutine_threadsafe(coro_factory(), ui_loop)
         return await asyncio.wrap_future(future)
 
-    async def _run_in_worker(self, coro_factory: Callable[[], Awaitable]):
+    async def _run_in_worker(self, coro_factory: Callable[[], object]):
         if self._worker_loop is None:
             self._worker_loop = _WorkerLoop()
-        future = self._worker_loop.submit(coro_factory())
+
+        async def _call():
+            result = coro_factory()
+            if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
+                return await result
+            return result
+
+        future = self._worker_loop.submit(_call())
         return await asyncio.wrap_future(future)
 
     async def _handle_agent_event(self, event: dict):
@@ -676,7 +877,7 @@ class CoderTui:
             line = self.format_action_event(event)
             if line:
                 self._record_activity("system", line)
-            self._invalidate()
+            self._invalidate_throttled()
             return
         if event.get("type") == "tool":
             name = str(event.get("name") or "tool")
@@ -690,7 +891,7 @@ class CoderTui:
             line = self.format_action_event(event)
             if line:
                 self._record_activity("tool", line)
-            self._invalidate()
+            self._invalidate_throttled()
 
     def _begin_exit(self):
         if self._shutdown_task is not None and not self._shutdown_task.done():
@@ -735,6 +936,14 @@ class CoderTui:
         if self._shutdown_started:
             return
         self._shutdown_started = True
+        if self._goal_refresh_task is not None and not self._goal_refresh_task.done():
+            self._goal_refresh_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._goal_refresh_task
+        if self._git_refresh_task is not None and not self._git_refresh_task.done():
+            self._git_refresh_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._git_refresh_task
         if self._agent_task is not None and not self._agent_task.done():
             request_stop = getattr(self.agent, "request_stop", None)
             if callable(request_stop):
@@ -810,15 +1019,23 @@ class CoderTui:
         with contextlib.suppress(asyncio.CancelledError, Exception):
             task.exception()
 
+    def _invalidate_transcript_cache(self):
+        self._transcript_cache.clear()
+
+    def _invalidate_activity_cache(self):
+        self._activity_cache.clear()
+
     def _append(self, kind: str, text: str, title: str = ""):
         self._scroll_offset = 0
         self.state.transcript.append(TranscriptEntry(kind=kind, text=text, title=title))
+        self._invalidate_transcript_cache()
         self._invalidate()
 
     def _record_activity(self, kind: str, text: str):
         self.state.activity_log.append(ActivityEntry(kind=kind, text=text))
         if len(self.state.activity_log) > MAX_ACTIVITY_ENTRIES:
             del self.state.activity_log[: len(self.state.activity_log) - MAX_ACTIVITY_ENTRIES]
+        self._invalidate_activity_cache()
 
     def _flush_pending_llm_output(self, *, has_tool_calls: bool):
         if not self._pending_llm_output:
@@ -832,6 +1049,7 @@ class CoderTui:
         if assistant_entry is not None:
             assistant_entry.text += text
             self._scroll_offset = 0
+            self._invalidate_transcript_cache()
 
     def _current_assistant_entry(self) -> TranscriptEntry | None:
         if not self.state.transcript:
@@ -880,8 +1098,24 @@ class CoderTui:
             lines.extend(f"- {path}" for path in result.restored_paths)
         return "\n".join(lines)
 
-    def _refresh_goal_state(self):
-        goal = self.goal_store.load(self.agent.session.key)
+    async def _refresh_goal_state(self):
+        try:
+            goal = await self._run_in_worker(lambda: self.goal_store.load(self.agent.session.key))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            incident_id = diagnostics.record_exception(
+                exc,
+                boundary="tui.goal_refresh",
+                session_key=getattr(getattr(self.agent, "session", None), "key", ""),
+            )
+            self._record_activity("error", diagnostics.user_error_message(incident_id, str(exc)))
+            self._invalidate()
+            return
+        self._apply_goal_state(goal)
+        self._invalidate()
+
+    def _apply_goal_state(self, goal):
         if goal is None:
             self.state.goal_state = ""
         elif goal.status == "active":
@@ -937,7 +1171,10 @@ class CoderTui:
     def _render_transcript(self) -> StyleAndTextTuples:
         width = self._terminal_width()
         height = self._transcript_height()
-        lines = self._transcript_lines(width)
+        if self._scroll_offset == 0:
+            lines = self._transcript_tail_lines(width, height + TRANSCRIPT_RENDER_MARGIN)
+        else:
+            lines = self._transcript_lines(width)
         if not lines:
             return [("class:text.dim", "")]
 
@@ -958,38 +1195,62 @@ class CoderTui:
         lines: list[tuple[str, str]] = []
         text_width = max(1, width)
         for entry in self.state.transcript:
-            style = {
-                "user": "class:role.user",
-                "assistant": "class:role.assistant",
-                "system": "class:role.system",
-                "tool": "class:role.tool",
-                "error": "class:role.error",
-            }.get(entry.kind, "")
-            title = entry.title or entry.kind
-            if entry.kind == "tool":
-                lines.extend(self._wrap_lines(entry.text, text_width, style))
-                continue
-            if entry.kind == "system":
-                lines.extend(self._wrap_lines(entry.text, text_width, style))
-                lines.append(("", ""))
-                continue
-            lines.append((style, title))
-            lines.extend(self._wrap_lines(entry.text.rstrip(), text_width, ""))
-            lines.append(("", ""))
+            lines.extend(self._transcript_entry_lines(entry, text_width))
+        return lines
+
+    def _transcript_tail_lines(self, width: int, min_lines: int) -> list[tuple[str, str]]:
+        lines: list[tuple[str, str]] = []
+        text_width = max(1, width)
+        for entry in reversed(self.state.transcript):
+            entry_lines = self._transcript_entry_lines(entry, text_width)
+            lines[0:0] = entry_lines
+            if len(lines) >= min_lines:
+                break
         return lines
 
     def _activity_lines(self, width: int) -> list[tuple[str, str]]:
         lines: list[tuple[str, str]] = []
         text_width = max(1, width)
         for entry in self.state.activity_log:
-            style = {
-                "system": "class:details",
-                "tool": "class:details.tool",
-                "error": "class:details.error",
-            }.get(entry.kind, "class:details")
-            if entry.text.startswith("failed:"):
-                style = "class:details.error"
-            lines.extend(self._wrap_lines(entry.text, text_width, style))
+            lines.extend(self._activity_entry_lines(entry, text_width))
+        return lines
+
+    def _transcript_entry_lines(self, entry: TranscriptEntry, width: int) -> list[tuple[str, str]]:
+        signature = (entry.kind, entry.title, entry.text)
+        cached = self._transcript_cache.get(id(entry))
+        if cached is not None and cached.width == width and cached.signature == signature:
+            return cached.lines
+        style = {
+            "user": "class:role.user",
+            "assistant": "class:role.assistant",
+            "system": "class:role.system",
+            "tool": "class:role.tool",
+            "error": "class:role.error",
+        }.get(entry.kind, "")
+        title = entry.title or entry.kind
+        if entry.kind == "tool":
+            lines = self._wrap_lines(entry.text, width, style)
+        elif entry.kind == "system":
+            lines = [*self._wrap_lines(entry.text, width, style), ("", "")]
+        else:
+            lines = [(style, title), *self._wrap_lines(entry.text.rstrip(), width, ""), ("", "")]
+        self._transcript_cache[id(entry)] = _WrappedEntryCache(signature=signature, width=width, lines=lines)
+        return lines
+
+    def _activity_entry_lines(self, entry: ActivityEntry, width: int) -> list[tuple[str, str]]:
+        signature = (entry.kind, "", entry.text)
+        cached = self._activity_cache.get(id(entry))
+        if cached is not None and cached.width == width and cached.signature == signature:
+            return cached.lines
+        style = {
+            "system": "class:details",
+            "tool": "class:details.tool",
+            "error": "class:details.error",
+        }.get(entry.kind, "class:details")
+        if entry.text.startswith("failed:"):
+            style = "class:details.error"
+        lines = self._wrap_lines(entry.text, width, style)
+        self._activity_cache[id(entry)] = _WrappedEntryCache(signature=signature, width=width, lines=lines)
         return lines
 
     def _wrap_lines(self, text: str, width: int, style: str) -> list[tuple[str, str]]:

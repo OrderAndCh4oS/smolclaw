@@ -121,10 +121,26 @@ def build_tool_registry(
             registry.register(McpShellExecTool(token_issuer_url, gateway_url), capability_name=capability_name)
         elif capability_name == CAPABILITY_COMMAND:
             if transport == "direct":
-                from app.tools.command import GitDiffTool, GitStatusTool, RunCommandTool
+                from app.tools.command import (
+                    GitAddTool,
+                    GitBranchTool,
+                    GitCheckoutTool,
+                    GitCommitTool,
+                    GitDiffTool,
+                    GitPullTool,
+                    GitPushTool,
+                    GitStatusTool,
+                    RunCommandTool,
+                )
 
                 registry.register(GitStatusTool(workspace), capability_name=capability_name)
                 registry.register(GitDiffTool(workspace), capability_name=capability_name)
+                registry.register(GitBranchTool(workspace), capability_name=capability_name)
+                registry.register(GitCheckoutTool(workspace), capability_name=capability_name)
+                registry.register(GitPullTool(workspace), capability_name=capability_name)
+                registry.register(GitAddTool(workspace), capability_name=capability_name)
+                registry.register(GitCommitTool(workspace), capability_name=capability_name)
+                registry.register(GitPushTool(workspace), capability_name=capability_name)
                 registry.register(RunCommandTool(workspace), capability_name=capability_name)
         elif capability_name == CAPABILITY_GOAL and session_manager:
             from app.tools.goal import (

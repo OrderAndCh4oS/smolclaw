@@ -210,6 +210,9 @@ class TestRepoAgentsConfig:
         assert "exec" not in configs["default"].tools
         assert "list_dir" not in configs["default"].tools
         assert "git_status" in configs["default"].tools
+        assert "git_branch" in configs["default"].tools
+        assert "git_commit" not in configs["default"].tools
+        assert "git_push" not in configs["default"].tools
         assert "goal_start" in configs["default"].tools
         assert "goal_status" in configs["default"].tools
         assert "run_command" not in configs["default"].tools
@@ -220,6 +223,9 @@ class TestRepoAgentsConfig:
         assert "exec" not in configs["researcher"].tools
         assert "list_dir" not in configs["researcher"].tools
         assert "git_diff" in configs["researcher"].tools
+        assert "git_branch" in configs["researcher"].tools
+        assert "git_commit" not in configs["researcher"].tools
+        assert "git_push" not in configs["researcher"].tools
         assert "goal_start" in configs["researcher"].tools
         assert "goal_update" in configs["researcher"].tools
 
@@ -228,6 +234,12 @@ class TestRepoAgentsConfig:
         assert configs["coder"].behaviors == ["plan", "reflect"]
         assert "apply_patch" in configs["coder"].tools
         assert "run_command" in configs["coder"].tools
+        assert "git_branch" in configs["coder"].tools
+        assert "git_checkout" in configs["coder"].tools
+        assert "git_pull" in configs["coder"].tools
+        assert "git_add" in configs["coder"].tools
+        assert "git_commit" in configs["coder"].tools
+        assert "git_push" in configs["coder"].tools
         assert "exec" not in configs["coder"].tools
         assert "write_file" in configs["coder"].tools
         assert "edit_file" in configs["coder"].tools

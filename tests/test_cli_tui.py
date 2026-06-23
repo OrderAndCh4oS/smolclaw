@@ -643,6 +643,165 @@ async def test_tui_agent_processing_does_not_block_render_loop():
     assert "done" in rendered
 
 
+async def _assert_submit_does_not_block_render_loop(tui, text):
+    submit_task = asyncio.create_task(tui.submit(text))
+    tick_task = asyncio.create_task(asyncio.sleep(0.01))
+
+    await asyncio.wait_for(tick_task, timeout=0.05)
+    await submit_task
+
+
+@pytest.mark.asyncio
+async def test_tui_slow_init_command_does_not_block_render_loop():
+    tui = _fake_tui()
+
+    def slow_init():
+        time.sleep(0.2)
+        return "Created AGENTS.md"
+
+    tui.initialize_project = slow_init
+
+    await _assert_submit_does_not_block_render_loop(tui, "/init")
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Created AGENTS.md" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_slow_trace_command_does_not_block_render_loop():
+    tui = _fake_tui()
+
+    def slow_trace(session_key, command_arg):
+        time.sleep(0.2)
+        return f"Trace for {session_key} {command_arg}".strip()
+
+    tui.format_trace_status = slow_trace
+
+    await _assert_submit_does_not_block_render_loop(tui, "/trace events 5")
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Trace for session events 5" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_slow_approval_command_does_not_block_render_loop():
+    tui = _fake_tui()
+
+    def slow_approval(session_key, command_arg):
+        time.sleep(0.2)
+        return f"Approval {session_key} {command_arg}".strip()
+
+    tui.resolve_approval_command = slow_approval
+
+    await _assert_submit_does_not_block_render_loop(tui, "/approval status")
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Approval session status" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_slow_worktree_command_does_not_block_render_loop():
+    tui = _fake_tui()
+
+    def slow_worktree(command_arg):
+        time.sleep(0.2)
+        return f"Worktree {command_arg}".strip()
+
+    tui.resolve_worktree_command = slow_worktree
+
+    await _assert_submit_does_not_block_render_loop(tui, "/worktree diff")
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Worktree diff" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_slow_undo_command_does_not_block_render_loop():
+    tui = _fake_tui()
+
+    def slow_undo(session_key):
+        time.sleep(0.2)
+        return tui.checkpoint_store.undo_last.return_value
+
+    tui.checkpoint_store.undo_last.side_effect = slow_undo
+
+    await _assert_submit_does_not_block_render_loop(tui, "/undo")
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Undid checkpoint chk-1" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_slow_clear_command_does_not_block_render_loop():
+    tui = _fake_tui()
+
+    def slow_save(session):
+        time.sleep(0.2)
+
+    tui.session_manager.save.side_effect = slow_save
+
+    await _assert_submit_does_not_block_render_loop(tui, "/clear")
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Session cleared." in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_slow_goal_status_does_not_block_render_loop():
+    tui = _fake_tui()
+
+    def slow_load(session_key):
+        time.sleep(0.2)
+        return None
+
+    tui.goal_store.load.side_effect = slow_load
+
+    await _assert_submit_does_not_block_render_loop(tui, "/goal status")
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "No goal" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_rejects_mutating_command_while_agent_is_running():
+    tui = _fake_tui()
+
+    async def blocking_process(prompt, on_output=None, on_event=None):
+        await asyncio.sleep(0.2)
+        return "done"
+
+    tui.agent.process = blocking_process
+
+    run_task = asyncio.create_task(tui.submit("slow work"))
+    await asyncio.sleep(0.01)
+    await tui.submit("/undo")
+    await run_task
+
+    tui.checkpoint_store.undo_last.assert_not_called()
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "/undo is unavailable while running." in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_details_command_is_allowed_while_agent_is_running():
+    tui = _fake_tui()
+
+    async def blocking_process(prompt, on_output=None, on_event=None):
+        await asyncio.sleep(0.2)
+        return "done"
+
+    tui.agent.process = blocking_process
+
+    run_task = asyncio.create_task(tui.submit("slow work"))
+    await asyncio.sleep(0.01)
+    await tui.submit("/details")
+    await run_task
+
+    assert tui.state.details_visible is True
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Tool details shown." in rendered
+
+
 @pytest.mark.asyncio
 async def test_tui_bottom_bar_shows_thinking_and_tool_activity():
     tui = _fake_tui()

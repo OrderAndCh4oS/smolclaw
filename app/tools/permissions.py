@@ -163,6 +163,12 @@ class PermissionMiddleware:
             return [("path", str(kwargs.get("path") or "."))]
         if tool_name == "git_status":
             return [("cwd", str(kwargs.get("cwd") or "."))]
+        if tool_name in {"git_branch", "git_checkout", "git_pull", "git_push", "git_commit"}:
+            return [("cwd", str(kwargs.get("cwd") or "."))]
+        if tool_name == "git_add":
+            paths = [("cwd", str(kwargs.get("cwd") or "."))]
+            paths.extend(("path", str(path)) for path in (kwargs.get("paths") or []))
+            return paths
         if tool_name == "git_diff":
             paths = [("cwd", str(kwargs.get("cwd") or "."))]
             if kwargs.get("path"):
