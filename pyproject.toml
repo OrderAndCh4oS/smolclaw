@@ -36,4 +36,4 @@ dependencies = [
 smolclaw = "cli.main:entrypoint"
 
 [tool.setuptools]
-packages = ["app", "app.tools", "cli", "smolclaw"]
+packages = ["app", "app.tools", "cli"]

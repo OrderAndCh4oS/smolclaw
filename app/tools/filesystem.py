@@ -322,19 +322,17 @@ class ApplyPatchTool(_WorkspacePathMixin, Tool):
     async def execute(self, **kwargs) -> str:
         try:
             operations = self._parse_patch(kwargs["patch_text"])
+            resolved_operations = []
             changed = []
             for operation in operations:
                 kind = operation["kind"]
                 path, err = self._resolve_path(operation["path"])
                 if err:
                     return err
-                if kind == "add":
-                    self._add_file(path, operation["lines"])
-                elif kind == "delete":
-                    self._delete_file(path)
-                elif kind == "update":
-                    self._update_file(path, operation["hunks"])
+                resolved_operations.append({**operation, "resolved_path": path})
                 changed.append(f"{kind} {operation['path']}")
+            planned_states, original_states = self._plan_operations(resolved_operations)
+            self._apply_planned_states(planned_states, original_states)
             return "Applied patch:\n" + "\n".join(changed)
         except ValueError as e:
             return f"Error: {e}"
@@ -411,6 +409,84 @@ class ApplyPatchTool(_WorkspacePathMixin, Tool):
             raise ValueError(f"file not found: {path}")
         with open(path) as f:
             content = f.read()
+        updated_content = self._apply_hunks_to_content(content, hunks, path)
+        with open(path, "w") as f:
+            f.write(updated_content)
+
+    def _plan_operations(self, operations: list[dict]) -> tuple[dict[str, dict], dict[str, dict]]:
+        planned_states: dict[str, dict] = {}
+        original_states: dict[str, dict] = {}
+
+        for operation in operations:
+            kind = operation["kind"]
+            path = operation["resolved_path"]
+            if path not in original_states:
+                original_states[path] = self._snapshot_file(path)
+            state = planned_states.get(path, original_states[path])
+
+            if kind == "add":
+                if state["exists"]:
+                    raise ValueError(f"file already exists: {path}")
+                planned_states[path] = {
+                    "exists": True,
+                    "is_file": True,
+                    "content": self._content_from_lines(operation["lines"]),
+                }
+            elif kind == "delete":
+                if not state["exists"] or not state["is_file"]:
+                    raise ValueError(f"file not found: {path}")
+                planned_states[path] = {
+                    "exists": False,
+                    "is_file": False,
+                    "content": "",
+                }
+            elif kind == "update":
+                if not state["exists"] or not state["is_file"]:
+                    raise ValueError(f"file not found: {path}")
+                planned_states[path] = {
+                    "exists": True,
+                    "is_file": True,
+                    "content": self._apply_hunks_to_content(state["content"], operation["hunks"], path),
+                }
+        return planned_states, original_states
+
+    def _snapshot_file(self, path: str) -> dict:
+        if not os.path.exists(path):
+            return {"exists": False, "is_file": False, "content": ""}
+        if not os.path.isfile(path):
+            return {"exists": True, "is_file": False, "content": ""}
+        with open(path) as f:
+            return {"exists": True, "is_file": True, "content": f.read()}
+
+    def _apply_planned_states(self, planned_states: dict[str, dict], original_states: dict[str, dict]):
+        try:
+            for path, state in planned_states.items():
+                if state["exists"]:
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, "w") as f:
+                        f.write(state["content"])
+                elif os.path.exists(path):
+                    os.remove(path)
+        except Exception:
+            self._restore_original_states(original_states)
+            raise
+
+    def _restore_original_states(self, original_states: dict[str, dict]):
+        for path, state in original_states.items():
+            if state["exists"] and state["is_file"]:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w") as f:
+                    f.write(state["content"])
+            elif os.path.exists(path):
+                os.remove(path)
+
+    def _content_from_lines(self, lines: list[str]) -> str:
+        content = "\n".join(lines)
+        if lines:
+            content += "\n"
+        return content
+
+    def _apply_hunks_to_content(self, content: str, hunks: list[list[str]], path: str) -> str:
         original_lines = content.splitlines()
         had_trailing_newline = content.endswith("\n")
         updated = list(original_lines)
@@ -425,10 +501,10 @@ class ApplyPatchTool(_WorkspacePathMixin, Tool):
             updated[index:index + len(old_lines)] = new_lines
             search_start = index + len(new_lines)
 
-        with open(path, "w") as f:
-            f.write("\n".join(updated))
-            if had_trailing_newline or updated:
-                f.write("\n")
+        content = "\n".join(updated)
+        if had_trailing_newline or updated:
+            content += "\n"
+        return content
 
     def _find_subsequence(self, lines: list[str], target: list[str], start: int) -> int | None:
         if not target:

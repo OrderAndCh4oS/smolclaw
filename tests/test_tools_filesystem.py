@@ -158,6 +158,60 @@ class TestApplyPatchTool:
         assert result.startswith("Error:")
         assert "outside workspace" in result
 
+    @pytest.mark.asyncio
+    async def test_failed_multi_operation_patch_does_not_add_file(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        existing_path = os.path.join(temp_dir, "existing.py")
+        with open(existing_path, "w") as f:
+            f.write("print('before')\n")
+
+        tool = ApplyPatchTool(workspace=workspace)
+        result = await tool.execute(patch_text="\n".join([
+            "*** Begin Patch",
+            "*** Add File: created.py",
+            "+print('created')",
+            "*** Update File: existing.py",
+            "@@",
+            "-print('missing')",
+            "+print('after')",
+            "*** End Patch",
+        ]))
+
+        assert result.startswith("Error:")
+        assert not os.path.exists(os.path.join(temp_dir, "created.py"))
+        with open(existing_path) as f:
+            assert f.read() == "print('before')\n"
+
+    @pytest.mark.asyncio
+    async def test_failed_multi_file_patch_does_not_update_first_file(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        first_path = os.path.join(temp_dir, "first.py")
+        second_path = os.path.join(temp_dir, "second.py")
+        with open(first_path, "w") as f:
+            f.write("first = 1\n")
+        with open(second_path, "w") as f:
+            f.write("second = 2\n")
+
+        tool = ApplyPatchTool(workspace=workspace)
+        result = await tool.execute(patch_text="\n".join([
+            "*** Begin Patch",
+            "*** Update File: first.py",
+            "@@",
+            "-first = 1",
+            "+first = 10",
+            "*** Update File: second.py",
+            "@@",
+            "-second = 999",
+            "+second = 20",
+            "*** End Patch",
+        ]))
+
+        assert result.startswith("Error:")
+        with open(first_path) as f:
+            assert f.read() == "first = 1\n"
+        with open(second_path) as f:
+            assert f.read() == "second = 2\n"
+
 
 class TestGrepSearchTool:
     @pytest.mark.asyncio
