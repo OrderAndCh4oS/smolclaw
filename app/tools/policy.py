@@ -87,7 +87,7 @@ class PolicyPermissionMiddleware(PermissionMiddleware):
         shared_state: dict[str, Any] | None = None,
     ):
         super().__init__(mode, workspace=workspace)
-        self.policy = policy or PermissionPolicy()
+        self.policy = (policy or PermissionPolicy()).merge(baseline_policy_for_mode(mode))
         self.shared_state = shared_state if shared_state is not None else {}
         validate_permission_policy(self.policy)
 
@@ -116,12 +116,25 @@ class PolicyPermissionMiddleware(PermissionMiddleware):
             approved_request = self._consume_approved_request(tool, kwargs)
             if approved_request:
                 self._emit_approval_resolved(tool, "approved", approved_request)
-                return await next_fn(tool, kwargs)
+                return await self._run_with_approved_bypass(tool, kwargs, next_fn)
             approval_id = self._create_approval_request(tool, kwargs, decision)
             reason = f": {decision.reason}" if decision.reason else ""
             suffix = f" Approval id: {approval_id}." if approval_id else ""
             return f"Error: Approval required for tool '{tool.name}'{reason}.{suffix}"
         return await next_fn(tool, kwargs)
+
+    async def _run_with_approved_bypass(self, tool: Tool, kwargs: dict[str, Any], next_fn: NextFn):
+        if tool.name != "run_command":
+            return await next_fn(tool, kwargs)
+        previous = self.shared_state.get("allow_denied_command_once")
+        self.shared_state["allow_denied_command_once"] = True
+        try:
+            return await next_fn(tool, kwargs)
+        finally:
+            if previous is None:
+                self.shared_state.pop("allow_denied_command_once", None)
+            else:
+                self.shared_state["allow_denied_command_once"] = previous
 
     def resolve(self, tool: Tool, kwargs: Mapping[str, Any]) -> PolicyDecision:
         subjects = self._subjects(tool, kwargs)
@@ -256,7 +269,32 @@ def baseline_policy_for_mode(mode: str) -> PermissionPolicy:
         PermissionRule(subject="capability", pattern=capability, action="deny", reason=f"{mode} blocks capability")
         for capability in sorted(config.blocked_capabilities)
     )
+    if mode in {"execute", "full"}:
+        rules.extend(_approval_command_rules())
     return PermissionPolicy(default_action="allow", rules=tuple(rules))
+
+
+def _approval_command_rules() -> list[PermissionRule]:
+    reason = "command requires approval"
+    return [
+        PermissionRule(subject="command", pattern=pattern, action="ask", reason=reason)
+        for pattern in (
+            "npm install*",
+            "npm i*",
+            "npm add*",
+            "npm view*",
+            "pnpm install*",
+            "pnpm add*",
+            "pnpm view*",
+            "yarn install*",
+            "yarn add*",
+            "yarn view*",
+            "bun install*",
+            "bun add*",
+            "bun view*",
+            "node -e*",
+        )
+    ]
 
 
 def validate_permission_policy(policy: PermissionPolicy):

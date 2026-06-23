@@ -1,11 +1,13 @@
 """Tests for permission modes and PermissionMiddleware."""
 
 import os
+import subprocess
 
 import pytest
 
 from app.approvals import ApprovalRequestStore
-from app.tools.base import Tool, ToolCallPolicy
+from app.tools.command import RunCommandTool
+from app.tools.base import Tool, ToolCallPolicy, normalize_tool_result
 from app.tools.middleware import MiddlewareChain
 from app.tools.permissions import PERMISSION_BLOCKED, PermissionMiddleware
 from app.tools.policy import (
@@ -239,6 +241,56 @@ class TestPolicyPermissionMiddleware:
 
         assert "write_file" in tool_rules
         assert policy.default_action == "allow"
+
+    def test_baseline_policy_for_execute_asks_for_installs_and_node_probes(self):
+        policy = baseline_policy_for_mode("execute")
+        command_rules = {
+            rule.pattern: rule.action
+            for rule in policy.rules
+            if rule.subject == "command"
+        }
+
+        assert command_rules["npm install*"] == "ask"
+        assert command_rules["npm i*"] == "ask"
+        assert command_rules["node -e*"] == "ask"
+
+    @pytest.mark.asyncio
+    async def test_policy_approval_required_normalizes_as_denied(self):
+        chain = MiddlewareChain([PolicyPermissionMiddleware("execute")])
+
+        result = await chain.run(FakeTool("run_command"), {"command": "npm install left-pad"})
+
+        assert str(result).startswith("Error: Approval required")
+        assert normalize_tool_result(result).status == "denied"
+
+    @pytest.mark.asyncio
+    async def test_approved_install_command_bypasses_intrinsic_allowlist_once(self, temp_dir, monkeypatch):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        approval_store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+        shared_state = {
+            "approval_store": approval_store,
+            "session_key": "session-a",
+        }
+        tool = RunCommandTool(workspace, shared_state=shared_state)
+        chain = MiddlewareChain([
+            PolicyPermissionMiddleware("execute", policy=PermissionPolicy(), shared_state=shared_state),
+        ])
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="installed\n", stderr="")
+
+        monkeypatch.setattr("app.tools.command.subprocess.run", fake_run)
+
+        first = await chain.run(tool, {"command": "npm install left-pad"})
+        pending = approval_store.list("session-a", status="pending")
+        approval_store.approve("session-a", pending[0].id)
+        second = await chain.run(tool, {"command": "npm install left-pad"})
+
+        assert normalize_tool_result(first).status == "denied"
+        assert calls == [["npm", "install", "left-pad"]]
+        assert "exit code 0" in second
 
     def test_load_permission_policy_reads_workspace_file(self, temp_dir, monkeypatch):
         monkeypatch.delenv("SMOLCLAW_PERMISSION_POLICY", raising=False)

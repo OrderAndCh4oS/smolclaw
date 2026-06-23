@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import time
 
 import numpy as np
@@ -10,6 +11,11 @@ from app.prompts import excerpt_summary_prompt, get_extract_entities_prompt
 from app.utilities import read_file, get_docs, make_hash, split_string_by_multi_markers, clean_str
 
 logger = logging.getLogger("smolclaw.ingestion")
+
+
+def _is_standalone_tag_line(line: str) -> bool:
+    stripped = line.strip()
+    return bool(stripped and re.fullmatch(r"(#[A-Za-z0-9_/-]+)(\s+#[A-Za-z0-9_/-]+)*", stripped))
 
 
 class IngestionPipeline:
@@ -129,13 +135,33 @@ class IngestionPipeline:
                     pass
         return metadata
 
+    @staticmethod
+    def _strip_frontmatter(content: str) -> str:
+        """Return content without YAML frontmatter."""
+        if not content.startswith("---"):
+            return content
+        parts = content.split("---", 2)
+        if len(parts) < 3:
+            return content
+        return parts[2].lstrip("\n")
+
+    @classmethod
+    def _content_for_indexing(cls, content: str) -> str:
+        """Remove storage metadata that should not become searchable project knowledge."""
+        body = cls._strip_frontmatter(content)
+        lines = body.splitlines()
+        while lines and (_is_standalone_tag_line(lines[0]) or not lines[0].strip()):
+            lines.pop(0)
+        return "\n".join(lines).strip() or body.strip() or content
+
     async def _embed_document(self, content, doc_id):
         start_time = time.time()
         doc_metadata = self._extract_frontmatter(content)
-        excerpts = self.excerpt_fn(content, self.excerpt_size, self.overlap)
+        index_content = self._content_for_indexing(content)
+        excerpts = self.excerpt_fn(index_content, self.excerpt_size, self.overlap)
         excerpt_ids = []
 
-        summary_tasks = [self._get_excerpt_summary(content, excerpt) for excerpt in excerpts]
+        summary_tasks = [self._get_excerpt_summary(index_content, excerpt) for excerpt in excerpts]
         summaries = await asyncio.gather(*summary_tasks)
 
         # Batch all embeddings into a single API call
@@ -189,7 +215,8 @@ class IngestionPipeline:
         total_relationships = 0
         doc_entity_ids = set()
         doc_relationship_ids = set()
-        excerpts = self.excerpt_fn(content, self.excerpt_size, self.overlap)
+        index_content = self._content_for_indexing(content)
+        excerpts = self.excerpt_fn(index_content, self.excerpt_size, self.overlap)
 
         extract_entity_tasks = [self._get_completion(get_extract_entities_prompt(excerpt)) for excerpt in
                                 excerpts]

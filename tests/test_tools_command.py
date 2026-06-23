@@ -14,6 +14,7 @@ from app.tools.command import (
     GitStatusTool,
     RunCommandTool,
 )
+from app.tools.base import normalize_tool_result
 from app.workspace import WorkspaceContext
 
 
@@ -189,8 +190,9 @@ class TestRunCommandTool:
 
         result = await tool.execute(command="rm file.txt")
 
-        assert result.startswith("Error:")
+        assert result.startswith("Denied:")
         assert "not allowlisted" in result
+        assert normalize_tool_result(result).status == "denied"
 
     @pytest.mark.asyncio
     async def test_blocks_cwd_escape(self, temp_dir):

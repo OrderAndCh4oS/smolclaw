@@ -3,7 +3,7 @@ import re
 import shlex
 import subprocess
 
-from app.tools.base import Tool, ToolCallPolicy
+from app.tools.base import Tool, ToolCallPolicy, ToolRuntimeContext
 from app.tools.permissions import COMMAND_EXECUTION, SHELL_READ, SHELL_WRITE
 from app.workspace import WorkspaceContext
 
@@ -443,6 +443,13 @@ class RunCommandTool(_WorkspaceCommandMixin, Tool):
         "switch",
     }
 
+    def __init__(self, workspace: WorkspaceContext | str, shared_state: dict | None = None):
+        super().__init__(workspace)
+        self.shared_state = shared_state if shared_state is not None else {}
+
+    def bind(self, runtime_ctx: ToolRuntimeContext) -> Tool:
+        return RunCommandTool(runtime_ctx.workspace or self.workspace, shared_state=runtime_ctx.shared_state)
+
     @property
     def default_call_policy(self) -> ToolCallPolicy:
         return ToolCallPolicy(tags=frozenset({COMMAND_EXECUTION}))
@@ -503,7 +510,10 @@ class RunCommandTool(_WorkspaceCommandMixin, Tool):
             return "Error: command is required"
         allowed, reason = self._is_allowed(args)
         if not allowed:
-            return f"Error: command is not allowlisted: {reason}"
+            if self._has_approved_bypass() and self._is_approval_bypassable(args):
+                allowed = True
+            else:
+                return f"Denied: command is not allowlisted: {reason}"
         timeout = self._coerce_int(kwargs.get("timeout_seconds", 120), minimum=1, maximum=600, default=120)
         max_output_chars = self._coerce_int(kwargs.get("max_output_chars", 20000), minimum=1000, maximum=100000, default=20000)
         return self._run(args, cwd, timeout=timeout, max_output_chars=max_output_chars)
@@ -525,6 +535,16 @@ class RunCommandTool(_WorkspaceCommandMixin, Tool):
         if args[:2] == ["go", "test"]:
             return True, ""
         return False, f"unsupported command family: {args[0]}"
+
+    def _has_approved_bypass(self) -> bool:
+        return bool(self.shared_state.get("allow_denied_command_once"))
+
+    def _is_approval_bypassable(self, args: list[str]) -> bool:
+        if args[0] in {"npm", "pnpm", "yarn", "bun"} and len(args) > 1:
+            return args[1] in {"install", "i", "add", "view"}
+        if args[:2] == ["node", "-e"]:
+            return True
+        return False
 
     def _command_may_mutate(self, command: str) -> bool:
         try:

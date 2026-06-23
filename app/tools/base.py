@@ -86,6 +86,14 @@ def normalize_tool_result(value: ToolOutcome | None) -> ToolResult:
     text = "" if value is None else str(value)
     if text.startswith("Denied:"):
         return ToolResult(status="denied", content=text)
+    if text.startswith("Error: Approval required"):
+        return ToolResult(status="denied", content=text)
+    if "denied by permission policy" in text:
+        return ToolResult(status="denied", content=text)
+    if "not permitted" in text:
+        return ToolResult(status="denied", content=text)
+    if "command is not allowlisted" in text:
+        return ToolResult(status="denied", content=text)
     if text.startswith("Error:"):
         return ToolResult(status="error", content=text)
     return ToolResult(status="ok", content=text)

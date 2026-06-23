@@ -89,6 +89,39 @@ class TestIngestText:
         assert has_source
 
     @pytest.mark.asyncio
+    async def test_ingest_text_strips_memory_metadata_from_indexed_content(self, test_rag):
+        from app.definitions import COMPLETE_TAG
+
+        test_rag.llm.get_completion = AsyncMock(return_value=COMPLETE_TAG)
+        text = """---
+memory_type: episode
+tags:
+  - text-editor
+created_at: '2026-06-23T15:48:20.187614+00:00'
+source_id: session-coder-default
+---
+
+#episode #text-editor
+
+For the text editor project, add tests for cursor movement.
+"""
+
+        await test_rag.ingest_text(text, source_id="session-coder-default")
+
+        all_excerpts = await test_rag.excerpt_kv.get_all()
+        assert len(all_excerpts) == 1
+        excerpt = next(iter(all_excerpts.values()))
+        assert excerpt["memory_type"] == "episode"
+        assert excerpt["excerpt"] == "For the text editor project, add tests for cursor movement."
+
+        prompt_texts = [call.args[0] for call in test_rag.llm.get_completion.await_args_list]
+        assert prompt_texts
+        assert all("memory_type" not in prompt for prompt in prompt_texts)
+        assert all("created_at" not in prompt for prompt in prompt_texts)
+        assert all("#episode" not in prompt for prompt in prompt_texts)
+        assert all("cursor movement" in prompt for prompt in prompt_texts)
+
+    @pytest.mark.asyncio
     async def test_ingest_text_default_source_id(self, test_rag):
         text = "Test content without explicit source."
         await test_rag.ingest_text(text)

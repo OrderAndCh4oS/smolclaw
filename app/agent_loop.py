@@ -591,11 +591,139 @@ class AgentLoop:
             _turn_span.end()
 
         # Exceeded max iterations
-        msg = "Stopped: reached max iterations without a final response."
+        finalized = await self._finalize_after_max_iterations(
+            messages,
+            on_output=on_output,
+            on_event=on_event,
+        )
+        if finalized is not None:
+            return finalized
+
+        msg = (
+            "Stopped: reached max iterations without a final response. "
+            "A finalization pass could not produce a plain assistant response."
+        )
         self.session.add_message({"role": "assistant", "content": msg})
         self.session_manager.save(self.session)
         self._last_stop_reason = "max_iterations"
         return msg
+
+    async def _finalize_after_max_iterations(
+        self,
+        messages: list[dict],
+        *,
+        on_output: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_event: Optional[Callable[[dict], Awaitable[None]]] = None,
+    ) -> str | None:
+        final_messages = list(messages)
+        final_messages.append({
+            "role": "system",
+            "content": (
+                "The tool iteration limit has been reached. Do not call tools. "
+                "Provide a concise final response that summarizes completed work, "
+                "verification, blockers, and the next best step."
+            ),
+        })
+        iteration = self.max_iterations
+        turn = TurnUsage(iteration=iteration)
+        current_turn_index = len(self.session_usage.turns)
+
+        await self._emit_event(on_event, {
+            "type": "llm",
+            "phase": "start",
+            "iteration": iteration,
+            "finalization": True,
+        })
+        self._trace_append("llm.started", {
+            "model": getattr(self.llm, "completion_model", "unknown"),
+            "tools_count": 0,
+            "finalization": True,
+        }, turn_index=current_turn_index, iteration=iteration)
+
+        try:
+            with self._usage_collector.category("agent_turn"):
+                llm_started = time.perf_counter()
+                result = await self.llm.get_tool_completion(
+                    messages=final_messages,
+                    tools=None,
+                    stream=False,
+                    on_chunk=None,
+                )
+                llm_duration_ms = int((time.perf_counter() - llm_started) * 1000)
+        except Exception as exc:
+            self._trace_append("finalization.failed", {
+                "error_type": exc.__class__.__name__,
+                "message": str(exc),
+            }, turn_index=current_turn_index, iteration=iteration)
+            return None
+
+        llm_records = self._usage_collector.drain()
+        turn.llm_calls.extend(llm_records)
+        for record in llm_records:
+            diagnostics.record_event(
+                "llm.call",
+                session_key=self.session.key,
+                category=record.category,
+                operation=record.operation,
+                model=record.model,
+                prompt_tokens=record.prompt_tokens,
+                completion_tokens=record.completion_tokens,
+                total_tokens=record.total_tokens,
+                duration_ms=record.duration_ms,
+                cached=record.cached,
+            )
+
+        await self._emit_event(on_event, {
+            "type": "llm",
+            "phase": "end",
+            "iteration": iteration,
+            "duration_ms": llm_duration_ms,
+            "has_tool_calls": bool(result["has_tool_calls"]),
+            "prompt_tokens": sum(r.prompt_tokens for r in llm_records),
+            "completion_tokens": sum(r.completion_tokens for r in llm_records),
+            "total_tokens": sum(r.total_tokens for r in llm_records),
+            "model": getattr(self.llm, "completion_model", "unknown"),
+            "finalization": True,
+        })
+        self._trace_append("llm.ended", {
+            "duration_ms": llm_duration_ms,
+            "has_tool_calls": bool(result["has_tool_calls"]),
+            "prompt_tokens": sum(r.prompt_tokens for r in llm_records),
+            "completion_tokens": sum(r.completion_tokens for r in llm_records),
+            "total_tokens": sum(r.total_tokens for r in llm_records),
+            "model": getattr(self.llm, "completion_model", "unknown"),
+            "finalization": True,
+        }, turn_index=current_turn_index, iteration=iteration)
+
+        if result["has_tool_calls"]:
+            self.session_usage.turns.append(turn)
+            self._trace_append("finalization.failed", {
+                "reason": "requested_tools",
+            }, turn_index=current_turn_index, iteration=iteration)
+            return None
+
+        content = result["content"] or ""
+        if not content.strip():
+            self.session_usage.turns.append(turn)
+            self._trace_append("finalization.failed", {
+                "reason": "empty_response",
+            }, turn_index=current_turn_index, iteration=iteration)
+            return None
+
+        if on_output:
+            await on_output(content)
+        self.session.add_message({"role": "assistant", "content": content})
+        self.session_manager.save(self.session)
+        self._last_stop_reason = "max_iterations_finalized"
+        self.session_usage.turns.append(turn)
+        await self.hook_runner.fire(ON_AFTER_TURN, {
+            "iteration": iteration,
+            "session_key": self.session.key,
+            "response": content,
+            "had_tool_calls": False,
+            "finalization": True,
+        })
+        return content
 
     def _begin_safety_task(self):
         if self.safety_state is None:

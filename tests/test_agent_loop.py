@@ -494,6 +494,51 @@ class TestAgentLoop:
         )
         result = await loop.process("forever")
         assert "max iterations" in result.lower()
+        assert "finalization pass" in result.lower()
+        assert llm.get_tool_completion.call_count == 4
+
+    @pytest.mark.asyncio
+    async def test_process_finalizes_after_max_iterations_when_last_turn_used_tools(self, temp_dir):
+        llm = MagicMock()
+        llm.get_tool_completion = AsyncMock(side_effect=[
+            {
+                "content": None,
+                "tool_calls": [_make_tool_call("echo", {"text": "work"})],
+                "has_tool_calls": True,
+            },
+            {
+                "content": "Final summary after tools.",
+                "tool_calls": [],
+                "has_tool_calls": False,
+            },
+        ])
+
+        registry = ToolRegistry()
+        registry.register(EchoTool())
+        session = Session(key="finalize")
+        trace_store = RunTraceStore(os.path.join(temp_dir, "traces"))
+        loop = AgentLoop(
+            llm=llm,
+            tool_registry=registry,
+            context_builder=ContextBuilder(),
+            session=session,
+            session_manager=SessionManager(temp_dir),
+            trace_store=trace_store,
+            max_iterations=1,
+        )
+
+        result = await loop.process("do work")
+
+        assert result == "Final summary after tools."
+        assert llm.get_tool_completion.call_args_list[-1].kwargs["tools"] is None
+        assert session.messages[-1]["content"] == "Final summary after tools."
+        summary_name = next(
+            name for name in os.listdir(trace_store.session_dir(session.key))
+            if name.endswith(".summary.json")
+        )
+        summary = trace_store.load_summary(session.key, summary_name.removesuffix(".summary.json"))
+        assert summary.stop_reason == "max_iterations_finalized"
+        assert summary.status == "complete"
 
     @pytest.mark.asyncio
     async def test_process_saves_session(self, mock_tool_llm, temp_dir):
