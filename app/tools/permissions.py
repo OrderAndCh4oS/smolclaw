@@ -58,6 +58,7 @@ PERMISSION_MODES: Final[Dict[str, PermissionModeConfig]] = {
     "plan": PermissionModeConfig(
         blocked_tools=frozenset(DIRECT_MUTATION_TOOLS | DELEGATION_TOOLS),
         blocked_capabilities=frozenset({MUTATES_STATE, DELEGATES, COMMAND_EXECUTION}),
+        capability_exempt_tools=frozenset({"contradiction_review"}),
     ),
     "execute": PermissionModeConfig(
         blocked_tools=frozenset(DELEGATION_TOOLS),
@@ -76,7 +77,7 @@ PERMISSION_MODES: Final[Dict[str, PermissionModeConfig]] = {
             "spawn_agent",
         }),
         blocked_capabilities=frozenset({MUTATES_STATE, DELEGATES, COMMAND_EXECUTION}),
-        capability_exempt_tools=frozenset({"memory_store", "research_source_store"}),
+        capability_exempt_tools=frozenset({"memory_store", "research_source_store", "contradiction_review"}),
     ),
     "delegate_only": PermissionModeConfig(
         blocked_tools=frozenset(DIRECT_MUTATION_TOOLS),

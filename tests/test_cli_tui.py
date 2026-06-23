@@ -43,8 +43,10 @@ def _fake_tui(show_actions=False):
         format_goal_status=lambda goal: "No goal" if goal is None else goal.status,
         parse_goal_run_count=lambda value: int(value or "3"),
         build_goal_loop_prompt=lambda: "continue goal",
+        build_memory_review_prompt=lambda arg: f"review memory {arg}".strip(),
         format_trace_status=lambda session_key, arg: f"Trace for {session_key} {arg}".strip(),
         resolve_approval_command=lambda session_key, arg: f"Approval {session_key} {arg}".strip(),
+        resolve_memory_command=lambda arg: f"Memory {arg}".strip(),
         resolve_worktree_command=lambda arg: f"Worktree {arg}".strip(),
         initialize_project=lambda: "Created AGENTS.md",
         format_action_event=lambda event: event.get("line"),
@@ -321,6 +323,53 @@ async def test_tui_approval_command_shows_approval_status():
 
     rendered = "".join(text for _, text in tui._render_transcript())
     assert "Approval session status" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_memory_list_command_shows_memory_review():
+    tui = _fake_tui()
+
+    await tui.submit("/memory list")
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Memory list" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_memory_review_runs_agent_conversation_turn():
+    tui = _fake_tui()
+    tui.agent.process = AsyncMock(return_value="reconciled")
+
+    await tui.submit("/memory review SmolClaw defaults")
+
+    prompt = tui.agent.process.await_args.args[0]
+    assert "review memory SmolClaw defaults" == prompt
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "reconciled" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_memory_review_without_detector_does_not_start_agent_turn():
+    tui = _fake_tui()
+    tui.smol_rag.contradiction_detector = None
+    tui.agent.process = AsyncMock(return_value="should not run")
+
+    await tui.submit("/memory review")
+
+    tui.agent.process.assert_not_awaited()
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Memory review" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_memory_reconcile_alias_runs_agent_conversation_turn():
+    tui = _fake_tui()
+    tui.agent.process = AsyncMock(return_value="reconciled")
+
+    await tui.submit("/memory reconcile SmolClaw defaults")
+
+    prompt = tui.agent.process.await_args.args[0]
+    assert "review memory SmolClaw defaults" == prompt
 
 
 @pytest.mark.asyncio
@@ -697,6 +746,22 @@ async def test_tui_slow_approval_command_does_not_block_render_loop():
 
     rendered = "".join(text for _, text in tui._render_transcript())
     assert "Approval session status" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_slow_memory_command_does_not_block_render_loop():
+    tui = _fake_tui()
+
+    def slow_memory(command_arg):
+        time.sleep(0.2)
+        return f"Memory {command_arg}".strip()
+
+    tui.resolve_memory_command = slow_memory
+
+    await _assert_submit_does_not_block_render_loop(tui, "/memory list")
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Memory list" in rendered
 
 
 @pytest.mark.asyncio

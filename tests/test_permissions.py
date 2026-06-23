@@ -385,6 +385,22 @@ class TestPlanMode:
         assert result == "memory_search executed"
 
     @pytest.mark.asyncio
+    async def test_allows_contradiction_resolution(self):
+        mw = PermissionMiddleware("plan")
+        chain = MiddlewareChain([mw])
+        result = await chain.run(
+            PolicyTool(
+                "contradiction_review",
+                policy_fn=lambda arguments: ToolCallPolicy(
+                    mutates_state=arguments.get("action") == "resolve",
+                    tags=frozenset({"memory", "contradiction"}),
+                ),
+            ),
+            {"action": "resolve"},
+        )
+        assert result == "contradiction_review executed"
+
+    @pytest.mark.asyncio
     async def test_allows_web_search(self):
         mw = PermissionMiddleware("plan")
         chain = MiddlewareChain([mw])
@@ -499,7 +515,7 @@ class TestResearchMode:
         assert result.startswith("Error:")
 
     @pytest.mark.asyncio
-    async def test_blocks_contradiction_resolution(self):
+    async def test_allows_contradiction_resolution(self):
         mw = PermissionMiddleware("research")
         chain = MiddlewareChain([mw])
         result = await chain.run(
@@ -512,8 +528,7 @@ class TestResearchMode:
             ),
             {"action": "resolve"},
         )
-        assert result.startswith("Error:")
-        assert "mutates_state" in result
+        assert result == "contradiction_review executed"
 
     @pytest.mark.asyncio
     async def test_allows_non_mutating_contradiction_review(self):

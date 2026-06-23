@@ -348,6 +348,53 @@ class TestCliMultiagent:
         assert approved == f"Approved {request.id}. Retry the same tool call to continue."
         assert denied == f"Denied {request.id}."
 
+    @pytest.mark.asyncio
+    async def test_resolve_memory_command_reviews_and_resolves_contradictions(self):
+        from cli.main import _resolve_memory_command
+
+        detector = MagicMock()
+        detector.get_pending = AsyncMock(return_value=[{
+            "id": "ctr-1",
+            "kind": "entity_description",
+            "entity_name": "SmolClaw",
+            "existing_value": "uses old memory defaults",
+            "new_value": "uses updated memory defaults",
+            "verdict": "contradict",
+            "confidence": 0.91,
+        }])
+        detector.resolve = AsyncMock(return_value={"status": "resolved_merged"})
+        detector.store.get_by_key = AsyncMock(return_value={
+            "id": "ctr-1",
+            "kind": "entity_description",
+            "entity_name": "SmolClaw",
+            "existing_value": "uses old memory defaults",
+            "new_value": "uses updated memory defaults",
+            "status": "pending",
+        })
+        smol_rag = MagicMock()
+        smol_rag.contradiction_detector = detector
+
+        review = await _resolve_memory_command(smol_rag, "list")
+        detail = await _resolve_memory_command(smol_rag, "detail ctr-1")
+        resolved = await _resolve_memory_command(smol_rag, "resolve ctr-1 merge reconcile both notes")
+
+        assert "ctr-1" in review
+        assert "SmolClaw" in review
+        assert "**Contradiction: ctr-1**" in detail
+        assert resolved == "Resolved ctr-1 as **resolved_merged**."
+        detector.resolve.assert_awaited_once_with("ctr-1", "merge", note="reconcile both notes")
+
+    @pytest.mark.asyncio
+    async def test_resolve_memory_command_without_detector_reports_unavailable(self):
+        from cli.main import _resolve_memory_command
+
+        smol_rag = MagicMock()
+        smol_rag.contradiction_detector = None
+
+        result = await _resolve_memory_command(smol_rag, "review")
+
+        assert "unavailable" in result
+
     def test_run_command_outputs_json(self, temp_dir):
         from cli.main import app
 
@@ -964,6 +1011,159 @@ class TestCliMultiagent:
         fake_agent.close.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_chat_loop_memory_list_lists_contradictions_without_agent_turn(self):
+        from cli.main import DEFAULT_AGENTS_CONFIG, _chat_loop
+
+        class FakePromptSession:
+            def __init__(self, **kwargs):
+                self._inputs = iter(["/memory list"])
+
+            async def prompt_async(self, _prompt):
+                try:
+                    return next(self._inputs)
+                except StopIteration:
+                    raise EOFError
+
+        class FakeConsole:
+            def __init__(self):
+                self.lines = []
+
+            def status(self, *args, **kwargs):
+                return nullcontext()
+
+            def print(self, *args, **kwargs):
+                self.lines.append(" ".join(str(arg) for arg in args))
+
+        fake_console = FakeConsole()
+        fake_agent = MagicMock()
+        fake_agent.llm = MagicMock()
+        fake_agent.hook_runner = HookRunner()
+        fake_agent.close = AsyncMock()
+        fake_agent.process = AsyncMock()
+        fake_agent.session = MagicMock()
+        fake_agent.session.key = "default"
+
+        detector = MagicMock()
+        detector.get_pending = AsyncMock(return_value=[{
+            "id": "ctr-1",
+            "kind": "entity_description",
+            "entity_name": "SmolClaw",
+            "existing_value": "old",
+            "new_value": "new",
+            "verdict": "contradict",
+            "confidence": 0.8,
+        }])
+        smol_rag = MagicMock()
+        smol_rag.contradiction_detector = detector
+        session_manager = MagicMock()
+
+        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
+            patch("cli.main.PromptSession", FakePromptSession), \
+            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
+            patch("cli.main.console", fake_console):
+            await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+
+        output = "\n".join(fake_console.lines)
+        assert "ctr-1" in output
+        assert "SmolClaw" in output
+        fake_agent.process.assert_not_called()
+        fake_agent.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_chat_loop_memory_review_runs_agent_conversation_turn(self):
+        from cli.main import DEFAULT_AGENTS_CONFIG, _chat_loop
+
+        class FakePromptSession:
+            def __init__(self, **kwargs):
+                self._inputs = iter(["/memory review SmolClaw defaults"])
+
+            async def prompt_async(self, _prompt):
+                try:
+                    return next(self._inputs)
+                except StopIteration:
+                    raise EOFError
+
+        class FakeConsole:
+            file = MagicMock()
+
+            def status(self, *args, **kwargs):
+                return nullcontext()
+
+            def print(self, *args, **kwargs):
+                return None
+
+        fake_agent = MagicMock()
+        fake_agent.llm = MagicMock()
+        fake_agent.hook_runner = HookRunner()
+        fake_agent.close = AsyncMock()
+        fake_agent.process = AsyncMock(return_value="reconciled")
+        fake_agent.session = MagicMock()
+        fake_agent.session.key = "default"
+
+        smol_rag = MagicMock()
+        smol_rag.contradiction_detector = MagicMock()
+        session_manager = MagicMock()
+
+        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
+            patch("cli.main.PromptSession", FakePromptSession), \
+            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
+            patch("cli.main.console", FakeConsole()):
+            await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+
+        prompt = fake_agent.process.await_args.args[0]
+        assert "Review pending memory contradictions conversationally" in prompt
+        assert "contradiction_review" in prompt
+        assert "Do not call contradiction_review with action=resolve" in prompt
+        assert "SmolClaw defaults" in prompt
+        fake_agent.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_chat_loop_memory_reconcile_alias_runs_agent_conversation_turn(self):
+        from cli.main import DEFAULT_AGENTS_CONFIG, _chat_loop
+
+        class FakePromptSession:
+            def __init__(self, **kwargs):
+                self._inputs = iter(["/memory reconcile SmolClaw defaults"])
+
+            async def prompt_async(self, _prompt):
+                try:
+                    return next(self._inputs)
+                except StopIteration:
+                    raise EOFError
+
+        class FakeConsole:
+            file = MagicMock()
+
+            def status(self, *args, **kwargs):
+                return nullcontext()
+
+            def print(self, *args, **kwargs):
+                return None
+
+        fake_agent = MagicMock()
+        fake_agent.llm = MagicMock()
+        fake_agent.hook_runner = HookRunner()
+        fake_agent.close = AsyncMock()
+        fake_agent.process = AsyncMock(return_value="reconciled")
+        fake_agent.session = MagicMock()
+        fake_agent.session.key = "default"
+
+        smol_rag = MagicMock()
+        smol_rag.contradiction_detector = MagicMock()
+        session_manager = MagicMock()
+
+        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
+            patch("cli.main.PromptSession", FakePromptSession), \
+            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
+            patch("cli.main.console", FakeConsole()):
+            await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+
+        prompt = fake_agent.process.await_args.args[0]
+        assert "Review pending memory contradictions conversationally" in prompt
+        assert "SmolClaw defaults" in prompt
+        fake_agent.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_chat_loop_remember_thread_exports_current_session(self):
         from cli.main import DEFAULT_AGENTS_CONFIG, _chat_loop
 
@@ -1056,6 +1256,8 @@ class TestCliMultiagent:
         assert "Slash commands:" in help_output
         assert "/remember <text>" in help_output
         assert "/remember-thread" in help_output
+        assert "/memory list" in help_output
+        assert "/memory review" in help_output
         assert "/init" in help_output
         assert "/trace replay" in help_output
         assert "/quit or /exit" in help_output

@@ -212,8 +212,10 @@ class CoderTui:
         format_goal_status: Callable[[object], str],
         parse_goal_run_count: Callable[[str], int],
         build_goal_loop_prompt: Callable[[], str],
+        build_memory_review_prompt: Callable[[str], str],
         format_trace_status: Callable[[str, str], str],
         resolve_approval_command: Callable[[str, str], str],
+        resolve_memory_command: Callable[[str], object],
         initialize_project: Callable[[], str],
         format_action_event: Callable[[dict], Optional[str]],
         resolve_worktree_command: Callable[[str], str] | None = None,
@@ -235,8 +237,10 @@ class CoderTui:
         self.format_goal_status = format_goal_status
         self.parse_goal_run_count = parse_goal_run_count
         self.build_goal_loop_prompt = build_goal_loop_prompt
+        self.build_memory_review_prompt = build_memory_review_prompt
         self.format_trace_status = format_trace_status
         self.resolve_approval_command = resolve_approval_command
+        self.resolve_memory_command = resolve_memory_command
         self.resolve_worktree_command = resolve_worktree_command or (lambda arg: "No active isolated worktree.")
         self.initialize_project = initialize_project
         self.format_action_event = format_action_event
@@ -580,6 +584,32 @@ class CoderTui:
                 active_tool="approval",
                 boundary="tui.approval",
                 worker_fn=lambda: self.resolve_approval_command(self.agent.session.key, command_arg),
+            )
+            if result is not _TASK_FAILED:
+                self._append("system", str(result))
+            return
+        if command == "/memory":
+            memory_parts = command_arg.split(maxsplit=1)
+            memory_subcommand = memory_parts[0] if memory_parts else "status"
+            memory_sub_arg = memory_parts[1].strip() if len(memory_parts) > 1 else ""
+            if memory_subcommand in {"review", "reconcile"}:
+                if getattr(self.smol_rag, "contradiction_detector", None) is None:
+                    result = await self._run_status_task(
+                        activity="reviewing",
+                        active_tool="memory",
+                        boundary="tui.memory",
+                        worker_fn=lambda: self.resolve_memory_command(command_arg),
+                    )
+                    if result is not _TASK_FAILED:
+                        self._append("system", str(result))
+                    return
+                await self._start_agent_turn(self.build_memory_review_prompt(memory_sub_arg))
+                return
+            result = await self._run_status_task(
+                activity="reviewing",
+                active_tool="memory",
+                boundary="tui.memory",
+                worker_fn=lambda: self.resolve_memory_command(command_arg),
             )
             if result is not _TASK_FAILED:
                 self._append("system", str(result))

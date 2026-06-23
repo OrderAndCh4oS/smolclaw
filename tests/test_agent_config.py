@@ -205,6 +205,7 @@ class TestRepoAgentsConfig:
 
         assert configs["default"].capabilities == ["filesystem", "command", "goal", "web", "memory"]
         assert configs["default"].permission_mode == "plan"
+        assert "contradiction_review" in configs["default"].tools
         assert "write_file" not in configs["default"].tools
         assert "edit_file" not in configs["default"].tools
         assert "exec" not in configs["default"].tools
@@ -219,6 +220,7 @@ class TestRepoAgentsConfig:
 
         assert configs["researcher"].capabilities == ["filesystem", "command", "goal", "web", "memory"]
         assert configs["researcher"].permission_mode == "research"
+        assert "contradiction_review" in configs["researcher"].tools
         assert "memory_store" in configs["researcher"].tools
         assert "exec" not in configs["researcher"].tools
         assert "list_dir" not in configs["researcher"].tools
@@ -232,6 +234,7 @@ class TestRepoAgentsConfig:
         assert configs["coder"].capabilities == ["filesystem", "command", "goal", "web", "memory"]
         assert configs["coder"].permission_mode == "execute"
         assert configs["coder"].behaviors == ["plan", "reflect"]
+        assert "contradiction_review" in configs["coder"].tools
         assert "apply_patch" in configs["coder"].tools
         assert "run_command" in configs["coder"].tools
         assert "git_branch" in configs["coder"].tools

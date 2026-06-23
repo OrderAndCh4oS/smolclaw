@@ -10,6 +10,7 @@ agents:
     tools:
       - memory_search
       - memory_graph_query
+      - contradiction_review
       - research_source_store
       - memory_recall
       - find_files
@@ -51,6 +52,7 @@ agents:
     tools:
       - memory_search
       - memory_graph_query
+      - contradiction_review
       - memory_store
       - research_source_store
       - memory_recall
@@ -90,6 +92,7 @@ agents:
     tools:
       - memory_search
       - memory_graph_query
+      - contradiction_review
       - memory_recall
       - memory_store
       - find_files

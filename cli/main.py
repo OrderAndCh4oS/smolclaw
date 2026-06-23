@@ -54,7 +54,7 @@ from app.session_export_hook import SessionExportHook
 from app.runtime import RuntimeEnvironment, build_configured_agent, build_master_registry
 from app.session import SessionManager
 from app.smol_rag import SmolRag
-from app.tools.memory_tools import MemoryRecallTool, MemoryStoreTool
+from app.tools.memory_tools import ContradictionReviewTool, MemoryRecallTool, MemoryStoreTool
 from app.utilities import ensure_dir
 from app.workspace import WorkspaceContext
 from app.run_trace import RunTraceStore
@@ -123,6 +123,10 @@ SLASH_COMMANDS_HELP = "\n".join([
     "  / or /help or /commands  Show this command list",
     "  /remember <text>         Store a memory immediately",
     "  /remember-thread         Export the current chat thread to memory",
+    "  /memory list             List pending memory contradictions",
+    "  /memory review           Discuss pending memory contradictions with the agent",
+    "  /memory detail <id>      Show a memory contradiction",
+    "  /memory resolve <id> <keep_existing|keep_new|merge|dismiss> [note]",
     "  /init                    Create or update AGENTS.md guidance",
     "  /logs                    Show workspace diagnostics log paths",
     "  /trace                   Show the latest run trace summary",
@@ -346,6 +350,40 @@ def _resolve_approval_command(
         return f"Error: {exc}"
 
 
+async def _resolve_memory_command(smol_rag, command_arg: str) -> str:
+    detector = getattr(smol_rag, "contradiction_detector", None)
+    if detector is None:
+        return "Memory contradiction review is unavailable; no contradiction detector is configured."
+
+    parts = command_arg.split(maxsplit=1)
+    subcommand = parts[0] if parts else "status"
+    sub_arg = parts[1].strip() if len(parts) > 1 else ""
+    tool = ContradictionReviewTool(detector)
+
+    if subcommand in ("", "status", "list"):
+        return await tool.execute(action="list")
+    if subcommand == "detail":
+        if not sub_arg:
+            return "Usage: /memory detail <contradiction_id>"
+        return await tool.execute(action="detail", contradiction_id=sub_arg)
+    if subcommand == "resolve":
+        resolve_parts = sub_arg.split(maxsplit=2)
+        if len(resolve_parts) < 2:
+            return "Usage: /memory resolve <contradiction_id> <keep_existing|keep_new|merge|dismiss> [note]"
+        contradiction_id, resolution = resolve_parts[0], resolve_parts[1]
+        note = resolve_parts[2] if len(resolve_parts) > 2 else None
+        return await tool.execute(
+            action="resolve",
+            contradiction_id=contradiction_id,
+            resolution=resolution,
+            note=note,
+        )
+    return (
+        "Usage: /memory status|list|review|detail <contradiction_id>|"
+        "resolve <contradiction_id> <keep_existing|keep_new|merge|dismiss> [note]"
+    )
+
+
 @dataclass
 class _InteractiveWorktreeState:
     context: object
@@ -411,6 +449,22 @@ def _parse_goal_run_count(value: str) -> int:
     if turns <= 0:
         raise typer.BadParameter("/goal run expects a positive integer max_turns")
     return min(turns, 20)
+
+
+def _build_memory_review_prompt(command_arg: str = "") -> str:
+    scope = command_arg.strip()
+    scope_line = f"\nFocus or note from the user: {scope}" if scope else ""
+    return (
+        "Review pending memory contradictions conversationally.\n"
+        "Use contradiction_review with action=list first. For each pending contradiction, "
+        "use action=detail when it is relevant to explain the conflict. Group likely "
+        "duplicates, metadata noise, broad tag conflicts, and real semantic conflicts. "
+        "Explain your reasoning and propose resolutions in plain language. Do not call "
+        "contradiction_review with action=resolve during this initial review turn. Ask "
+        "concise targeted questions where user judgement or confirmation is needed. "
+        "Do not modify files or run shell commands for this memory maintenance task."
+        f"{scope_line}"
+    )
 
 
 def _build_goal_loop_prompt() -> str:
@@ -966,6 +1020,7 @@ async def _tui_chat_loop(
         format_goal_status=_format_goal_status,
         parse_goal_run_count=_parse_goal_run_count,
         build_goal_loop_prompt=_build_goal_loop_prompt,
+        build_memory_review_prompt=_build_memory_review_prompt,
         format_trace_status=lambda session_key, command_arg: _resolve_trace_command(
             paths.traces_dir,
             session_key,
@@ -973,6 +1028,7 @@ async def _tui_chat_loop(
             goal_store=goal_store,
         ),
         resolve_approval_command=lambda session_key, arg: _resolve_approval_command(approval_store, session_key, arg),
+        resolve_memory_command=lambda arg: _resolve_memory_command(smol_rag, arg),
         resolve_worktree_command=lambda arg: _resolve_worktree_command(worktree_state, arg),
         initialize_project=lambda: _format_bootstrap_result(init_project_guidance(workspace_ctx)),
         format_action_event=_format_action_event,
@@ -1144,6 +1200,18 @@ async def _chat_loop(
                 console.print(
                     f"[dim]{_resolve_approval_command(approval_store, agent.session.key, command_arg)}[/dim]"
                 )
+                continue
+            if command == "/memory":
+                memory_parts = command_arg.split(maxsplit=1)
+                memory_subcommand = memory_parts[0] if memory_parts else "status"
+                memory_sub_arg = memory_parts[1].strip() if len(memory_parts) > 1 else ""
+                if memory_subcommand in {"review", "reconcile"}:
+                    if getattr(smol_rag, "contradiction_detector", None) is None:
+                        console.print(f"[dim]{await _resolve_memory_command(smol_rag, command_arg)}[/dim]")
+                        continue
+                    await _run_agent_turn(_build_memory_review_prompt(memory_sub_arg))
+                    continue
+                console.print(f"[dim]{await _resolve_memory_command(smol_rag, command_arg)}[/dim]")
                 continue
             if command == "/worktree":
                 console.print(
