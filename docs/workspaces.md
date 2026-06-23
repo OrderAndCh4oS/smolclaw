@@ -1,15 +1,15 @@
 # SmolClaw Workspaces
 
-Workspaces are the unit of isolation in SmolClaw.
+Workspaces are the unit of project scope in SmolClaw.
 
-Pick a workspace when you start the CLI or gateway with `--workspace`. That directory becomes the home for local research material, exported memory, sessions, logs, indexes, and caches for that run.
+By default, `smolclaw` uses the current working directory as the workspace. That directory is the root for local file tools and project-specific runtime state.
 
-Use one workspace per topic, project, client, or research stream.
+Use one workspace per codebase or project.
 
 ## Layout
 
 ```text
-your-workspace/
+your-project/
   stores/
     smolclaw.db
     kg_db.graphml
@@ -22,39 +22,37 @@ your-workspace/
 
 - `stores/` holds derived runtime state. This includes the SQLite database, knowledge graph, sessions, logs, and caches.
 - `memory/` holds exported markdown memories and session documents.
-- `research/` holds the source material you want SmolClaw to ingest and preserve.
+- `research/` holds optional source material you want SmolClaw to ingest and preserve.
 
 ## How To Use One
 
-Choose a workspace root and keep your source material inside `research/`.
+For normal coding use, run `smolclaw` from the project root.
 
 ```bash
-export WS=~/smolclaw-workspaces/acme-research
-mkdir -p "$WS"/research
-cp ~/notes/acme-brief.md "$WS"/research/
+cd ~/code/my-project
+smolclaw
 ```
 
-Then run SmolClaw against that workspace:
+For explicit workspace commands, pass `--workspace`:
 
 ```bash
-python -m cli.main ingest "$WS"/research --workspace "$WS"
-python -m cli.main chat --workspace "$WS" --session acme
-python -m cli.main recall "acme" --workspace "$WS"
+python -m cli.main chat --workspace ~/code/my-project
+python -m cli.main recall "auth" --workspace ~/code/my-project
+```
+
+If you keep project notes or external material in `research/`, you can ingest them:
+
+```bash
+python -m cli.main ingest ~/code/my-project/research --workspace ~/code/my-project
 ```
 
 If you want continuous re-ingestion while you add or edit files:
 
 ```bash
-python -m cli.main watch --workspace "$WS"
+python -m cli.main watch --workspace ~/code/my-project
 ```
 
-If you want recurring automated research inside one isolated workspace:
-
-```bash
-python -m cli.main research-loop "Track Acme competitors and notable product changes." --workspace "$WS"
-```
-
-The loop keeps using the same workspace memory and session until you stop it with `Ctrl+C` or `Esc`.
+Research loops still exist, but the main product direction is local coding reliability.
 
 ## Reset Behavior
 
@@ -72,7 +70,7 @@ The loop keeps using the same workspace memory and session until you stop it wit
 Example:
 
 ```bash
-python -m cli.main reset --workspace "$WS" --force
+python -m cli.main reset --workspace ~/code/my-project --force
 ```
 
 ## Workspace Scoping
@@ -83,24 +81,12 @@ The direct local runtime uses the active workspace as its boundary for local sta
 - Local derived state is written only under that workspace.
 - Different workspaces keep recall, memory promotion, sessions, and logs isolated from one another.
 
-Gateway mode still uses the selected workspace for SmolClaw's own state. Remote MCP tools remain governed by the remote provider's execution policy.
+Gateway mode still exists in the codebase, but it is not the primary product surface while local safety, checkpoints, and evals are being hardened.
 
 ## Recommended Pattern
 
-- One workspace per customer or client engagement
 - One workspace per codebase
-- One workspace per research topic
+- One workspace per client project
 - One workspace per long-running investigation
 
 That keeps memories and sessions useful instead of mixing unrelated work into one retrieval pool.
-
-## Example: Gateway Workspace
-
-Run the WebSocket gateway against a dedicated workspace:
-
-```bash
-export WS=~/smolclaw-workspaces/acme-research
-python -m cli.main serve --workspace "$WS"
-```
-
-That gateway instance will use the selected workspace for its sessions, memory exports, graph, database, and logs.

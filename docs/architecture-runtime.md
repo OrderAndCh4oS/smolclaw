@@ -2,7 +2,7 @@
 
 This document describes the current runtime architecture of SmolClaw as implemented in the repo today.
 
-It is intentionally narrower than the product draft in `smolclaw-spec.md`. That draft mixes current behavior with planned capabilities. This page is the maintained source of truth for how the CLI, gateway, workspace model, agent runtime, tool registry, memory layer, and child-agent orchestration currently work together.
+It is the maintained source of truth for how the CLI, gateway code path, workspace model, agent runtime, tool registry, memory layer, and child-agent orchestration currently work together. Product direction and planned reliability work live in `docs/reliability-roadmap.md`.
 
 ## At A Glance
 
@@ -217,9 +217,6 @@ If you are extending the runtime, the main architectural seams are:
 5. `ToolRegistry.project_for_agent()` for controlling visibility vs discoverability.
 6. `ChildAgentFactory` for preserving consistent behavior across delegated agent execution.
 
-For historical context:
-
-- `smolclaw-spec.md` is a broader product draft.
-- `diagram.md` is an older class-oriented sketch.
+For product direction and reliability priorities, read `docs/reliability-roadmap.md`.
 
 This file is the maintained runtime view.
