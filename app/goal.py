@@ -4,6 +4,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+from app.storage_paths import contained_storage_path
+
 
 VALID_GOAL_STATUSES = {"active", "complete", "blocked"}
 
@@ -67,7 +69,7 @@ class GoalStore:
         os.makedirs(sessions_dir, exist_ok=True)
 
     def _file_path(self, session_key: str) -> str:
-        return os.path.join(self.sessions_dir, f"{session_key}.goal.json")
+        return contained_storage_path(self.sessions_dir, session_key, ".goal.json")
 
     def load(self, session_key: str) -> Optional[GoalState]:
         path = self._file_path(session_key)

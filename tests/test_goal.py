@@ -1,4 +1,5 @@
 import pytest
+import os
 
 from app.goal import GoalState, GoalStore
 from app.tools.base import ToolRuntimeContext
@@ -30,6 +31,21 @@ def test_goal_store_rejects_empty_objective(temp_dir):
     store = GoalStore(temp_dir)
     with pytest.raises(ValueError):
         store.start("session-a", "   ")
+
+
+def test_goal_store_keeps_unsafe_session_key_inside_sessions_dir(temp_dir):
+    store = GoalStore(temp_dir)
+    unsafe_key = "../outside/goal-session"
+
+    store.start(unsafe_key, "Keep goal contained")
+
+    assert not os.path.exists(os.path.join(temp_dir, "..", "outside", "goal-session.goal.json"))
+    goal_files = [name for name in os.listdir(temp_dir) if name.endswith(".goal.json")]
+    assert len(goal_files) == 1
+    assert "/" not in goal_files[0]
+    assert store.load(unsafe_key).objective == "Keep goal contained"
+    assert store.clear(unsafe_key) is True
+    assert store.load(unsafe_key) is None
 
 
 def test_goal_capability_registers_goal_start_when_session_manager_available(temp_dir):

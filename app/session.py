@@ -3,6 +3,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from app.storage_paths import contained_storage_path
+
 
 @dataclass
 class Session:
@@ -26,7 +28,7 @@ class SessionManager:
         os.makedirs(sessions_dir, exist_ok=True)
 
     def _file_path(self, key: str) -> str:
-        return os.path.join(self.sessions_dir, f"{key}.jsonl")
+        return contained_storage_path(self.sessions_dir, key, ".jsonl")
 
     def get_or_create(self, key: str) -> Session:
         existing = self.load(key)
@@ -44,6 +46,13 @@ class SessionManager:
 
     def load(self, key: str) -> Optional[Session]:
         path = self._file_path(key)
+        return self.load_file(path)
+
+    def load_file(self, path: str) -> Optional[Session]:
+        path = os.path.realpath(path)
+        root = os.path.realpath(self.sessions_dir)
+        if os.path.commonpath([root, path]) != root:
+            raise ValueError("Session path escaped the configured directory.")
         if not os.path.exists(path):
             return None
         with open(path) as f:
@@ -57,12 +66,12 @@ class SessionManager:
         return session
 
     def save_usage(self, session_key: str, usage_data: dict):
-        path = os.path.join(self.sessions_dir, f"{session_key}.usage.json")
+        path = contained_storage_path(self.sessions_dir, session_key, ".usage.json")
         with open(path, "w") as f:
             json.dump(usage_data, f, indent=2)
 
     def load_usage(self, session_key: str) -> Optional[dict]:
-        path = os.path.join(self.sessions_dir, f"{session_key}.usage.json")
+        path = contained_storage_path(self.sessions_dir, session_key, ".usage.json")
         if not os.path.exists(path):
             return None
         with open(path) as f:

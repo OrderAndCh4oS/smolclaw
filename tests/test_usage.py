@@ -200,3 +200,16 @@ class TestUsagePersistHook:
         path = os.path.join(temp_dir, f"{child_key}.usage.json")
         assert os.path.exists(path)
         assert ":" not in os.path.basename(path)
+
+    @pytest.mark.asyncio
+    async def test_keeps_unsafe_session_key_usage_json_inside_sessions_dir(self, temp_dir):
+        hook = UsagePersistHook(temp_dir)
+        unsafe_key = "../outside/usage-session"
+        su = SessionUsage(session_key=unsafe_key)
+
+        await hook({"session_key": unsafe_key, "usage": su})
+
+        assert not os.path.exists(os.path.join(temp_dir, "..", "outside", "usage-session.usage.json"))
+        usage_files = [name for name in os.listdir(temp_dir) if name.endswith(".usage.json")]
+        assert len(usage_files) == 1
+        assert "/" not in usage_files[0]

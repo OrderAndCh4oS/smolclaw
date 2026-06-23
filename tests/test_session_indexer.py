@@ -141,6 +141,26 @@ class TestIndexSession:
         assert os.path.exists(expected)
         assert ":" not in os.path.basename(expected)
 
+    @pytest.mark.asyncio
+    async def test_writes_unsafe_session_key_inside_memory_dir(self, mock_smol_rag, temp_dir):
+        mock_smol_rag.remove_document_by_source = AsyncMock()
+        unsafe_key = "../outside/session"
+        session = _make_session(
+            key=unsafe_key,
+            messages=[
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "world"},
+            ],
+        )
+
+        source_id = await index_session(session, mock_smol_rag, memory_dir=temp_dir)
+
+        assert source_id == f"session-{unsafe_key}"
+        assert not os.path.exists(os.path.join(temp_dir, "..", "outside", "session.md"))
+        md_files = [name for name in os.listdir(temp_dir) if name.endswith(".md")]
+        assert len(md_files) == 1
+        assert "/" not in md_files[0]
+
 
 class TestIndexAllSessions:
     @pytest.mark.asyncio
@@ -186,3 +206,21 @@ class TestIndexAllSessions:
         results = await index_all_sessions(temp_dir, mock_smol_rag)
         assert len(results) == 1
         assert "valid" in results
+
+    @pytest.mark.asyncio
+    async def test_indexes_hashed_session_file_by_metadata_key(self, mock_smol_rag, temp_dir):
+        mock_smol_rag.remove_document_by_source = AsyncMock()
+        manager = SessionManager(temp_dir)
+        unsafe_key = "../outside/indexed-session"
+        session = _make_session(
+            key=unsafe_key,
+            messages=[
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "world"},
+            ],
+        )
+        manager.save(session)
+
+        results = await index_all_sessions(temp_dir, mock_smol_rag)
+
+        assert list(results.keys()) == [unsafe_key]

@@ -107,3 +107,33 @@ class TestSessionManager:
         assert loaded is not None
         assert loaded.key == child_key
         assert loaded.messages[0]["content"] == "remember child session"
+
+    def test_session_manager_keeps_unsafe_session_key_inside_sessions_dir(self, temp_dir):
+        manager = SessionManager(temp_dir)
+        unsafe_key = "../outside/session:name"
+        session = Session(key=unsafe_key)
+        session.add_message({"role": "user", "content": "do not escape"})
+
+        manager.save(session)
+
+        assert not os.path.exists(os.path.join(temp_dir, "..", "outside", "session:name.jsonl"))
+        session_files = [name for name in os.listdir(temp_dir) if name.endswith(".jsonl")]
+        assert len(session_files) == 1
+        assert "/" not in session_files[0]
+        assert "\\" not in session_files[0]
+
+        loaded = manager.load(unsafe_key)
+        assert loaded is not None
+        assert loaded.key == unsafe_key
+        assert loaded.messages[0]["content"] == "do not escape"
+
+    def test_session_manager_keeps_usage_sidecar_inside_sessions_dir(self, temp_dir):
+        manager = SessionManager(temp_dir)
+        unsafe_key = "../../usage/session"
+
+        manager.save_usage(unsafe_key, {"ok": True})
+
+        assert not os.path.exists(os.path.join(temp_dir, "..", "..", "usage", "session.usage.json"))
+        usage_files = [name for name in os.listdir(temp_dir) if name.endswith(".usage.json")]
+        assert len(usage_files) == 1
+        assert manager.load_usage(unsafe_key) == {"ok": True}

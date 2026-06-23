@@ -3,6 +3,7 @@ import os
 from typing import Optional
 
 from app.session import Session, SessionManager
+from app.storage_paths import contained_storage_path
 from app.tools.memory_tools import format_memory_content
 
 logger = logging.getLogger("smolclaw.session_indexer")
@@ -70,7 +71,7 @@ async def index_session(
     # Write to memory dir if provided
     if memory_dir:
         os.makedirs(memory_dir, exist_ok=True)
-        file_path = os.path.join(memory_dir, f"{source_id}.md")
+        file_path = contained_storage_path(memory_dir, source_id, ".md")
         with open(file_path, "w") as f:
             f.write(formatted)
 
@@ -98,10 +99,10 @@ async def index_all_sessions(
     for filename in os.listdir(sessions_dir):
         if not filename.endswith(".jsonl"):
             continue
-        key = filename[:-6]  # strip .jsonl
-        session = session_manager.load(key)
+        session = session_manager.load_file(os.path.join(sessions_dir, filename))
         if session is None:
             continue
+        key = session.key
 
         content = parse_session_content(session)
         if not content.strip():

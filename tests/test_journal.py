@@ -110,3 +110,18 @@ class TestGenerateJournal:
             expected = f"journal-{child_key}.md"
             assert sorted(os.listdir(td)) == [expected]
             assert ":" not in expected
+
+    @pytest.mark.asyncio
+    async def test_unsafe_session_key_writes_journal_inside_memory_dir(self, mock_journal_llm, mock_smol_rag):
+        session = Session(key="../outside/journal-session")
+        session.add_message({"role": "user", "content": "Hello"})
+        session.add_message({"role": "assistant", "content": "Hi there"})
+
+        with tempfile.TemporaryDirectory() as td:
+            await generate_journal(session, mock_journal_llm, mock_smol_rag, td)
+
+            assert not os.path.exists(os.path.join(td, "..", "outside", "journal-session.md"))
+            files = os.listdir(td)
+            assert len(files) == 1
+            assert files[0].endswith(".md")
+            assert "/" not in files[0]
