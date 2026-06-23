@@ -13,6 +13,7 @@ from app.definitions import PROJECT_ROOT
 from app.goal import GoalStore
 from app.hooks import HookRunner, ON_AFTER_TOOL
 from app.llm import create_llm
+from app.checkpoints import CheckpointStore
 from app.model_settings import ModelSelection, RuntimeModelSettings, apply_model_selection
 from app.session import SessionManager
 from app.tools.base import ToolRuntimeContext, normalize_tool_result
@@ -209,6 +210,16 @@ def build_agent_loop(
         from app.tools.permissions import PermissionMiddleware
         filtered_registry.use(PermissionMiddleware(config.permission_mode))
     filtered_registry.use(SafetyMiddleware(safety_state))
+    if workspace is not None:
+        from app.tools.checkpointing import CheckpointMiddleware
+
+        checkpoint_store = CheckpointStore(os.path.join(workspace.paths.data_dir, "checkpoints"))
+        runtime_ctx.shared_state["checkpoint_store"] = checkpoint_store
+        filtered_registry.use(CheckpointMiddleware(
+            checkpoint_store,
+            workspace=workspace,
+            session_key=resolved_session_key,
+        ))
 
     # Resolve skill paths
     skills_paths = [

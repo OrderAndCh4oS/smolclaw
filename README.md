@@ -93,6 +93,12 @@ Inside the TUI:
 /quit
 ```
 
+Model compatibility:
+
+- `/model` reports the active model, effort, provider, and endpoint behavior.
+- `gpt-5.4*` and `gpt-5.5*` are validated through `ModelRegistry`.
+- Reasoning tool turns use the OpenAI Responses API; compatible legacy text/tool turns keep using Chat Completions.
+
 Useful examples:
 
 ```text

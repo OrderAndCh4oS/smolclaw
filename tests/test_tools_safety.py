@@ -137,8 +137,39 @@ class TestSafetyMiddleware:
         state.begin_task("turn-1")
         state.did_git_status = True
         state.did_search = True
+        state.record_tool_attempt("read_file", {"path": "app.py"})
 
         state.begin_task("turn-2")
 
         assert state.did_git_status is False
         assert state.did_search is False
+        assert state._last_tool_call_key is None
+
+    @pytest.mark.asyncio
+    async def test_blocks_repeated_identical_tool_calls(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        _, chain = _chain(workspace)
+        tool = FakeTool("read_file", ToolCallPolicy(tags=frozenset({FILESYSTEM_READ})))
+        args = {"path": "app.py"}
+
+        assert await chain.run(tool, args) == "read_file ok"
+        assert await chain.run(tool, args) == "read_file ok"
+        assert await chain.run(tool, args) == "read_file ok"
+        result = await chain.run(tool, args)
+
+        assert result == "Error: repeated identical tool call blocked after 3 attempts: read_file."
+
+    @pytest.mark.asyncio
+    async def test_repeated_tool_guard_resets_after_different_call(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        _, chain = _chain(workspace)
+        tool = FakeTool("read_file", ToolCallPolicy(tags=frozenset({FILESYSTEM_READ})))
+        other_tool = FakeTool("list_dir", ToolCallPolicy(tags=frozenset({FILESYSTEM_READ})))
+        args = {"path": "app.py"}
+
+        assert await chain.run(tool, args) == "read_file ok"
+        assert await chain.run(tool, args) == "read_file ok"
+        assert await chain.run(other_tool, {"path": "."}) == "list_dir ok"
+        assert await chain.run(tool, args) == "read_file ok"
+        assert await chain.run(tool, args) == "read_file ok"
+        assert await chain.run(tool, args) == "read_file ok"

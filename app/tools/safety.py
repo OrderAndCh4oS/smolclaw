@@ -1,5 +1,7 @@
 """Harness-level safety gates for coding tools."""
 
+import hashlib
+import json
 import os
 from dataclasses import dataclass, field
 from typing import Any
@@ -24,6 +26,9 @@ class SafetyState:
     did_git_status: bool = False
     did_search: bool = False
     read_paths: set[str] = field(default_factory=set)
+    max_identical_tool_calls: int = 3
+    _last_tool_call_key: str | None = None
+    _last_tool_call_count: int = 0
 
     def begin_task(self, task_key: str):
         if self.task_key == task_key:
@@ -32,6 +37,22 @@ class SafetyState:
         self.did_git_status = False
         self.did_search = False
         self.read_paths.clear()
+        self._last_tool_call_key = None
+        self._last_tool_call_count = 0
+
+    def record_tool_attempt(self, tool_name: str, arguments: dict[str, Any]) -> str | None:
+        key = self._tool_call_key(tool_name, arguments)
+        if key == self._last_tool_call_key:
+            self._last_tool_call_count += 1
+        else:
+            self._last_tool_call_key = key
+            self._last_tool_call_count = 1
+        if self._last_tool_call_count > self.max_identical_tool_calls:
+            return (
+                f"Error: repeated identical tool call blocked after "
+                f"{self.max_identical_tool_calls} attempts: {tool_name}."
+            )
+        return None
 
     def record_tool_result(self, tool_name: str, arguments: dict[str, Any], result: ToolOutcome):
         normalized = normalize_tool_result(result)
@@ -76,6 +97,15 @@ class SafetyState:
         command = str(arguments.get("command") or "").strip()
         return tool_name == "run_command" and command in {"git status", "git status --short", "git status --porcelain"}
 
+    def _tool_call_key(self, tool_name: str, arguments: dict[str, Any]) -> str:
+        payload = json.dumps(
+            {"tool": tool_name, "arguments": arguments},
+            sort_keys=True,
+            default=str,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
 
 class SafetyMiddleware:
     """Blocks coding mutations until the agent has explored the workspace."""
@@ -84,6 +114,10 @@ class SafetyMiddleware:
         self.state = state
 
     async def __call__(self, tool: Tool, kwargs: dict[str, Any], next_fn: NextFn):
+        repeat_error = self.state.record_tool_attempt(tool.name, kwargs)
+        if repeat_error:
+            return repeat_error
+
         policy = tool.get_call_policy(kwargs)
         error = self._mutation_error(tool.name, kwargs, policy)
         if error:

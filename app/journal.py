@@ -3,7 +3,7 @@ import os
 from datetime import datetime, timezone
 
 from app.session import Session
-from app.storage_paths import contained_storage_path
+from app.storage_paths import atomic_write_text, contained_storage_path
 from app.tools.memory_tools import format_memory_content
 
 logger = logging.getLogger("smolclaw.journal")
@@ -56,8 +56,7 @@ async def generate_journal(
     # Write to memory directory
     os.makedirs(memory_dir, exist_ok=True)
     file_path = contained_storage_path(memory_dir, source_id, ".md")
-    with open(file_path, "w") as f:
-        f.write(formatted)
+    atomic_write_text(file_path, formatted)
 
     # Re-exporting the same session should overwrite the prior journal.
     await smol_rag.remove_document_by_source(source_id)

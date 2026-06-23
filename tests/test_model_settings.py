@@ -3,11 +3,13 @@ import pytest
 from app.model_settings import (
     apply_model_selection,
     apply_subagent_model_selection,
+    model_list,
     model_status,
     parse_model_selection,
     RuntimeModelSettings,
     subagent_model_status,
 )
+from app.model_registry import MODEL_REGISTRY
 
 
 class FakeLlm:
@@ -41,7 +43,20 @@ def test_apply_model_selection_updates_model_and_effort():
 
     assert llm.completion_model == "gpt-5.5-pro"
     assert llm.reasoning_effort == "high"
-    assert model_status(llm) == "model:gpt-5.5-pro effort:high"
+    status = model_status(llm)
+    assert status.startswith("model:gpt-5.5-pro effort:high")
+    assert "provider:openai" in status
+    assert "tools:responses" in status
+
+
+def test_apply_model_selection_defaults_reasoning_effort_from_registry():
+    llm = FakeLlm()
+    llm.reasoning_effort = "high"
+
+    apply_model_selection(llm, parse_model_selection("gpt-5.5"))
+
+    assert llm.completion_model == "gpt-5.5"
+    assert llm.reasoning_effort == MODEL_REGISTRY.default_effort("gpt-5.5")
 
 
 def test_runtime_model_settings_use_gpt_55_medium_for_subagents():
@@ -62,7 +77,9 @@ def test_apply_subagent_model_selection_updates_subagent_default_only():
     assert llm.completion_model == "gpt-5.4-mini"
     assert settings.resolve("fallback", subagent=True).model == "gpt-5.4-pro"
     assert settings.resolve("fallback", subagent=True).reasoning_effort == "high"
-    assert subagent_model_status(settings) == "subagents model:gpt-5.4-pro effort:high"
+    status = subagent_model_status(settings)
+    assert status.startswith("subagents model:gpt-5.4-pro effort:high")
+    assert "tools:responses" in status
 
 
 def test_runtime_model_settings_keep_top_level_fallback_without_default():
@@ -72,3 +89,17 @@ def test_runtime_model_settings_keep_top_level_fallback_without_default():
 
     assert selection.model == "gpt-5.4-mini"
     assert selection.reasoning_effort is None
+
+
+def test_model_registry_routes_reasoning_tool_turns_to_responses():
+    assert MODEL_REGISTRY.endpoint_for("gpt-5.5", tools=True, reasoning_effort="high") == "responses"
+    assert MODEL_REGISTRY.endpoint_for("gpt-5.5", tools=True, reasoning_effort=None) == "chat.completions"
+    assert MODEL_REGISTRY.endpoint_for("unknown", tools=True, reasoning_effort="high") == "chat.completions"
+
+
+def test_model_list_includes_compatibility_details():
+    output = model_list()
+
+    assert "Compatibility:" in output
+    assert "gpt-5.5*" in output
+    assert "tools:responses" in output

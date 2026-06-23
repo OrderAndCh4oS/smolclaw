@@ -10,21 +10,26 @@ from openai import OpenAI
 from app.definitions import SQLITE_DB_PATH, COMPLETION_MODEL, EMBEDDING_MODEL
 from app.sqlite_store import SqliteKvStore
 from app.logger import logger
+from app.model_registry import MODEL_REGISTRY
 from app.utilities import make_hash
 
 load_dotenv()
 
-DEFAULT_REASONING_EFFORT = os.getenv("REASONING_EFFORT", "medium") or None
-
 
 def _default_reasoning_effort_for_model(model: str | None) -> str | None:
-    if model and model.startswith(("gpt-5.4", "gpt-5.5")):
-        return DEFAULT_REASONING_EFFORT
-    return None
+    return MODEL_REGISTRY.default_effort(model)
 
 
 def _supports_reasoning_effort(model: str | None) -> bool:
-    return bool(model and model.startswith(("gpt-5.4", "gpt-5.5")))
+    return MODEL_REGISTRY.supports_reasoning_effort(model)
+
+
+def _use_responses_for_tool_completion(model: str | None, tools: Optional[List[dict]], reasoning_effort: str | None) -> bool:
+    return MODEL_REGISTRY.endpoint_for(
+        model,
+        tools=bool(tools),
+        reasoning_effort=reasoning_effort,
+    ) == "responses"
 
 
 class OpenAiLlm:
@@ -91,6 +96,131 @@ class OpenAiLlm:
             }
             sanitized.append({"type": "function", "function": clean_function})
         return sanitized
+
+    @staticmethod
+    def _responses_tools(tools: List[dict]) -> List[dict]:
+        """Translate chat-completions function tools to Responses API tools."""
+        translated = []
+        for tool in OpenAiLlm._sanitize_tools(tools):
+            if tool.get("type") != "function":
+                translated.append(tool)
+                continue
+            function = tool.get("function", {})
+            translated.append({
+                key: function[key]
+                for key in ("name", "description", "parameters", "strict")
+                if key in function
+            } | {"type": "function"})
+        return translated
+
+    @staticmethod
+    def _responses_input(messages: List[Dict[str, Any]]) -> List[dict]:
+        """Translate this harness' chat-style transcript to Responses input items."""
+        items = []
+        for message in messages:
+            if message.get("response_items"):
+                items.extend(message["response_items"])
+                continue
+
+            role = message.get("role")
+            if role == "tool":
+                items.append({
+                    "type": "function_call_output",
+                    "call_id": message.get("tool_call_id", ""),
+                    "output": message.get("content") or "",
+                })
+                continue
+
+            if role == "assistant" and message.get("tool_calls"):
+                content = message.get("content")
+                if content:
+                    items.append({"role": "assistant", "content": content})
+                for tool_call in message.get("tool_calls") or []:
+                    function = tool_call.get("function", {})
+                    items.append({
+                        "type": "function_call",
+                        "call_id": tool_call.get("id", ""),
+                        "name": function.get("name", ""),
+                        "arguments": function.get("arguments") or "{}",
+                    })
+                continue
+
+            items.append({
+                "role": role,
+                "content": message.get("content") or "",
+            })
+        return items
+
+    @staticmethod
+    def _field(value: Any, name: str, default: Any = None) -> Any:
+        if isinstance(value, dict):
+            return value.get(name, default)
+        return getattr(value, name, default)
+
+    @classmethod
+    def _responses_content(cls, response: Any) -> str | None:
+        output_text = cls._field(response, "output_text")
+        if output_text:
+            return output_text
+
+        parts = []
+        for item in cls._field(response, "output", []) or []:
+            if cls._field(item, "type") != "message":
+                continue
+            for part in cls._field(item, "content", []) or []:
+                if cls._field(part, "type") == "output_text":
+                    text = cls._field(part, "text")
+                    if text:
+                        parts.append(text)
+        return "".join(parts) or None
+
+    @classmethod
+    def _plain_response_item(cls, item: Any) -> dict:
+        if isinstance(item, dict):
+            return item
+        if hasattr(item, "model_dump"):
+            return item.model_dump(exclude_none=True)
+        return {
+            key: value
+            for key, value in vars(item).items()
+            if not key.startswith("_")
+        }
+
+    @classmethod
+    def _responses_passthrough_items(cls, response: Any) -> List[dict]:
+        items = []
+        for item in cls._field(response, "output", []) or []:
+            if cls._field(item, "type") in {"reasoning", "function_call"}:
+                items.append(cls._plain_response_item(item))
+        return items
+
+    @classmethod
+    def _responses_tool_calls(cls, response: Any) -> List[dict] | None:
+        tool_calls = []
+        for item in cls._field(response, "output", []) or []:
+            if cls._field(item, "type") != "function_call":
+                continue
+            arguments = cls._field(item, "arguments") or "{}"
+            tool_calls.append({
+                "id": cls._field(item, "call_id") or cls._field(item, "id"),
+                "name": cls._field(item, "name"),
+                "arguments": json.loads(arguments),
+            })
+        return tool_calls or None
+
+    @staticmethod
+    def _usage_counts(usage: Any, *, responses_api: bool = False) -> tuple[int, int, int]:
+        if responses_api:
+            return (
+                getattr(usage, "input_tokens", 0),
+                getattr(usage, "output_tokens", 0),
+                getattr(usage, "total_tokens", 0),
+            )
+        return (
+            getattr(usage, "prompt_tokens", 0),
+            getattr(usage, "completion_tokens", 0),
+            getattr(usage, "total_tokens", 0),
+        )
 
     async def get_completion(self, query: str, model: Optional[str] = None, context: str = "",
                              use_cache: bool = True) -> str:
@@ -174,6 +304,15 @@ class OpenAiLlm:
         if reasoning_effort and _supports_reasoning_effort(model) and not tools:
             kwargs["reasoning_effort"] = reasoning_effort
 
+        if _use_responses_for_tool_completion(model, tools, reasoning_effort):
+            return await self._responses_tool_completion(
+                messages=messages,
+                tools=tools or [],
+                model=model,
+                reasoning_effort=reasoning_effort,
+                on_chunk=on_chunk if stream and on_chunk else None,
+            )
+
         if stream and on_chunk:
             return await self._stream_tool_completion(kwargs, model, on_chunk)
 
@@ -186,9 +325,7 @@ class OpenAiLlm:
                 message = response.choices[0].message
                 tool_calls = message.tool_calls
                 usage = getattr(response, "usage", None)
-                pt = getattr(usage, "prompt_tokens", 0)
-                ct = getattr(usage, "completion_tokens", 0)
-                tt = getattr(usage, "total_tokens", 0)
+                pt, ct, tt = self._usage_counts(usage)
                 span.set_attribute("llm.prompt_tokens", pt)
                 span.set_attribute("llm.completion_tokens", ct)
                 span.set_attribute("llm.total_tokens", tt)
@@ -209,6 +346,50 @@ class OpenAiLlm:
                 }
         except Exception as e:
             logger.error(f"Error getting tool completion: {e}")
+            raise
+
+    async def _responses_tool_completion(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[dict],
+        model: str,
+        reasoning_effort: str,
+        on_chunk: Optional[Callable] = None,
+    ) -> Dict[str, Any]:
+        from app.tracing import trace_llm_call
+
+        try:
+            with trace_llm_call("tool_completion", model) as span:
+                started = time.perf_counter()
+                response = self.client.responses.create(
+                    model=model,
+                    input=self._responses_input(messages),
+                    tools=self._responses_tools(tools),
+                    reasoning={"effort": reasoning_effort},
+                )
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                response_items = self._responses_passthrough_items(response)
+                tool_calls = self._responses_tool_calls(response)
+                content = self._responses_content(response)
+                if on_chunk and content and not tool_calls:
+                    await on_chunk(content)
+                usage = getattr(response, "usage", None)
+                pt, ct, tt = self._usage_counts(usage, responses_api=True)
+                span.set_attribute("llm.prompt_tokens", pt)
+                span.set_attribute("llm.completion_tokens", ct)
+                span.set_attribute("llm.total_tokens", tt)
+                span.set_attribute("llm.duration_ms", duration_ms)
+                span.set_attribute("llm.has_tool_calls", bool(tool_calls))
+                span.set_attribute("llm.endpoint", "responses")
+                self._record_usage("tool_completion", model, pt, ct, tt, duration_ms)
+                return {
+                    "content": content,
+                    "tool_calls": tool_calls,
+                    "has_tool_calls": bool(tool_calls),
+                    "response_items": response_items,
+                }
+        except Exception as e:
+            logger.error(f"Error getting Responses tool completion: {e}")
             raise
 
     async def _stream_tool_completion(self, kwargs: dict, model: str, on_chunk: Callable) -> Dict[str, Any]:

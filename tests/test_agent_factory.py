@@ -221,6 +221,38 @@ class TestAgentFactory:
         names = sorted([d["function"]["name"] for d in defs])
         assert names == ["tool_a", "tool_b"]
 
+    @pytest.mark.asyncio
+    @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
+    async def test_build_agent_loop_checkpoints_filesystem_mutations(
+        self, _mock_create, mock_smol_rag, sessions_dir, temp_dir
+    ):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        master = build_tool_registry(
+            smol_rag=None,
+            workspace=workspace,
+            capability_names=["filesystem"],
+        )
+        config = AgentConfig(
+            name="coder",
+            model="gpt-5.5",
+            persona="You write code.",
+            tools=["write_file"],
+        )
+        sm = SessionManager(sessions_dir)
+        loop = build_agent_loop(config, master, mock_smol_rag, sm, workspace=workspace)
+        loop.safety_state.did_git_status = True
+        loop.safety_state.did_search = True
+
+        result = await loop.tool_registry.execute(
+            "write_file",
+            {"path": "created.txt", "content": "checkpoint me"},
+        )
+
+        assert "Written" in result
+        checkpoints_dir = os.path.join(temp_dir, "stores", "checkpoints")
+        checkpoint_files = [name for name in os.listdir(checkpoints_dir) if name.endswith(".json")]
+        assert len(checkpoint_files) == 1
+
     @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     def test_build_agent_loop_uses_persona(
         self, _mock_create, researcher_config, master_registry, mock_smol_rag, sessions_dir

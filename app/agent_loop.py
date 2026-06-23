@@ -324,6 +324,8 @@ class AgentLoop:
 
             # Process tool calls
             assistant_msg = {"role": "assistant", "content": result["content"]}
+            if result.get("response_items"):
+                assistant_msg["response_items"] = result["response_items"]
             if result["tool_calls"]:
                 assistant_msg["tool_calls"] = [
                     {

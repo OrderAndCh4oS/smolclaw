@@ -2,6 +2,7 @@ import pytest
 import os
 
 from app.goal import GoalState, GoalStore
+from app.storage_paths import backup_storage_path
 from app.tools.base import ToolRuntimeContext
 from app.tools.factory import build_tool_registry
 from app.tools.goal import GoalStartTool, GoalStatusTool, GoalUpdateTool
@@ -25,6 +26,22 @@ def test_goal_store_start_update_clear(temp_dir):
     assert store.load("session-a").status == "complete"
     assert store.clear("session-a") is True
     assert store.load("session-a") is None
+
+
+def test_goal_store_recovers_from_corrupt_json_using_backup(temp_dir):
+    store = GoalStore(temp_dir)
+    store.start("session-a", "Recover this goal")
+    store.update("session-a", status="complete", note="done")
+    path = os.path.join(temp_dir, "session-a.goal.json")
+    assert os.path.exists(backup_storage_path(path))
+
+    with open(path, "w") as f:
+        f.write("{not-json")
+
+    recovered = store.load("session-a")
+    assert recovered is not None
+    assert recovered.objective == "Recover this goal"
+    assert recovered.status == "active"
 
 
 def test_goal_store_rejects_empty_objective(temp_dir):

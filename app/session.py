@@ -3,7 +3,13 @@ import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from app.storage_paths import contained_storage_path
+from app.storage_paths import (
+    atomic_write_json,
+    atomic_write_text,
+    contained_storage_path,
+    load_json_with_backup,
+    load_with_backup,
+)
 
 
 @dataclass
@@ -38,11 +44,10 @@ class SessionManager:
 
     def save(self, session: Session):
         path = self._file_path(session.key)
-        with open(path, "w") as f:
-            meta = {"key": session.key, "last_consolidated": session.last_consolidated}
-            f.write(json.dumps(meta) + "\n")
-            for msg in session.messages:
-                f.write(json.dumps(msg) + "\n")
+        meta = {"key": session.key, "last_consolidated": session.last_consolidated}
+        lines = [json.dumps(meta)]
+        lines.extend(json.dumps(msg) for msg in session.messages)
+        atomic_write_text(path, "\n".join(lines) + "\n")
 
     def load(self, key: str) -> Optional[Session]:
         path = self._file_path(key)
@@ -53,9 +58,10 @@ class SessionManager:
         root = os.path.realpath(self.sessions_dir)
         if os.path.commonpath([root, path]) != root:
             raise ValueError("Session path escaped the configured directory.")
-        if not os.path.exists(path):
-            return None
-        with open(path) as f:
+        return load_with_backup(path, self._load_file_once)
+
+    def _load_file_once(self, path: str) -> Optional[Session]:
+        with open(path, encoding="utf-8") as f:
             lines = f.readlines()
         if not lines:
             return None
@@ -67,12 +73,8 @@ class SessionManager:
 
     def save_usage(self, session_key: str, usage_data: dict):
         path = contained_storage_path(self.sessions_dir, session_key, ".usage.json")
-        with open(path, "w") as f:
-            json.dump(usage_data, f, indent=2)
+        atomic_write_json(path, usage_data)
 
     def load_usage(self, session_key: str) -> Optional[dict]:
         path = contained_storage_path(self.sessions_dir, session_key, ".usage.json")
-        if not os.path.exists(path):
-            return None
-        with open(path) as f:
-            return json.load(f)
+        return load_json_with_backup(path)

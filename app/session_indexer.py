@@ -3,7 +3,7 @@ import os
 from typing import Optional
 
 from app.session import Session, SessionManager
-from app.storage_paths import contained_storage_path
+from app.storage_paths import atomic_write_text, contained_storage_path
 from app.tools.memory_tools import format_memory_content
 
 logger = logging.getLogger("smolclaw.session_indexer")
@@ -72,8 +72,7 @@ async def index_session(
     if memory_dir:
         os.makedirs(memory_dir, exist_ok=True)
         file_path = contained_storage_path(memory_dir, source_id, ".md")
-        with open(file_path, "w") as f:
-            f.write(formatted)
+        atomic_write_text(file_path, formatted)
 
     # Remove old version if exists, then ingest
     await smol_rag.remove_document_by_source(source_id)

@@ -6,6 +6,7 @@ import pytest
 
 from app.agent_factory import ChildAgentFactory
 from app.session import Session, SessionManager
+from app.storage_paths import backup_storage_path
 
 
 def _make_child_session_key(parent_session_key: str = "parent:root") -> str:
@@ -63,6 +64,25 @@ class TestSessionManager:
         assert len(loaded.messages) == 2
         assert loaded.messages[0]["content"] == "remember me"
         assert loaded.messages[1]["content"] == "noted"
+
+    def test_session_manager_recovers_from_corrupt_jsonl_using_backup(self, temp_dir):
+        manager = SessionManager(temp_dir)
+        session = Session(key="recover-session")
+        session.add_message({"role": "user", "content": "before"})
+        manager.save(session)
+
+        session.add_message({"role": "assistant", "content": "after"})
+        manager.save(session)
+        path = os.path.join(temp_dir, "recover-session.jsonl")
+        assert os.path.exists(backup_storage_path(path))
+
+        with open(path, "w") as f:
+            f.write("{not-json")
+
+        loaded = manager.load("recover-session")
+        assert loaded is not None
+        assert len(loaded.messages) == 1
+        assert loaded.messages[0]["content"] == "before"
 
     def test_session_manager_jsonl_format(self, temp_dir):
         manager = SessionManager(temp_dir)
@@ -137,3 +157,15 @@ class TestSessionManager:
         usage_files = [name for name in os.listdir(temp_dir) if name.endswith(".usage.json")]
         assert len(usage_files) == 1
         assert manager.load_usage(unsafe_key) == {"ok": True}
+
+    def test_session_manager_recovers_usage_sidecar_from_backup(self, temp_dir):
+        manager = SessionManager(temp_dir)
+        manager.save_usage("usage-session", {"total": 1})
+        manager.save_usage("usage-session", {"total": 2})
+        path = os.path.join(temp_dir, "usage-session.usage.json")
+        assert os.path.exists(backup_storage_path(path))
+
+        with open(path, "w") as f:
+            f.write("{not-json")
+
+        assert manager.load_usage("usage-session") == {"total": 1}

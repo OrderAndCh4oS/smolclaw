@@ -1,10 +1,9 @@
-import json
 import os
 import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from app.storage_paths import contained_storage_path
+from app.storage_paths import atomic_write_json, contained_storage_path, load_json_with_backup
 
 
 VALID_GOAL_STATUSES = {"active", "complete", "blocked"}
@@ -73,16 +72,13 @@ class GoalStore:
 
     def load(self, session_key: str) -> Optional[GoalState]:
         path = self._file_path(session_key)
-        if not os.path.exists(path):
-            return None
-        with open(path) as f:
-            return GoalState.from_dict(json.load(f))
+        data = load_json_with_backup(path)
+        return GoalState.from_dict(data) if data is not None else None
 
     def save(self, session_key: str, goal: GoalState) -> GoalState:
         goal.updated_at = time.time()
         path = self._file_path(session_key)
-        with open(path, "w") as f:
-            json.dump(goal.to_dict(), f, indent=2)
+        atomic_write_json(path, goal.to_dict())
         return goal
 
     def start(self, session_key: str, objective: str) -> GoalState:

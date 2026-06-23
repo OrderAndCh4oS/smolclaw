@@ -1,9 +1,8 @@
 from dataclasses import dataclass
 from unittest.mock import Mock
 
+from app.model_registry import MODEL_REGISTRY, REASONING_EFFORTS
 
-REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
-SWITCHABLE_MODEL_PREFIXES = ("gpt-5.4", "gpt-5.5")
 MODEL_EXAMPLES = [
     "gpt-5.5",
     "gpt-5.5-pro",
@@ -39,7 +38,7 @@ class RuntimeModelSettings:
 
 
 def is_switchable_model(model: str) -> bool:
-    return bool(model and model.startswith(SWITCHABLE_MODEL_PREFIXES))
+    return MODEL_REGISTRY.is_switchable_model(model)
 
 
 def parse_model_selection(value: str) -> ModelSelection:
@@ -47,14 +46,10 @@ def parse_model_selection(value: str) -> ModelSelection:
     if not parts:
         raise ValueError("Usage: /model <gpt-5.4*|gpt-5.5*> [none|minimal|low|medium|high|xhigh]")
     model = parts[0]
-    if not is_switchable_model(model):
-        raise ValueError("Model must start with gpt-5.4 or gpt-5.5.")
     if len(parts) > 2:
         raise ValueError("Usage: /model <gpt-5.4*|gpt-5.5*> [none|minimal|low|medium|high|xhigh]")
     reasoning_effort = parts[1] if len(parts) == 2 else None
-    if reasoning_effort is not None and reasoning_effort not in REASONING_EFFORTS:
-        valid = ", ".join(sorted(REASONING_EFFORTS))
-        raise ValueError(f"Reasoning effort must be one of: {valid}.")
+    MODEL_REGISTRY.validate(model, reasoning_effort)
     return ModelSelection(model=model, reasoning_effort=reasoning_effort)
 
 
@@ -79,8 +74,10 @@ def get_reasoning_effort(llm) -> str | None:
 def apply_model_selection(llm, selection: ModelSelection):
     provider = completion_provider(llm)
     provider.completion_model = selection.model
-    if selection.reasoning_effort is not None:
-        setattr(provider, "reasoning_effort", selection.reasoning_effort)
+    effort = selection.reasoning_effort
+    if effort is None:
+        effort = MODEL_REGISTRY.default_effort(selection.model)
+    setattr(provider, "reasoning_effort", effort)
 
 
 def apply_runtime_model_selection(llm, selection: ModelSelection, model_settings=None):
@@ -95,14 +92,17 @@ def apply_subagent_model_selection(selection: ModelSelection, model_settings=Non
 
 
 def model_status(llm) -> str:
+    model = get_model(llm)
     effort = get_reasoning_effort(llm)
     suffix = f" effort:{effort}" if effort else ""
-    return f"model:{get_model(llm)}{suffix}"
+    details = MODEL_REGISTRY.describe(model, effort)
+    return f"model:{model}{suffix} {details}"
 
 
 def selection_status(selection: ModelSelection) -> str:
     suffix = f" effort:{selection.reasoning_effort}" if selection.reasoning_effort else ""
-    return f"model:{selection.model}{suffix}"
+    details = MODEL_REGISTRY.describe(selection.model, selection.reasoning_effort)
+    return f"model:{selection.model}{suffix} {details}"
 
 
 def subagent_model_status(model_settings=None) -> str:
@@ -124,6 +124,7 @@ def model_help(llm, model_settings=None) -> str:
         "  /model <gpt-5.4*|gpt-5.5*> [effort]",
         "  /model subagents <gpt-5.4*|gpt-5.5*> [effort]",
         "Effort: none, minimal, low, medium, high, xhigh",
+        "Endpoint behavior: reasoning tool turns use Responses; compatible legacy turns use Chat Completions.",
         "Examples:",
         examples,
         "  /model subagents gpt-5.5 medium",
@@ -133,6 +134,9 @@ def model_help(llm, model_settings=None) -> str:
 def model_list() -> str:
     return "\n".join([
         "Switchable model prefixes: gpt-5.4*, gpt-5.5*",
+        "Compatibility:",
+        f"  gpt-5.5*: {MODEL_REGISTRY.describe('gpt-5.5', 'medium')}",
+        f"  gpt-5.4*: {MODEL_REGISTRY.describe('gpt-5.4', 'medium')}",
         "Examples:",
         *[f"  {model}" for model in MODEL_EXAMPLES],
     ])

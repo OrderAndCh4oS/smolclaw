@@ -1,11 +1,10 @@
 """Token usage tracking, audit trail, and persistence for LLM calls."""
-import json
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Optional
 
-from app.storage_paths import contained_storage_path
+from app.storage_paths import atomic_write_json, contained_storage_path
 
 
 @dataclass
@@ -161,5 +160,4 @@ class UsagePersistHook:
         if not usage or not session_key:
             return
         path = contained_storage_path(self._sessions_dir, session_key, ".usage.json")
-        with open(path, "w") as f:
-            json.dump(usage.summary_dict(), f, indent=2)
+        atomic_write_json(path, usage.summary_dict())

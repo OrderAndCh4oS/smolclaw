@@ -88,7 +88,7 @@ class TestGenerateJournal:
             await generate_journal(journal_session, mock_journal_llm, mock_smol_rag, td)
             await generate_journal(journal_session, mock_journal_llm, mock_smol_rag, td)
 
-            assert sorted(os.listdir(td)) == ["journal-test-journal.md"]
+            assert sorted(os.listdir(td)) == ["journal-test-journal.md", "journal-test-journal.md.bak"]
             assert mock_smol_rag.remove_document_by_source.await_count == 2
 
     @pytest.mark.asyncio
