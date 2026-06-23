@@ -2,7 +2,7 @@
 
 This roadmap turns the current SmolClaw codebase into a more reliable harness-style coding assistant while preserving the project's useful small-core shape.
 
-It is based on the local implementation as of June 2026 and on the evidence collected in [research-agentic-coding-harnesses.md](research-agentic-coding-harnesses.md).
+It is based on the local implementation as of June 2026, the evidence collected in [research-agentic-coding-harnesses.md](research-agentic-coding-harnesses.md), and the implementation design in [next-phase-implementation-design.md](next-phase-implementation-design.md).
 
 ## Goal
 
@@ -45,11 +45,11 @@ The product direction is closer to a focused local coding harness than a broad a
 ### Not Reliable Enough Yet
 
 - The safety gate proves exploration happened, not that exploration was sufficient or relevant.
-- Permission policy is still a v1 hard-deny model, not a configurable `ask` approval system.
-- TUI output streams are much better isolated, but trace export and richer log-drawer workflows remain incomplete.
-- The agent loop does not yet have a structured task ledger with acceptance criteria, verification state, and blockers.
-- Evals mostly prove code paths, not full agent behavior on realistic coding tasks.
-- There is no sandbox or worktree-backed isolation mode for risky edits or remote-control scenarios.
+- Permission policy now supports loaded `allow`, `ask`, and `deny` rules, and `ask` creates durable exact-call approvals; automatic replay and session-pattern approval UX remain incomplete.
+- TUI output streams are much better isolated, and trace export now has summary/list/event browsing; richer log-drawer workflows remain incomplete.
+- The agent loop now writes a structured task ledger with acceptance criteria, verification state, blockers, and trace-linked evidence, but completion/status UX still needs to be surfaced consistently in final answers, TUI views, and eval reports.
+- Evals now cover deterministic mock paths, recorded artifact replay, opt-in live subprocess runs, shared run-status reports, and trace/ledger integrity, but not a realistic task fixture suite with CI score tracking.
+- Worktree isolation exists for non-interactive and chat/TUI sessions, including status, diff, apply, and discard controls; dirty-copy guardrails, richer apply-back review, and a hardened sandbox backend are still incomplete.
 - Documentation has been narrowed to the current local coding-harness direction, but it still needs ongoing install, packaging, and operator guide improvements.
 
 ## Design Principles
@@ -226,7 +226,7 @@ Success criteria:
 ### Problems
 
 - The current safety gate is useful but coarse.
-- Permissions are not expressed as a first-class policy with per-tool and per-agent rules.
+- Permissions are expressed as first-class policy rules, but automatic replay, session-pattern approvals, and richer per-surface UX are not complete.
 - Prompt instructions cannot reliably prevent destructive behavior.
 
 ### Work
@@ -642,7 +642,7 @@ The user-facing product must stop saying or displaying things that are not true.
 
 ### Milestone B - Safe Mutation
 
-Status: complete for v1 hard-deny local safety; approval workflows remain future work.
+Status: complete for v1 hard-deny local safety and exact-call approval requests; session-pattern approvals and automatic replay remain future work.
 
 Completed scope:
 
@@ -655,7 +655,7 @@ Completed scope:
 Remaining follow-up:
 
 - Better structured exploration evidence and trace export.
-- Configurable `ask` approvals for riskier local workflows.
+- Configurable exact-call `ask` approvals for riskier local workflows.
 
 Why second:
 
@@ -679,7 +679,7 @@ The goal loop should become a real harness, not just repeated chat continuation.
 
 Scope:
 
-- Local agent task eval suite.
+- Local mock, recorded, and opt-in live agent task eval suite.
 - Non-interactive runner.
 - Trajectory capture.
 - Score report.
@@ -705,24 +705,35 @@ Telegram/Signal/WebSocket control should wait until mutation and identity bounda
 
 ## Suggested Immediate Backlog
 
-1. Add goal ledger v1.
-   - Store plan, inspected files, changed files, tests, status, and stop reason.
+The detailed architecture fit, problematic areas, and implementation sequence are in [docs/next-phase-implementation-design.md](next-phase-implementation-design.md).
 
-2. Add completion and verification gates.
-   - Require acceptance criteria or an explicit "no verification possible" note before goal completion.
-   - Store verification commands and results.
+1. Harden shared run presentation.
+   - Keep `/trace`, `/goal status`, non-interactive JSON, eval reports, and future TUI drawers on shared view models.
+   - Add parity tests so these surfaces render the same trace, ledger, verification, and changed-file state.
 
-3. Build first eval fixture.
-   - Use a small intentionally broken project.
-   - Require exploration, edit, test, and completion evidence.
+2. Expand eval reports into a decision tool.
+   - Wire suite JSON, failure classes, and recommended actions into CI output.
+   - Track score deltas by exploration, safety, verification, completion, touched files, and trace/ledger integrity.
 
-4. Add non-interactive eval runner.
-   - Capture prompt, trajectory, diff, tests, status, and stop reason.
+3. Add realistic eval fixtures.
+   - Cover multi-file bugfix, documentation-only work, blocked secret reads, dirty-worktree preservation, approval-required commands, and TUI/trace rendering.
+   - Run mock and recorded modes by default; keep live mode opt-in.
 
-5. Add worktree or sandbox spike.
-   - Run a risky goal in isolation and present the diff back to the main workspace.
+4. Productize worktree isolation.
+   - Harden dirty-copy mode with file-count, byte-count, ignored-root, and secret-path checks.
+   - Add richer apply-back review before applying larger isolated diffs.
+   - Surface worktree isolation metadata in trace/eval summaries.
 
-6. Expand operator docs.
+5. Improve approval UX carefully.
+   - Keep exact-call approvals as the default.
+   - Use approval detail and trace metadata to audit exact-call approval decisions.
+   - Add session-pattern approvals only after the UI can show the approved pattern clearly.
+
+6. Tune target-aware safety with eval backing.
+   - Make safety denials name missing evidence.
+   - Add generated-file and large-repo fixtures before tightening relevance thresholds.
+
+7. Expand operator docs.
    - Document `/undo`, permission denials, secret-file behavior, and troubleshooting.
    - Add install and troubleshooting docs.
    - Keep README, workspace docs, and roadmap aligned.

@@ -2,6 +2,8 @@ import os
 from dataclasses import dataclass
 
 COMPLETION_MODEL = os.getenv('COMPLETION_MODEL', 'gpt-5.5')
+MEMORY_EXTRACT_MODEL = os.getenv('MEMORY_EXTRACT_MODEL', 'gpt-5.4-mini')
+MEMORY_QUERY_MODEL = os.getenv('MEMORY_QUERY_MODEL', 'gpt-5.4')
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
 
 # app/ package dir
@@ -16,11 +18,16 @@ DEFAULT_WORKSPACE_ROOT = os.getenv("SMOLCLAW_WORKSPACE") or os.getcwd()
 @dataclass(frozen=True)
 class WorkspacePaths:
     root_dir: str
+    state_root_dir: str
     data_dir: str
     sqlite_db_path: str
     kg_db_path: str
     sessions_dir: str
     checkpoints_dir: str
+    traces_dir: str
+    ledgers_dir: str
+    approvals_dir: str
+    evals_dir: str
     memory_docs_dir: str
     log_dir: str
     cache_dir: str
@@ -33,19 +40,33 @@ def resolve_workspace_root(workspace_root: str | None = None) -> str:
     return os.path.abspath(os.path.expanduser(workspace_root or DEFAULT_WORKSPACE_ROOT))
 
 
-def build_workspace_paths(workspace_root: str | None = None) -> WorkspacePaths:
+def build_workspace_paths(
+    workspace_root: str | None = None,
+    *,
+    state_root: str | None = None,
+) -> WorkspacePaths:
     root_dir = resolve_workspace_root(workspace_root)
-    data_dir = os.path.join(root_dir, "stores")
+    state_root_dir = (
+        resolve_workspace_root(state_root)
+        if state_root is not None
+        else os.path.join(root_dir, ".smolclaw")
+    )
+    data_dir = os.path.join(state_root_dir, "stores")
     sessions_dir = os.path.join(data_dir, "sessions")
-    research_dir = os.path.join(root_dir, "research")
+    research_dir = os.path.join(state_root_dir, "research")
     return WorkspacePaths(
         root_dir=root_dir,
+        state_root_dir=state_root_dir,
         data_dir=data_dir,
         sqlite_db_path=os.path.join(data_dir, "smolclaw.db"),
         kg_db_path=os.path.join(data_dir, "kg_db.graphml"),
         sessions_dir=sessions_dir,
         checkpoints_dir=os.path.join(data_dir, "checkpoints"),
-        memory_docs_dir=os.path.join(root_dir, "memory"),
+        traces_dir=os.path.join(data_dir, "traces"),
+        ledgers_dir=os.path.join(data_dir, "ledgers"),
+        approvals_dir=os.path.join(data_dir, "approvals"),
+        evals_dir=os.path.join(data_dir, "evals"),
+        memory_docs_dir=os.path.join(state_root_dir, "memory"),
         log_dir=os.path.join(data_dir, "logs"),
         cache_dir=os.path.join(data_dir, "cache"),
         research_dir=research_dir,
@@ -57,9 +78,14 @@ def build_workspace_paths(workspace_root: str | None = None) -> WorkspacePaths:
 def ensure_workspace_dirs(paths: WorkspacePaths) -> WorkspacePaths:
     for dir_path in (
         paths.root_dir,
+        paths.state_root_dir,
         paths.data_dir,
         paths.sessions_dir,
         paths.checkpoints_dir,
+        paths.traces_dir,
+        paths.ledgers_dir,
+        paths.approvals_dir,
+        paths.evals_dir,
         paths.memory_docs_dir,
         paths.log_dir,
         paths.cache_dir,

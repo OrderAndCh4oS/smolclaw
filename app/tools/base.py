@@ -9,10 +9,20 @@ if TYPE_CHECKING:
 ToolExposure = Literal["immediate", "deferred"]
 ToolStatus = Literal["ok", "error", "denied"]
 
+TRACE_RECORDER_STATE_KEY = "trace_recorder"
+ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY = "active_tool_trace_event_id"
+ACTIVE_TOOL_CALL_ID_STATE_KEY = "active_tool_call_id"
+
 
 @dataclass
 class ToolRuntimeContext:
-    """Per-agent runtime state made available when binding tool instances."""
+    """Per-agent runtime state made available when binding tool instances.
+
+    Stable shared-state keys:
+    - ``trace_recorder``: current run trace recorder, when trace export is active.
+    - ``active_tool_trace_event_id``: trace event id for the current ``tool.started`` event.
+    - ``active_tool_call_id``: provider tool-call id for the current tool call, when available.
+    """
 
     registry: Optional["ToolRegistry"] = None
     llm: Any = None

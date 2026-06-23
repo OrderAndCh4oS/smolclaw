@@ -12,6 +12,7 @@ from app.tools.base import Tool
 from app.tools.factory import build_tool_registry
 from app.tools.registry import ToolRegistry
 from app.tools.tool_search import ToolSearchTool
+from app.tools.safety import ExplorationEvidence
 from app.workspace import WorkspaceContext
 
 
@@ -242,6 +243,7 @@ class TestAgentFactory:
         loop = build_agent_loop(config, master, mock_smol_rag, sm, workspace=workspace)
         loop.safety_state.did_git_status = True
         loop.safety_state.did_search = True
+        loop.safety_state.evidence.append(ExplorationEvidence(kind="search", path=workspace.root_dir))
 
         result = await loop.tool_registry.execute(
             "write_file",
@@ -249,9 +251,43 @@ class TestAgentFactory:
         )
 
         assert "Written" in result
-        checkpoints_dir = os.path.join(temp_dir, "stores", "checkpoints")
+        checkpoints_dir = workspace.paths.checkpoints_dir
         checkpoint_files = [name for name in os.listdir(checkpoints_dir) if name.endswith(".json")]
         assert len(checkpoint_files) == 1
+
+    @pytest.mark.asyncio
+    @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
+    async def test_build_agent_loop_loads_workspace_permission_policy(
+        self, _mock_create, mock_smol_rag, sessions_dir, temp_dir, monkeypatch
+    ):
+        monkeypatch.setenv("HOME", os.path.join(temp_dir, "home"))
+        monkeypatch.delenv("SMOLCLAW_PERMISSION_POLICY", raising=False)
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        policy_dir = os.path.join(temp_dir, ".smolclaw")
+        os.makedirs(policy_dir, exist_ok=True)
+        with open(os.path.join(policy_dir, "permissions.yaml"), "w", encoding="utf-8") as handle:
+            handle.write(
+                "rules:\n"
+                "  - subject: tool\n"
+                "    pattern: tool_a\n"
+                "    action: deny\n"
+                "    reason: workspace policy blocks this tool\n"
+            )
+        master = ToolRegistry()
+        master.register(StubToolA())
+        config = AgentConfig(
+            name="coder",
+            model="gpt-5.5",
+            persona="You write code.",
+            tools=["tool_a"],
+        )
+        sm = SessionManager(sessions_dir)
+        loop = build_agent_loop(config, master, mock_smol_rag, sm, workspace=workspace)
+
+        result = await loop.tool_registry.execute("tool_a", {})
+
+        assert result.startswith("Error: tool 'tool_a' denied by permission policy")
+        assert "workspace policy blocks this tool" in result
 
     @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     def test_build_agent_loop_uses_persona(

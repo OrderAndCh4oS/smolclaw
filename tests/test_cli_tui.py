@@ -32,7 +32,9 @@ def _fake_tui(show_actions=False):
         session_export_hook=MagicMock(),
         smol_rag=MagicMock(),
         checkpoint_store=checkpoint_store,
+        approval_store=MagicMock(),
         workspace_root=".",
+        log_dir="./.smolclaw/stores/logs",
         model="fallback-model",
         auto_export=True,
         show_actions=show_actions,
@@ -40,6 +42,10 @@ def _fake_tui(show_actions=False):
         format_goal_status=lambda goal: "No goal" if goal is None else goal.status,
         parse_goal_run_count=lambda value: int(value or "3"),
         build_goal_loop_prompt=lambda: "continue goal",
+        format_trace_status=lambda session_key, arg: f"Trace for {session_key} {arg}".strip(),
+        resolve_approval_command=lambda session_key, arg: f"Approval {session_key} {arg}".strip(),
+        resolve_worktree_command=lambda arg: f"Worktree {arg}".strip(),
+        initialize_project=lambda: "Created AGENTS.md",
         format_action_event=lambda event: event.get("line"),
         label="SmolClaw",
     )
@@ -251,6 +257,82 @@ async def test_tui_logs_command_shows_workspace_diagnostics_paths():
 
 
 @pytest.mark.asyncio
+async def test_tui_remember_thread_shows_slow_export_notice():
+    tui = _fake_tui()
+    tui.session_export_hook = AsyncMock()
+
+    await tui.submit("/remember-thread")
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Exporting current thread to memory" in rendered
+    assert "Current thread exported to memory." in rendered
+    tui.session_export_hook.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_tui_remember_thread_reports_export_failure():
+    tui = _fake_tui()
+    tui.session_export_hook = AsyncMock(side_effect=RuntimeError("export failed"))
+
+    await tui.submit("/remember-thread")
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Exporting current thread to memory" in rendered
+    assert "incident" in rendered
+    assert "export failed" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_init_command_initializes_project_guidance():
+    tui = _fake_tui()
+
+    await tui.submit("/init")
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Created AGENTS.md" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_trace_command_shows_latest_trace_status():
+    tui = _fake_tui()
+
+    await tui.submit("/trace")
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Trace for session" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_trace_command_forwards_subcommand():
+    tui = _fake_tui()
+
+    await tui.submit("/trace events 5")
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Trace for session events 5" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_approval_command_shows_approval_status():
+    tui = _fake_tui()
+
+    await tui.submit("/approval status")
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Approval session status" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_worktree_command_shows_worktree_status():
+    tui = _fake_tui()
+
+    await tui.submit("/worktree status")
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Worktree status" in rendered
+
+
+@pytest.mark.asyncio
 async def test_tui_undo_command_uses_checkpoint_store():
     tui = _fake_tui()
 
@@ -423,25 +505,25 @@ def test_tui_suppresses_internal_logs_while_fullscreen_active():
     tui = _fake_tui()
     app_logger = logging.getLogger("app")
     smolclaw_logger = logging.getLogger("smolclaw")
-    mini_rag_logger = logging.getLogger("mini-rag")
+    rag_logger = logging.getLogger("smolclaw.rag")
     app_propagate = app_logger.propagate
     smolclaw_propagate = smolclaw_logger.propagate
-    mini_rag_propagate = mini_rag_logger.propagate
+    rag_propagate = rag_logger.propagate
 
     with tui._suppress_terminal_logs():
         assert tui._terminal_log_handler in app_logger.handlers
         assert tui._terminal_log_handler in smolclaw_logger.handlers
-        assert tui._terminal_log_handler in mini_rag_logger.handlers
+        assert tui._terminal_log_handler in rag_logger.handlers
         assert app_logger.propagate is False
         assert smolclaw_logger.propagate is False
-        assert mini_rag_logger.propagate is False
+        assert rag_logger.propagate is False
 
     assert tui._terminal_log_handler not in app_logger.handlers
     assert tui._terminal_log_handler not in smolclaw_logger.handlers
-    assert tui._terminal_log_handler not in mini_rag_logger.handlers
+    assert tui._terminal_log_handler not in rag_logger.handlers
     assert app_logger.propagate is app_propagate
     assert smolclaw_logger.propagate is smolclaw_propagate
-    assert mini_rag_logger.propagate is mini_rag_propagate
+    assert rag_logger.propagate is rag_propagate
 
 
 @pytest.mark.asyncio

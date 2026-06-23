@@ -145,7 +145,9 @@ class CoderTui:
         session_export_hook,
         smol_rag,
         checkpoint_store: CheckpointStore,
+        approval_store,
         workspace_root: str,
+        log_dir: str,
         model: str,
         auto_export: bool,
         show_actions: bool,
@@ -153,7 +155,11 @@ class CoderTui:
         format_goal_status: Callable[[object], str],
         parse_goal_run_count: Callable[[str], int],
         build_goal_loop_prompt: Callable[[], str],
+        format_trace_status: Callable[[str, str], str],
+        resolve_approval_command: Callable[[str, str], str],
+        initialize_project: Callable[[], str],
         format_action_event: Callable[[dict], Optional[str]],
+        resolve_worktree_command: Callable[[str], str] | None = None,
         label: str = "smolclaw",
     ):
         self.agent = agent
@@ -163,13 +169,19 @@ class CoderTui:
         self.session_export_hook = session_export_hook
         self.smol_rag = smol_rag
         self.checkpoint_store = checkpoint_store
+        self.approval_store = approval_store
         self.workspace_root = os.path.abspath(os.path.expanduser(workspace_root))
+        self.log_dir = os.path.abspath(os.path.expanduser(log_dir))
         self.auto_export = auto_export
         self.show_actions = show_actions
         self.slash_commands_help = slash_commands_help
         self.format_goal_status = format_goal_status
         self.parse_goal_run_count = parse_goal_run_count
         self.build_goal_loop_prompt = build_goal_loop_prompt
+        self.format_trace_status = format_trace_status
+        self.resolve_approval_command = resolve_approval_command
+        self.resolve_worktree_command = resolve_worktree_command or (lambda arg: "No active isolated worktree.")
+        self.initialize_project = initialize_project
         self.format_action_event = format_action_event
         self.state = UiState(
             label=label,
@@ -373,6 +385,18 @@ class CoderTui:
         if text == "/logs":
             self._append("system", self._diagnostics_paths())
             return
+        if text == "/init":
+            self._append("system", self.initialize_project())
+            return
+        if command == "/trace":
+            self._append("system", self.format_trace_status(self.agent.session.key, command_arg))
+            return
+        if command == "/approval":
+            self._append("system", self.resolve_approval_command(self.agent.session.key, command_arg))
+            return
+        if command == "/worktree":
+            self._append("system", self.resolve_worktree_command(command_arg))
+            return
         if text == "/undo":
             self._handle_undo()
             return
@@ -482,6 +506,10 @@ class CoderTui:
     async def _handle_remember_thread(self):
         self.state.run_state = "running"
         self.state.activity = "exporting"
+        self._append(
+            "system",
+            "Exporting current thread to memory. This can take a while on long sessions.",
+        )
         self._invalidate()
         try:
             await self.session_export_hook({
@@ -489,6 +517,15 @@ class CoderTui:
                 "session": self.agent.session,
             })
             self._append("system", "Current thread exported to memory.")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            incident_id = diagnostics.record_exception(
+                exc,
+                boundary="tui.remember_thread",
+                session_key=getattr(getattr(self.agent, "session", None), "key", ""),
+            )
+            self._append("error", diagnostics.user_error_message(incident_id, str(exc)))
         finally:
             self.state.run_state = "idle"
             self.state.activity = "idle"
@@ -973,7 +1010,7 @@ class CoderTui:
             self._invalidate()
 
     def _diagnostics_paths(self) -> str:
-        log_dir = os.path.join(self.workspace_root, "stores", "logs")
+        log_dir = self.log_dir
         return "\n".join([
             f"Diagnostics logs: {log_dir}",
             f"Events: {os.path.join(log_dir, 'events.jsonl')}",
@@ -985,7 +1022,7 @@ class CoderTui:
         loggers = [
             logging.getLogger("app"),
             logging.getLogger("smolclaw"),
-            logging.getLogger("mini-rag"),
+            logging.getLogger("smolclaw.rag"),
         ]
         previous_propagation = {logger: logger.propagate for logger in loggers}
         for logger in loggers:

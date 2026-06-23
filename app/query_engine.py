@@ -21,7 +21,13 @@ class QueryEngine:
         self._llm_provider = llm_provider
 
     async def _get_completion(self, *args, **kwargs):
-        return await self._llm_provider.rate_limited_get_completion(*args, **kwargs)
+        return await self._get_extract_completion(*args, **kwargs)
+
+    async def _get_extract_completion(self, *args, **kwargs):
+        return await self._llm_provider.rate_limited_get_extract_completion(*args, **kwargs)
+
+    async def _get_query_completion(self, *args, **kwargs):
+        return await self._llm_provider.rate_limited_get_query_completion(*args, **kwargs)
 
     async def _get_embedding(self, *args, **kwargs):
         return await self._llm_provider.rate_limited_get_embedding(*args, **kwargs)
@@ -35,7 +41,7 @@ class QueryEngine:
         logger.info(f"Retrieved {len(excerpts)} excerpts for the query.")
         excerpt_context = self._get_excerpt_context(excerpts)
         system_prompt = get_query_system_prompt(excerpt_context)
-        return await self._get_completion(text, context=system_prompt.strip(), use_cache=True)
+        return await self._get_query_completion(text, context=system_prompt.strip(), use_cache=True)
 
     def _get_excerpt_context(self, excerpts):
         context = ""
@@ -74,7 +80,7 @@ class QueryEngine:
 
     async def hybrid_kg_query(self, text):
         prompt = get_high_low_level_keywords_prompt(text)
-        result = await self._get_completion(prompt)
+        result = await self._get_extract_completion(prompt)
         keyword_data = extract_json_from_text(result) or {}
         logger.info("Processed high/low level keywords for hybrid KG query.")
 
@@ -90,11 +96,11 @@ class QueryEngine:
         excerpts = ll_entity_excerpts + hl_entity_excerpts
         context = self._get_kg_query_context(entities, excerpts, relations)
         system_prompt = get_kg_query_system_prompt(context)
-        return await self._get_completion(text, context=system_prompt.strip(), use_cache=True)
+        return await self._get_query_completion(text, context=system_prompt.strip(), use_cache=True)
 
     async def local_kg_query(self, text):
         prompt = get_high_low_level_keywords_prompt(text)
-        result = await self._get_completion(prompt)
+        result = await self._get_extract_completion(prompt)
         keyword_data = extract_json_from_text(result) or {}
         logger.info("Processed high/low level keywords for local KG query.")
 
@@ -104,11 +110,11 @@ class QueryEngine:
         excerpts = ll_entity_excerpts
         context = self._get_kg_query_context(entities, excerpts, relations)
         system_prompt = get_kg_query_system_prompt(context)
-        return await self._get_completion(text, context=system_prompt.strip(), use_cache=True)
+        return await self._get_query_completion(text, context=system_prompt.strip(), use_cache=True)
 
     async def global_kg_query(self, text):
         prompt = get_high_low_level_keywords_prompt(text)
-        result = await self._get_completion(prompt)
+        result = await self._get_extract_completion(prompt)
         keyword_data = extract_json_from_text(result) or {}
         logger.info("Processed high/low level keywords for global KG query.")
 
@@ -118,7 +124,7 @@ class QueryEngine:
         excerpts = hl_entity_excerpts
         context = self._get_kg_query_context(entities, excerpts, relations)
         system_prompt = get_kg_query_system_prompt(context)
-        return await self._get_completion(text, context=system_prompt.strip(), use_cache=True)
+        return await self._get_query_completion(text, context=system_prompt.strip(), use_cache=True)
 
     async def bm25_query(self, text: str, top_k: int = 10) -> list[dict]:
         """Pure BM25 keyword search over excerpts."""
@@ -163,7 +169,7 @@ class QueryEngine:
         return_metadata: bool = False,
     ):
         prompt = get_high_low_level_keywords_prompt(text)
-        result = await self._get_completion(prompt)
+        result = await self._get_extract_completion(prompt)
         keyword_data = extract_json_from_text(result) or {}
         logger.info("Processed high/low level keywords for mixed KG query.")
 
@@ -204,7 +210,7 @@ class QueryEngine:
         kg_context = self._get_kg_query_context(kg_entities, kg_excerpts, kg_relations)
         excerpt_context = self._get_excerpt_context(query_excerpts)
         system_prompt = get_mix_system_prompt(excerpt_context, kg_context)
-        content = await self._get_completion(text, context=system_prompt.strip(), use_cache=True)
+        content = await self._get_query_completion(text, context=system_prompt.strip(), use_cache=True)
         if return_metadata:
             return {"content": content, "excerpt_ids": excerpt_ids}
         return content

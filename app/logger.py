@@ -7,7 +7,7 @@ from logging.handlers import RotatingFileHandler
 from app import diagnostics
 from app.definitions import LOG_DIR
 
-logger = logging.getLogger("mini-rag")
+logger = logging.getLogger("smolclaw.rag")
 _HANDLER_NAME = "smolclaw-log-file"
 _LOG_FILE_PATTERN = re.compile(r"^.+\.(?:log|jsonl)(?:\.\d+)?$")
 

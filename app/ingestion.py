@@ -28,7 +28,7 @@ class IngestionPipeline:
         self._current_ingest_source = "extraction"
 
     async def _get_completion(self, *args, **kwargs):
-        return await self._llm_provider.rate_limited_get_completion(*args, **kwargs)
+        return await self._llm_provider.rate_limited_get_extract_completion(*args, **kwargs)
 
     async def _get_embedding(self, *args, **kwargs):
         return await self._llm_provider.rate_limited_get_embedding(*args, **kwargs)

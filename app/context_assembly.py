@@ -148,7 +148,7 @@ class ContextAssembler(ContextBuilder):
                     pass
             if not keyword_data:
                 from app.utilities import extract_json_from_text
-                kw_result = await self.smol_rag.rate_limited_get_completion(prompt)
+                kw_result = await self.smol_rag.rate_limited_get_extract_completion(prompt)
                 keyword_data = extract_json_from_text(kw_result) or {}
 
             ll_dataset, ll_entity_excerpts, _ = await self.smol_rag.get_low_level_dataset(keyword_data)

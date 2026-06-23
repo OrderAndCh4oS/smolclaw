@@ -8,7 +8,9 @@ from typer.testing import CliRunner
 from app.agent_config import AgentConfigLoader
 from app.definitions import build_workspace_paths
 from app.agent_loop import AgentLoop
+from app.approvals import ApprovalRequestStore
 from app.model_settings import RuntimeModelSettings
+from app.run_trace import RunTraceStore
 from app.tools.registry import ToolRegistry
 from cli.main import _build_cli_tool_registry, _build_default_chat_agent, _build_multiagent
 from app.hooks import ON_SESSION_END, HookRunner
@@ -46,9 +48,12 @@ def agents_yaml(temp_dir):
     return path
 
 
-def _fake_runtime(workspace_root: str, smol_rag, session_manager):
+def _fake_runtime(workspace_root: str | WorkspaceContext, smol_rag, session_manager):
     runtime = MagicMock()
-    runtime.workspace = WorkspaceContext.from_root(workspace_root).ensure_dirs()
+    if isinstance(workspace_root, WorkspaceContext):
+        runtime.workspace = workspace_root.ensure_dirs()
+    else:
+        runtime.workspace = WorkspaceContext.from_root(workspace_root).ensure_dirs()
     runtime.smol_rag = smol_rag
     runtime.session_manager = session_manager
     return runtime
@@ -72,6 +77,397 @@ class TestCliMultiagent:
         assert result.exit_code == 0
         assert "Start an interactive chat session." in result.stdout
         assert "--session" in result.stdout
+
+    @pytest.mark.asyncio
+    async def test_run_once_returns_json_ready_payload(self, temp_dir):
+        from cli.main import DEFAULT_AGENTS_CONFIG, _run_once
+
+        async def fake_process(message, on_output=None, on_event=None):
+            trace_store = RunTraceStore(build_workspace_paths(temp_dir).traces_dir)
+            recorder = trace_store.start_run("default")
+            recorder.finish("complete", stop_reason="assistant_final")
+            return f"response to {message}"
+
+        fake_agent = MagicMock()
+        fake_agent.process = AsyncMock(side_effect=fake_process)
+        fake_agent.close = AsyncMock()
+        fake_agent.session = MagicMock()
+        fake_agent.session.key = "default"
+        smol_rag = MagicMock()
+        smol_rag.close = AsyncMock()
+        session_manager = MagicMock()
+
+        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime(temp_dir, smol_rag, session_manager)), \
+            patch("cli.main._build_default_chat_agent", return_value=fake_agent):
+            payload = await _run_once(
+                prompt="hello",
+                session_key="default",
+                workspace=temp_dir,
+                model="model",
+                agents_config=DEFAULT_AGENTS_CONFIG,
+            )
+
+        assert payload["status"] == "complete"
+        assert payload["response"] == "response to hello"
+        assert payload["turns"] == 1
+        assert payload["trace_path"].endswith(".jsonl")
+        fake_agent.close.assert_awaited_once()
+        smol_rag.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_run_once_worktree_uses_isolated_workspace_and_cleans_up(self, temp_dir):
+        from cli.main import DEFAULT_AGENTS_CONFIG, _run_once
+
+        worktree_path = os.path.join(temp_dir, "isolated")
+        os.makedirs(worktree_path, exist_ok=True)
+        fake_ctx = MagicMock()
+        fake_ctx.path = worktree_path
+        fake_ctx.diff.return_value = "diff --git a/app.py b/app.py"
+        fake_agent = MagicMock()
+
+        async def fake_process(_message):
+            trace_store = RunTraceStore(build_workspace_paths(temp_dir).traces_dir)
+            recorder = trace_store.start_run("default")
+            recorder.finish("complete", stop_reason="assistant_final")
+            return "done"
+
+        fake_agent.process = AsyncMock(side_effect=fake_process)
+        fake_agent.close = AsyncMock()
+        fake_agent.session = MagicMock()
+        fake_agent.session.key = "default"
+        smol_rag = MagicMock()
+        smol_rag.close = AsyncMock()
+        session_manager = MagicMock()
+
+        def fake_runtime(workspace_root, *_args, **_kwargs):
+            assert isinstance(workspace_root, WorkspaceContext)
+            assert workspace_root.root_dir == os.path.realpath(worktree_path)
+            assert workspace_root.state_root_dir == os.path.realpath(build_workspace_paths(temp_dir).state_root_dir)
+            return _fake_runtime(workspace_root, smol_rag, session_manager)
+
+        with patch("cli.main.WorktreeRunner") as mock_runner_cls, \
+            patch("cli.main._build_cli_runtime", side_effect=fake_runtime), \
+            patch("cli.main._build_default_chat_agent", return_value=fake_agent) as mock_build:
+            mock_runner_cls.return_value.create.return_value = fake_ctx
+            payload = await _run_once(
+                prompt="hello",
+                session_key="default",
+                workspace=temp_dir,
+                model="model",
+                agents_config=DEFAULT_AGENTS_CONFIG,
+                worktree=True,
+            )
+
+        mock_runner_cls.return_value.create.assert_called_once()
+        built_workspace = mock_build.call_args.kwargs["workspace"]
+        assert isinstance(built_workspace, WorkspaceContext)
+        assert built_workspace.root_dir == os.path.realpath(worktree_path)
+        assert built_workspace.state_root_dir == os.path.realpath(build_workspace_paths(temp_dir).state_root_dir)
+        assert payload["worktree_path"] == worktree_path
+        assert payload["worktree_diff"] == "diff --git a/app.py b/app.py"
+        assert os.path.realpath(payload["trace_path"]).startswith(
+            os.path.realpath(build_workspace_paths(temp_dir).traces_dir)
+        )
+        assert not os.path.exists(os.path.join(worktree_path, ".smolclaw"))
+        fake_ctx.cleanup.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_tui_chat_loop_worktree_uses_isolated_workspace_and_cleans_up(self, temp_dir):
+        from cli.main import DEFAULT_AGENTS_CONFIG, _tui_chat_loop
+
+        worktree_path = os.path.join(temp_dir, "isolated")
+        os.makedirs(worktree_path, exist_ok=True)
+        fake_ctx = MagicMock()
+        fake_ctx.path = worktree_path
+        fake_ctx.run_id = "run-1"
+        fake_ctx.base_repo = temp_dir
+        fake_ctx.created_by_git_worktree = True
+        fake_agent = MagicMock()
+        fake_agent.llm = MagicMock()
+        fake_agent.hook_runner = HookRunner()
+        fake_agent.session = MagicMock()
+        fake_agent.session.key = "default"
+        smol_rag = MagicMock()
+        session_manager = MagicMock()
+        fake_tui = MagicMock()
+        fake_tui.run = AsyncMock()
+
+        def fake_runtime(workspace_root, *_args, **_kwargs):
+            assert isinstance(workspace_root, WorkspaceContext)
+            assert workspace_root.root_dir == os.path.realpath(worktree_path)
+            assert workspace_root.state_root_dir == os.path.realpath(build_workspace_paths(temp_dir).state_root_dir)
+            return _fake_runtime(workspace_root, smol_rag, session_manager)
+
+        with patch("cli.main.WorktreeRunner") as mock_runner_cls, \
+            patch("cli.main._build_cli_runtime", side_effect=fake_runtime), \
+            patch("cli.main._build_default_chat_agent", return_value=fake_agent) as mock_build, \
+            patch("cli.tui.CoderTui", return_value=fake_tui) as mock_tui_cls:
+            mock_runner_cls.return_value.create.return_value = fake_ctx
+            await _tui_chat_loop(
+                "default",
+                temp_dir,
+                "model",
+                agents_config=DEFAULT_AGENTS_CONFIG,
+                worktree=True,
+            )
+
+        built_workspace = mock_build.call_args.kwargs["workspace"]
+        assert isinstance(built_workspace, WorkspaceContext)
+        assert built_workspace.root_dir == os.path.realpath(worktree_path)
+        assert built_workspace.state_root_dir == os.path.realpath(build_workspace_paths(temp_dir).state_root_dir)
+        assert mock_tui_cls.call_args.kwargs["workspace_root"] == os.path.realpath(worktree_path)
+        assert mock_tui_cls.call_args.kwargs["resolve_worktree_command"]("status").startswith("Worktree: active")
+        fake_tui.run.assert_awaited_once()
+        fake_ctx.cleanup.assert_called_once()
+
+    def test_format_trace_status_shows_latest_summary(self, temp_dir):
+        from cli.main import _format_trace_status
+
+        traces_dir = build_workspace_paths(temp_dir).traces_dir
+        trace_store = RunTraceStore(traces_dir)
+        recorder = trace_store.start_run("default")
+        recorder.append("tool.started", {"name": "run_command", "command": "pytest"})
+        recorder.append("verification.recorded", {
+            "command": "pytest",
+            "status": "passed",
+            "summary": "tests passed",
+        })
+        recorder.finish("complete", stop_reason="assistant_final")
+
+        output = _format_trace_status(traces_dir, "default")
+
+        assert f"Trace: {recorder.run_id}" in output
+        assert "Status: complete" in output
+        assert "Commands: pytest" in output
+        assert "Verification records: 1" in output
+        assert ".summary.json" in output
+
+    def test_resolve_trace_command_lists_run_summaries(self, temp_dir):
+        from cli.main import _resolve_trace_command
+
+        traces_dir = build_workspace_paths(temp_dir).traces_dir
+        trace_store = RunTraceStore(traces_dir)
+        first = trace_store.start_run("default")
+        first.finish("blocked", stop_reason="needs_approval")
+        second = trace_store.start_run("default")
+        second.append("tool.denied", {"name": "run_command", "reason": "policy"})
+        second.finish("complete", stop_reason="assistant_final")
+
+        output = _resolve_trace_command(
+            traces_dir,
+            "default",
+            "list",
+        )
+
+        assert "Run traces (2/2):" in output
+        assert f"- {second.run_id}: complete" in output
+        assert "denied=1" in output
+        assert f"- {first.run_id}: blocked" in output
+
+    def test_resolve_trace_command_shows_recent_events(self, temp_dir):
+        from cli.main import _resolve_trace_command
+
+        traces_dir = build_workspace_paths(temp_dir).traces_dir
+        trace_store = RunTraceStore(traces_dir)
+        recorder = trace_store.start_run("default")
+        recorder.append("llm.started", {"model": "gpt-test"}, turn_index=1)
+        recorder.append("tool.started", {"name": "run_command", "command": "pytest"}, iteration=2)
+        recorder.append("verification.recorded", {"status": "passed", "summary": "tests passed"})
+        recorder.finish("complete", stop_reason="assistant_final")
+
+        output = _resolve_trace_command(
+            traces_dir,
+            "default",
+            "events 3",
+        )
+
+        assert f"Trace events: {recorder.run_id}" in output
+        assert "Showing 3/5 event(s)" in output
+        assert "tool.started iter=2 name=run_command command=pytest" in output
+        assert "verification.recorded status=passed summary=tests passed" in output
+        assert "run.ended status=complete stop_reason=assistant_final" in output
+
+    def test_resolve_trace_command_replays_compact_trajectory(self, temp_dir):
+        from cli.main import _resolve_trace_command
+
+        traces_dir = build_workspace_paths(temp_dir).traces_dir
+        trace_store = RunTraceStore(traces_dir)
+        recorder = trace_store.start_run("default")
+        recorder.append("turn.started", {"message_length": 12}, turn_index=0)
+        recorder.append("llm.started", {"model": "gpt-test"}, turn_index=0, iteration=0)
+        recorder.append("tool.started", {"name": "run_command", "command": "pytest"}, iteration=0)
+        recorder.append("checkpoint.created", {
+            "checkpoint_id": "chk-1",
+            "changed_paths": ["app.py"],
+            "reason": "fix parser",
+        })
+        recorder.finish("complete", stop_reason="assistant_final")
+
+        output = _resolve_trace_command(
+            traces_dir,
+            "default",
+            f"replay {recorder.run_id}",
+        )
+
+        assert f"Trace replay: {recorder.run_id}" in output
+        assert "Status: complete" in output
+        assert "turn.started turn=0" in output
+        assert "llm.started turn=0 iter=0 model=gpt-test" in output
+        assert "tool.started iter=0 name=run_command command=pytest" in output
+        assert "checkpoint.created" in output
+        assert "checkpoint_id=chk-1" in output
+        assert "reason=fix parser" in output
+        assert "run.ended status=complete stop_reason=assistant_final" in output
+
+    def test_resolve_approval_command_shows_and_resolves_pending_request(self, temp_dir):
+        from cli.main import _resolve_approval_command
+
+        approval_store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+        request = approval_store.request(
+            "default",
+            tool_name="run_command",
+            arguments={"command": "npm install left-pad"},
+            reason="dependency changes need approval",
+            run_id="run-123",
+            matched_subject="command",
+            matched_pattern="npm install*",
+        )
+
+        status = _resolve_approval_command(approval_store, "default", "status")
+        detail = _resolve_approval_command(approval_store, "default", f"detail {request.id}")
+        approved = _resolve_approval_command(approval_store, "default", f"approve {request.id}")
+        denied = _resolve_approval_command(approval_store, "default", f"deny {request.id}")
+
+        assert request.id in status
+        assert "run_command" in status
+        assert "command:npm install*" in status
+        assert f"Approval: {request.id}" in detail
+        assert "Scope: once" in detail
+        assert "Run: run-123" in detail
+        assert "\"command\": \"npm install left-pad\"" in detail
+        assert approved == f"Approved {request.id}. Retry the same tool call to continue."
+        assert denied == f"Denied {request.id}."
+
+    def test_run_command_outputs_json(self, temp_dir):
+        from cli.main import app
+
+        async def fake_run_once(**kwargs):
+            return {
+                "session_key": kwargs["session_key"],
+                "status": "complete",
+                "response": "done",
+                "responses": ["done"],
+                "turns": 1,
+                "trace_path": None,
+                "trace_summary_path": None,
+                "ledger_path": None,
+                "stop_reason": "assistant_final",
+            }
+
+        with patch("cli.main._run_once", side_effect=fake_run_once):
+            result = CliRunner().invoke(app, ["run", "hello", "--workspace", temp_dir])
+
+        assert result.exit_code == 0
+        assert '"status": "complete"' in result.stdout
+        assert '"response": "done"' in result.stdout
+
+    def test_run_command_passes_worktree_options(self, temp_dir):
+        from cli.main import app
+
+        async def fake_run_once(**kwargs):
+            assert kwargs["worktree"] is True
+            assert kwargs["copy_dirty_worktree"] is True
+            assert kwargs["keep_worktree"] is True
+            return {
+                "session_key": kwargs["session_key"],
+                "status": "complete",
+                "response": "done",
+                "responses": ["done"],
+                "turns": 1,
+                "trace_path": None,
+                "trace_summary_path": None,
+                "ledger_path": None,
+                "stop_reason": "assistant_final",
+                "worktree_path": "/tmp/worktree",
+                "worktree_diff": "",
+            }
+
+        with patch("cli.main._run_once", side_effect=fake_run_once):
+            result = CliRunner().invoke(
+                app,
+                [
+                    "run",
+                    "hello",
+                    "--workspace",
+                    temp_dir,
+                    "--worktree",
+                    "--copy-dirty-worktree",
+                    "--keep-worktree",
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert '"worktree_path": "/tmp/worktree"' in result.stdout
+
+    def test_chat_command_passes_worktree_options(self, temp_dir):
+        from cli.main import app
+
+        async def fake_tui_chat_loop(*args, **kwargs):
+            assert kwargs["worktree"] is True
+            assert kwargs["copy_dirty_worktree"] is True
+            assert kwargs["keep_worktree"] is True
+
+        with patch("cli.main._tui_chat_loop", side_effect=fake_tui_chat_loop):
+            result = CliRunner().invoke(
+                app,
+                [
+                    "chat",
+                    "--workspace",
+                    temp_dir,
+                    "--worktree",
+                    "--copy-dirty-worktree",
+                    "--keep-worktree",
+                ],
+            )
+
+        assert result.exit_code == 0
+
+    def test_resolve_worktree_command_status_diff_apply_and_discard(self):
+        from cli.main import _InteractiveWorktreeState, _resolve_worktree_command
+
+        ctx = MagicMock()
+        ctx.created_by_git_worktree = True
+        ctx.run_id = "run-1"
+        ctx.path = "/tmp/isolated"
+        ctx.base_repo = "/repo/base"
+        ctx.diff.return_value = "diff --git a/app.py b/app.py"
+        ctx.apply_back.return_value = "Applied isolated diff to base repository."
+        state = _InteractiveWorktreeState(
+            context=ctx,
+            state_root="/repo/base",
+            keep_on_exit=True,
+        )
+
+        status = _resolve_worktree_command(state, "status")
+        diff = _resolve_worktree_command(state, "diff")
+        applied = _resolve_worktree_command(state, "apply")
+        discarded = _resolve_worktree_command(state, "discard")
+
+        assert "Worktree: active" in status
+        assert "Mode: git-worktree" in status
+        assert "Source root: /tmp/isolated" in status
+        assert "State root: /repo/base" in status
+        assert diff == "diff --git a/app.py b/app.py"
+        assert applied == "Applied isolated diff to base repository."
+        assert state.applied_count == 1
+        assert "Discard scheduled" in discarded
+        assert state.discard_on_exit is True
+
+    def test_resolve_worktree_command_without_active_worktree(self):
+        from cli.main import _resolve_worktree_command
+
+        assert _resolve_worktree_command(None, "status") == "No active isolated worktree."
+        assert _resolve_worktree_command(None, "diff") == "No active isolated worktree."
 
     def test_smolclaw_main_uses_tui_coder_harness(self):
         from cli.main import _smolclaw_main
@@ -119,8 +515,13 @@ class TestCliMultiagent:
 
         assert result.exit_code == 0
         mock_tui.assert_called_once()
-        assert mock_tui.call_args.kwargs == {}
-        assert mock_tui.call_args.args[:3] == ("s", ".", "m")
+        assert mock_tui.call_args.kwargs == {
+            "worktree": False,
+            "copy_dirty_worktree": False,
+            "keep_worktree": False,
+        }
+        assert mock_tui.call_args.args[:4] == ("s", ".", "m", None)
+        assert mock_tui.call_args.args[5] is False
         mock_run.assert_called_once_with(coro)
         coro.close()
 
@@ -655,7 +1056,108 @@ class TestCliMultiagent:
         assert "Slash commands:" in help_output
         assert "/remember <text>" in help_output
         assert "/remember-thread" in help_output
+        assert "/init" in help_output
+        assert "/trace replay" in help_output
         assert "/quit or /exit" in help_output
+        fake_agent.process.assert_not_called()
+        fake_agent.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_chat_loop_init_command_creates_project_guidance(self, temp_dir):
+        from cli.main import DEFAULT_AGENTS_CONFIG, _chat_loop
+
+        class FakePromptSession:
+            def __init__(self, **kwargs):
+                self._inputs = iter(["/init", "/quit"])
+
+            async def prompt_async(self, _prompt):
+                try:
+                    return next(self._inputs)
+                except StopIteration:
+                    raise EOFError
+
+        class FakeConsole:
+            def __init__(self):
+                self.lines = []
+
+            def status(self, *args, **kwargs):
+                return nullcontext()
+
+            def print(self, *args, **kwargs):
+                self.lines.append(" ".join(str(arg) for arg in args))
+
+        fake_console = FakeConsole()
+        fake_agent = MagicMock()
+        fake_agent.llm = MagicMock()
+        fake_agent.hook_runner = HookRunner()
+        fake_agent.close = AsyncMock()
+        fake_agent.process = AsyncMock()
+        fake_agent.session = MagicMock()
+        fake_agent.session.key = "default"
+
+        smol_rag = MagicMock()
+        session_manager = MagicMock()
+
+        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime(temp_dir, smol_rag, session_manager)), \
+            patch("cli.main.PromptSession", FakePromptSession), \
+            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
+            patch("cli.main.console", fake_console):
+            await _chat_loop("default", temp_dir, "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+
+        output = "\n".join(fake_console.lines)
+        assert "Created" in output
+        assert os.path.exists(os.path.join(temp_dir, "AGENTS.md"))
+        fake_agent.process.assert_not_called()
+        fake_agent.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_chat_loop_trace_command_shows_latest_trace(self, temp_dir):
+        from cli.main import DEFAULT_AGENTS_CONFIG, _chat_loop
+
+        class FakePromptSession:
+            def __init__(self, **kwargs):
+                self._inputs = iter(["/trace", "/quit"])
+
+            async def prompt_async(self, _prompt):
+                try:
+                    return next(self._inputs)
+                except StopIteration:
+                    raise EOFError
+
+        class FakeConsole:
+            def __init__(self):
+                self.lines = []
+
+            def status(self, *args, **kwargs):
+                return nullcontext()
+
+            def print(self, *args, **kwargs):
+                self.lines.append(" ".join(str(arg) for arg in args))
+
+        trace_store = RunTraceStore(build_workspace_paths(temp_dir).traces_dir)
+        recorder = trace_store.start_run("default")
+        recorder.finish("complete", stop_reason="assistant_final")
+        fake_console = FakeConsole()
+        fake_agent = MagicMock()
+        fake_agent.llm = MagicMock()
+        fake_agent.hook_runner = HookRunner()
+        fake_agent.close = AsyncMock()
+        fake_agent.process = AsyncMock()
+        fake_agent.session = MagicMock()
+        fake_agent.session.key = "default"
+
+        smol_rag = MagicMock()
+        session_manager = MagicMock()
+
+        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime(temp_dir, smol_rag, session_manager)), \
+            patch("cli.main.PromptSession", FakePromptSession), \
+            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
+            patch("cli.main.console", fake_console):
+            await _chat_loop("default", temp_dir, "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+
+        output = "\n".join(fake_console.lines)
+        assert f"Trace: {recorder.run_id}" in output
+        assert "Status: complete" in output
         fake_agent.process.assert_not_called()
         fake_agent.close.assert_awaited_once()
 
@@ -878,7 +1380,7 @@ class TestCliMultiagent:
     @pytest.mark.asyncio
     async def test_chat_loop_goal_run_continues_until_goal_completes(self, temp_dir):
         from cli.main import DEFAULT_AGENTS_CONFIG, _build_goal_loop_prompt, _chat_loop
-        from app.goal import GoalStore
+        from app.goal_ledger import GoalLedgerStore
 
         class FakePromptSession:
             def __init__(self, **kwargs):
@@ -901,7 +1403,10 @@ class TestCliMultiagent:
                 self.lines.append(" ".join(str(arg) for arg in args))
 
         prompt_outputs = []
-        goal_store = GoalStore(os.path.join(temp_dir, "sessions"))
+        goal_store = GoalLedgerStore(
+            os.path.join(temp_dir, "ledgers"),
+            legacy_sessions_dir=os.path.join(temp_dir, "sessions"),
+        )
 
         async def fake_process(message, on_output=None, on_event=None):
             prompt_outputs.append(message)
@@ -927,7 +1432,7 @@ class TestCliMultiagent:
         with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
             patch("cli.main.PromptSession", FakePromptSession), \
             patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
-            patch("cli.main.GoalStore", return_value=goal_store), \
+            patch("cli.main.GoalLedgerStore", return_value=goal_store), \
             patch("cli.main.console", fake_console):
             await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True, show_actions=True)
 

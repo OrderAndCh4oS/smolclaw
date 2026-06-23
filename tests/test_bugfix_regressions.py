@@ -231,7 +231,8 @@ class TestRuntimeRegressions:
     @pytest.mark.asyncio
     async def test_mix_query_keeps_metadata_only_session_content_for_episode_recall(self, temp_dir, mock_openai_llm):
         rag = _build_rag(temp_dir=temp_dir, llm=mock_openai_llm)
-        rag.rate_limited_get_completion = AsyncMock(side_effect=["{}", "final response"])
+        rag.rate_limited_get_extract_completion = AsyncMock(return_value="{}")
+        rag.rate_limited_get_query_completion = AsyncMock(return_value="final response")
         rag.query_engine.get_low_level_dataset = AsyncMock(return_value=([], [], []))
         rag.query_engine.get_high_level_dataset = AsyncMock(return_value=([], [], []))
         rag.query_engine._get_query_excerpts = AsyncMock(return_value=[
@@ -243,7 +244,7 @@ class TestRuntimeRegressions:
         result = await rag.mix_query("what did we do?", memory_type="episode")
 
         assert result == "final response"
-        context = rag.rate_limited_get_completion.await_args_list[1].kwargs["context"]
+        context = rag.rate_limited_get_query_completion.await_args.kwargs["context"]
         assert "user: shipped the feature" in context
         assert "pricing decision" not in context
         await rag.close()
@@ -251,7 +252,8 @@ class TestRuntimeRegressions:
     @pytest.mark.asyncio
     async def test_mix_query_return_metadata_uses_filtered_excerpt_ids(self, temp_dir, mock_openai_llm):
         rag = _build_rag(temp_dir=temp_dir, llm=mock_openai_llm)
-        rag.rate_limited_get_completion = AsyncMock(side_effect=["{}", "final response"])
+        rag.rate_limited_get_extract_completion = AsyncMock(return_value="{}")
+        rag.rate_limited_get_query_completion = AsyncMock(return_value="final response")
         rag.query_engine.get_low_level_dataset = AsyncMock(return_value=([], [
             {"excerpt_id": "exc-low-episode", "excerpt": "low episode", "summary": "low", "memory_type": "episode"},
             {"excerpt_id": "exc-low-decision", "excerpt": "low decision", "summary": "low", "memory_type": "decision"},
@@ -276,7 +278,8 @@ class TestRuntimeRegressions:
     @pytest.mark.asyncio
     async def test_mix_query_include_bm25_deduplicates_by_excerpt_id(self, temp_dir, mock_openai_llm):
         rag = _build_rag(temp_dir=temp_dir, llm=mock_openai_llm)
-        rag.rate_limited_get_completion = AsyncMock(side_effect=["{}", "final response"])
+        rag.rate_limited_get_extract_completion = AsyncMock(return_value="{}")
+        rag.rate_limited_get_query_completion = AsyncMock(return_value="final response")
         rag.query_engine.get_low_level_dataset = AsyncMock(return_value=([], [], []))
         rag.query_engine.get_high_level_dataset = AsyncMock(return_value=([], [], []))
         rag.query_engine._get_query_excerpts = AsyncMock(return_value=[

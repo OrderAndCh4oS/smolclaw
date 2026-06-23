@@ -10,11 +10,14 @@ from app.agent_loop import AgentLoop
 from app.behaviors import load_behaviors, resolve_behavior_names
 from app.context_builder import ContextBuilder
 from app.definitions import PROJECT_ROOT
+from app.approvals import ApprovalRequestStore
 from app.goal import GoalStore
+from app.goal_ledger import GoalLedgerStore
 from app.hooks import HookRunner, ON_AFTER_TOOL
 from app.llm import create_llm
 from app.checkpoints import CheckpointStore
 from app.model_settings import ModelSelection, RuntimeModelSettings, apply_model_selection
+from app.run_trace import RunTraceStore
 from app.session import SessionManager
 from app.tools.base import ToolRuntimeContext, normalize_tool_result
 from app.tools.middleware import HookFiringMiddleware
@@ -170,7 +173,13 @@ def build_agent_loop(
         configure_hook_runner(hook_runner)
 
     resolved_session_key = session_key or f"{config.name}-{session_key_prefix}"
-    goal_store = GoalStore(session_manager.sessions_dir) if session_manager else None
+    if session_manager and workspace is not None:
+        goal_store = GoalLedgerStore(
+            workspace.paths.ledgers_dir,
+            legacy_sessions_dir=session_manager.sessions_dir,
+        )
+    else:
+        goal_store = GoalStore(session_manager.sessions_dir) if session_manager else None
     runtime_ctx = ToolRuntimeContext(
         llm=llm,
         hook_runner=hook_runner,
@@ -183,6 +192,12 @@ def build_agent_loop(
     )
     safety_state = SafetyState(workspace=workspace)
     runtime_ctx.shared_state["safety_state"] = safety_state
+    runtime_ctx.shared_state["session_key"] = resolved_session_key
+    trace_store = RunTraceStore(workspace.paths.traces_dir) if workspace is not None else None
+    if trace_store is not None:
+        runtime_ctx.shared_state["trace_store"] = trace_store
+    if workspace is not None:
+        runtime_ctx.shared_state["approval_store"] = ApprovalRequestStore(workspace.paths.approvals_dir)
     runtime_ctx.child_agent_factory = ChildAgentFactory(
         master_registry=master_registry,
         registry_factory=registry_factory,
@@ -205,10 +220,24 @@ def build_agent_loop(
     )
     filtered_registry.use(HookFiringMiddleware(hook_runner))
 
-    # Apply permission mode and path safety restrictions.
-    from app.tools.permissions import PermissionMiddleware
-    filtered_registry.use(PermissionMiddleware(config.permission_mode, workspace=workspace))
+    # Apply permission mode, loaded policy, and path safety restrictions.
+    from app.tools.evidence import EvidenceMiddleware
+    from app.tools.policy import PolicyPermissionMiddleware, load_permission_policy
+
+    permission_policy = load_permission_policy(workspace)
+    runtime_ctx.shared_state["permission_policy"] = permission_policy
+    filtered_registry.use(PolicyPermissionMiddleware(
+        config.permission_mode,
+        workspace=workspace,
+        policy=permission_policy,
+        shared_state=runtime_ctx.shared_state,
+    ))
     filtered_registry.use(SafetyMiddleware(safety_state))
+    filtered_registry.use(EvidenceMiddleware(
+        shared_state=runtime_ctx.shared_state,
+        goal_store=goal_store,
+        session_key=resolved_session_key,
+    ))
     if workspace is not None:
         from app.tools.checkpointing import CheckpointMiddleware
 
@@ -218,6 +247,8 @@ def build_agent_loop(
             checkpoint_store,
             workspace=workspace,
             session_key=resolved_session_key,
+            shared_state=runtime_ctx.shared_state,
+            goal_store=goal_store,
         ))
 
     # Resolve skill paths
@@ -260,6 +291,8 @@ def build_agent_loop(
         goal_store=goal_store,
         safety_state=safety_state,
         model_settings=model_settings,
+        trace_store=trace_store,
+        runtime_shared_state=runtime_ctx.shared_state,
     )
     for resource in runtime_ctx.owned_resources:
         loop.add_owned_resource(resource)

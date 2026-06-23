@@ -32,6 +32,7 @@ DIRECT_MUTATION_TOOLS: Final[Set[str]] = {
     "apply_patch",
     "exec",
     "memory_store",
+    "research_source_store",
     "memory_relate",
 }
 
@@ -75,7 +76,7 @@ PERMISSION_MODES: Final[Dict[str, PermissionModeConfig]] = {
             "spawn_agent",
         }),
         blocked_capabilities=frozenset({MUTATES_STATE, DELEGATES, COMMAND_EXECUTION}),
-        capability_exempt_tools=frozenset({"memory_store"}),
+        capability_exempt_tools=frozenset({"memory_store", "research_source_store"}),
     ),
     "delegate_only": PermissionModeConfig(
         blocked_tools=frozenset(DIRECT_MUTATION_TOOLS),

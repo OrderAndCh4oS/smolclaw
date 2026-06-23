@@ -11,7 +11,32 @@ import numpy as np
 
 pytest.importorskip("nltk")
 
-from app.smol_rag import SmolRag
+from app.smol_rag import SmolRag, create_smol_rag
+
+
+class RecordingLlm:
+    def __init__(self):
+        self.completion_calls = []
+        self.embedding_calls = []
+        self.completion_model = "test-completion"
+        self.embedding_model = "test-embedding"
+
+    async def get_completion(self, query, **kwargs):
+        self.completion_calls.append({"query": query, **kwargs})
+        if kwargs.get("context"):
+            return "final response"
+        return "{}"
+
+    async def get_embedding(self, text, **kwargs):
+        self.embedding_calls.append({"text": text, **kwargs})
+        return [0.0] * 1536
+
+    async def get_embeddings(self, texts, **kwargs):
+        self.embedding_calls.append({"texts": texts, **kwargs})
+        return [[0.0] * 1536 for _ in texts]
+
+    async def close(self):
+        pass
 
 
 class TestSmolRagBaseline:
@@ -35,6 +60,110 @@ class TestSmolRagBaseline:
 
         assert rag is not None
         assert rag.llm == mock_openai_llm
+        await rag.close()
+
+
+class TestSmolRagModelRouting:
+    @pytest.mark.asyncio
+    async def test_default_memory_models_are_used_to_create_llm(self, temp_dir):
+        created = {}
+        fake_llm = RecordingLlm()
+
+        def fake_create_llm(completion_model=None, embedding_model=None, **kwargs):
+            created["completion_model"] = completion_model
+            created["embedding_model"] = embedding_model
+            created["kwargs"] = kwargs
+            return fake_llm
+
+        with patch("app.smol_rag.create_llm", side_effect=fake_create_llm):
+            rag = SmolRag(
+                db_path=os.path.join(temp_dir, "test.db"),
+                graph_path=os.path.join(temp_dir, "graph.graphml"),
+            )
+
+        assert created["completion_model"] == "gpt-5.4-mini"
+        assert created["embedding_model"] == "text-embedding-3-small"
+        assert rag.memory_extract_model == "gpt-5.4-mini"
+        assert rag.memory_query_model == "gpt-5.4"
+        await rag.close()
+
+    @pytest.mark.asyncio
+    async def test_completion_helpers_route_extract_and_query_models(self, temp_dir):
+        fake_llm = RecordingLlm()
+        rag = SmolRag(
+            llm=fake_llm,
+            db_path=os.path.join(temp_dir, "test.db"),
+            graph_path=os.path.join(temp_dir, "graph.graphml"),
+            memory_extract_model="extract-model",
+            memory_query_model="query-model",
+        )
+
+        await rag.rate_limited_get_extract_completion("extract prompt")
+        await rag.rate_limited_get_query_completion("query prompt", context="ctx")
+
+        assert fake_llm.completion_calls[0]["model"] == "extract-model"
+        assert fake_llm.completion_calls[1]["model"] == "query-model"
+        await rag.close()
+
+    @pytest.mark.asyncio
+    async def test_mix_query_uses_extract_for_keywords_and_query_for_answer(self, temp_dir):
+        fake_llm = RecordingLlm()
+        rag = SmolRag(
+            llm=fake_llm,
+            db_path=os.path.join(temp_dir, "test.db"),
+            graph_path=os.path.join(temp_dir, "graph.graphml"),
+            memory_extract_model="extract-model",
+            memory_query_model="query-model",
+        )
+        rag.query_engine.get_low_level_dataset = AsyncMock(return_value=([], [], []))
+        rag.query_engine.get_high_level_dataset = AsyncMock(return_value=([], [], []))
+        rag.query_engine._get_query_excerpts = AsyncMock(return_value=[
+            {"excerpt": "remembered context", "summary": "summary"},
+        ])
+
+        result = await rag.mix_query("what happened?")
+
+        assert result == "final response"
+        assert fake_llm.completion_calls[0]["model"] == "extract-model"
+        assert fake_llm.completion_calls[1]["model"] == "query-model"
+        assert fake_llm.completion_calls[1]["context"]
+        await rag.close()
+
+    @pytest.mark.asyncio
+    async def test_ingestion_completion_uses_extract_model(self, temp_dir):
+        fake_llm = RecordingLlm()
+        rag = SmolRag(
+            llm=fake_llm,
+            excerpt_fn=lambda content, size, overlap: ["one excerpt"],
+            db_path=os.path.join(temp_dir, "test.db"),
+            graph_path=os.path.join(temp_dir, "graph.graphml"),
+            memory_extract_model="extract-model",
+            memory_query_model="query-model",
+        )
+
+        await rag.ingestion._get_excerpt_summary("full doc", "one excerpt")
+        await rag.ingestion._extract_entities("full doc", "doc-id")
+
+        assert [call["model"] for call in fake_llm.completion_calls] == [
+            "extract-model",
+            "extract-model",
+        ]
+        await rag.close()
+
+    @pytest.mark.asyncio
+    async def test_contradiction_detector_uses_extract_model(self, temp_dir):
+        fake_llm = RecordingLlm()
+        rag = create_smol_rag(
+            llm=fake_llm,
+            db_path=os.path.join(temp_dir, "test.db"),
+            graph_path=os.path.join(temp_dir, "graph.graphml"),
+            memory_extract_model="extract-model",
+            memory_query_model="query-model",
+        )
+
+        await rag.contradiction_detector.llm("adjudicate")
+
+        assert fake_llm.completion_calls[0]["model"] == "extract-model"
         await rag.close()
 
     @pytest.mark.asyncio

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from app.reset import reset_all_stores, reset_workspace
+from app.reset import reset_all_stores, reset_workspace, reset_workspace_components
 from app.workspace import WorkspaceContext
 
 
@@ -22,6 +22,10 @@ def workspace(temp_dir):
     for subdir in (
         paths.sessions_dir,
         paths.checkpoints_dir,
+        paths.traces_dir,
+        paths.ledgers_dir,
+        paths.approvals_dir,
+        paths.evals_dir,
         paths.memory_docs_dir,
         paths.log_dir,
         paths.cache_dir,
@@ -41,14 +45,19 @@ async def test_reset_workspace_deletes_mutable_state(workspace):
     deleted = await reset_workspace(workspace)
     paths = workspace.paths
 
-    assert not Path(paths.sqlite_db_path).exists()
+    assert Path(paths.sqlite_db_path).exists()
     assert not Path(paths.sqlite_db_path + "-wal").exists()
     assert not Path(paths.sqlite_db_path + "-shm").exists()
-    assert not Path(paths.kg_db_path).exists()
+    assert Path(paths.kg_db_path).exists()
+    assert "graphml" in Path(paths.kg_db_path).read_text()
 
     for subdir in (
         paths.sessions_dir,
         paths.checkpoints_dir,
+        paths.traces_dir,
+        paths.ledgers_dir,
+        paths.approvals_dir,
+        paths.evals_dir,
         paths.memory_docs_dir,
         paths.log_dir,
         paths.cache_dir,
@@ -56,6 +65,71 @@ async def test_reset_workspace_deletes_mutable_state(workspace):
         assert list(Path(subdir).iterdir()) == []
 
     assert deleted
+
+
+@pytest.mark.asyncio
+async def test_reset_components_clears_logs_only(workspace):
+    paths = workspace.paths
+
+    deleted = await reset_workspace_components(workspace, {"logs"})
+
+    assert deleted
+    assert list(Path(paths.log_dir).iterdir()) == []
+    assert Path(paths.sqlite_db_path).exists()
+    assert Path(paths.kg_db_path).exists()
+    assert list(Path(paths.memory_docs_dir).iterdir()) != []
+
+
+@pytest.mark.asyncio
+async def test_reset_components_clears_journals_only(workspace):
+    memory_dir = Path(workspace.paths.memory_docs_dir)
+    journal = memory_dir / "journal-session.md"
+    journal_backup = memory_dir / "journal-session.md.bak"
+    memory = memory_dir / "mem-preference.md"
+    journal.write_text("journal")
+    journal_backup.write_text("old journal")
+    memory.write_text("memory")
+
+    deleted = await reset_workspace_components(workspace, {"journals"})
+
+    assert deleted
+    assert not journal.exists()
+    assert not journal_backup.exists()
+    assert memory.exists()
+
+
+@pytest.mark.asyncio
+async def test_reset_components_clears_memories_except_journals(workspace):
+    memory_dir = Path(workspace.paths.memory_docs_dir)
+    journal = memory_dir / "journal-session.md"
+    memory = memory_dir / "mem-preference.md"
+    session_export = memory_dir / "session-default.md"
+    journal.write_text("journal")
+    memory.write_text("memory")
+    session_export.write_text("session")
+
+    deleted = await reset_workspace_components(workspace, {"memories"})
+
+    assert deleted
+    assert journal.exists()
+    assert not memory.exists()
+    assert not session_export.exists()
+
+
+@pytest.mark.asyncio
+async def test_reset_components_clears_rag_and_kg_independently(workspace):
+    paths = workspace.paths
+
+    deleted = await reset_workspace_components(workspace, {"rag", "kg"})
+
+    assert deleted
+    assert Path(paths.sqlite_db_path).exists()
+    assert not Path(paths.sqlite_db_path + "-wal").exists()
+    assert not Path(paths.sqlite_db_path + "-shm").exists()
+    assert Path(paths.kg_db_path).exists()
+    assert "graphml" in Path(paths.kg_db_path).read_text()
+    assert list(Path(paths.memory_docs_dir).iterdir()) != []
+    assert list(Path(paths.log_dir).iterdir()) != []
 
 
 @pytest.mark.asyncio

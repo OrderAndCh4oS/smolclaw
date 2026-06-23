@@ -1,0 +1,13 @@
+id: python_parser_bug
+prompt: Fix parse_int_list so it accepts comma-separated integers with optional surrounding whitespace and ignores empty segments.
+verification:
+  - python -m pytest
+required_evidence:
+  - git_status
+  - read_target
+  - test_command
+allowed_files:
+  - parser.py
+forbidden_files:
+  - .env
+expected_status: complete

@@ -1,10 +1,13 @@
 import asyncio
 import inspect
+import json
 import logging
 import os
 import select
 import sys
 import threading
+import uuid
+from dataclasses import dataclass
 from typing import Optional
 
 import typer
@@ -12,18 +15,21 @@ import typer
 # Suppress noisy loggers from printing to console
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("mini-rag").propagate = False
 from rich.console import Console
 from rich.markdown import Markdown
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 
+from app import diagnostics
 from app.agent_loop import AgentLoop
+from app.approvals import ApprovalRequestStore, format_approval_detail, format_approval_status
+from app.bootstrap import init_project_guidance
 from app.checkpoints import CheckpointStore
 from app.definitions import (
-    AGENT_MODEL, WORKSPACE_DIR,
+    AGENT_MODEL, WORKSPACE_DIR, build_workspace_paths,
 )
-from app.goal import GoalState, GoalStore
+from app.goal import GoalState
+from app.goal_ledger import GoalLedgerStore
 from app.logger import clear_logs
 from app.model_settings import (
     apply_subagent_model_selection,
@@ -34,6 +40,15 @@ from app.model_settings import (
     parse_model_selection,
     subagent_model_status,
 )
+from app.run_views import (
+    compact_trace_value,
+    format_goal_status,
+    format_trace_event_line,
+    format_trace_events,
+    format_trace_list,
+    format_trace_replay,
+    format_trace_status,
+)
 from app.runtime_builder import build_runtime_services
 from app.session_export_hook import SessionExportHook
 from app.runtime import RuntimeEnvironment, build_configured_agent, build_master_registry
@@ -42,6 +57,8 @@ from app.smol_rag import SmolRag
 from app.tools.memory_tools import MemoryRecallTool, MemoryStoreTool
 from app.utilities import ensure_dir
 from app.workspace import WorkspaceContext
+from app.run_trace import RunTraceStore
+from app.worktree import WorktreeRunner
 
 try:
     import termios
@@ -106,7 +123,20 @@ SLASH_COMMANDS_HELP = "\n".join([
     "  / or /help or /commands  Show this command list",
     "  /remember <text>         Store a memory immediately",
     "  /remember-thread         Export the current chat thread to memory",
+    "  /init                    Create or update AGENTS.md guidance",
     "  /logs                    Show workspace diagnostics log paths",
+    "  /trace                   Show the latest run trace summary",
+    "  /trace list              List run trace summaries",
+    "  /trace events [run] [n]  Show recent run trace events",
+    "  /trace replay [run]      Replay a compact run trajectory",
+    "  /worktree status         Show isolated worktree status",
+    "  /worktree diff           Show isolated changes",
+    "  /worktree apply          Apply isolated changes to the base repo",
+    "  /worktree discard        Discard isolated changes when the session exits",
+    "  /approval status         Show pending approval requests",
+    "  /approval detail <id>    Show one approval request in detail",
+    "  /approval approve <id>   Approve one exact pending tool call",
+    "  /approval deny <id>      Deny one pending tool call",
     "  /details                 Toggle recent tool/thinking activity",
     "  /model [model] [effort]  Show or switch gpt-5.4/gpt-5.5 model",
     "  /undo                    Undo the last SmolClaw file checkpoint",
@@ -196,16 +226,179 @@ def _print_usage_summary(console, session_usage):
 
 
 def _format_goal_status(goal: GoalState | None) -> str:
-    if goal is None:
-        return "No goal is set for this session."
-    lines = [
-        f"Goal: {goal.objective}",
-        f"Status: {goal.status}",
-        f"Turns: {goal.turn_count}",
-    ]
-    if goal.note:
-        lines.append(f"Note: {goal.note}")
-    return "\n".join(lines)
+    return format_goal_status(goal)
+
+
+def _format_trace_status(traces_dir: str, session_key: str, *, goal_store=None) -> str:
+    return format_trace_status(RunTraceStore(traces_dir), session_key, goal_store=goal_store)
+
+
+def _format_bootstrap_result(result) -> str:
+    if result.created:
+        return f"Created {result.path}"
+    if result.updated:
+        return f"Updated {result.path}"
+    return f"AGENTS.md is already up to date: {result.path}"
+
+
+def _format_trace_list(traces_dir: str, session_key: str, *, limit: int = 10) -> str:
+    return format_trace_list(RunTraceStore(traces_dir), session_key, limit=limit)
+
+
+def _compact_trace_value(value: object, *, max_length: int = 120) -> str:
+    return compact_trace_value(value, max_length=max_length)
+
+
+def _format_trace_event_line(event) -> str:
+    return format_trace_event_line(event)
+
+
+def _format_trace_events(
+    traces_dir: str,
+    session_key: str,
+    *,
+    run_id: str | None = None,
+    limit: int = 20,
+) -> str:
+    return format_trace_events(
+        RunTraceStore(traces_dir),
+        session_key,
+        run_id=run_id,
+        limit=limit,
+    )
+
+
+def _format_trace_replay(
+    traces_dir: str,
+    session_key: str,
+    *,
+    run_id: str | None = None,
+) -> str:
+    return format_trace_replay(RunTraceStore(traces_dir), session_key, run_id=run_id)
+
+
+def _parse_trace_events_args(command_arg: str) -> tuple[str | None, int]:
+    parts = command_arg.split()
+    run_id: str | None = None
+    limit = 20
+    if not parts:
+        return run_id, limit
+    if parts[0].isdigit():
+        return run_id, int(parts[0])
+    run_id = parts[0]
+    if len(parts) > 1:
+        if not parts[1].isdigit():
+            raise ValueError("Usage: /trace events [run_id] [limit]")
+        limit = int(parts[1])
+    return run_id, limit
+
+
+def _resolve_trace_command(
+    traces_dir: str,
+    session_key: str,
+    command_arg: str,
+    *,
+    goal_store=None,
+) -> str:
+    parts = command_arg.split(maxsplit=1)
+    subcommand = parts[0] if parts else "status"
+    sub_arg = parts[1].strip() if len(parts) > 1 else ""
+    if subcommand in ("", "status"):
+        return _format_trace_status(traces_dir, session_key, goal_store=goal_store)
+    if subcommand == "list":
+        return _format_trace_list(traces_dir, session_key)
+    if subcommand == "events":
+        try:
+            run_id, limit = _parse_trace_events_args(sub_arg)
+        except ValueError as exc:
+            return str(exc)
+        return _format_trace_events(traces_dir, session_key, run_id=run_id, limit=limit)
+    if subcommand == "replay":
+        return _format_trace_replay(traces_dir, session_key, run_id=sub_arg or None)
+    return "Usage: /trace status|list|events [run_id] [limit]|replay [run_id]"
+
+
+def _resolve_approval_command(
+    approval_store: ApprovalRequestStore,
+    session_key: str,
+    command_arg: str,
+) -> str:
+    parts = command_arg.split(maxsplit=1)
+    subcommand = parts[0] if parts else "status"
+    approval_id = parts[1].strip() if len(parts) > 1 else ""
+    if subcommand in ("", "status"):
+        return format_approval_status(approval_store, session_key)
+    if subcommand == "detail":
+        if not approval_id:
+            return "Usage: /approval detail <id>"
+        return format_approval_detail(approval_store, session_key, approval_id)
+    if subcommand not in {"approve", "deny"}:
+        return "Usage: /approval status|detail <id>|approve <id>|deny <id>"
+    if not approval_id:
+        return f"Usage: /approval {subcommand} <id>"
+    try:
+        if subcommand == "approve":
+            request = approval_store.approve(session_key, approval_id)
+            return f"Approved {request.id}. Retry the same tool call to continue."
+        request = approval_store.deny(session_key, approval_id)
+        return f"Denied {request.id}."
+    except KeyError as exc:
+        return f"Error: {exc}"
+
+
+@dataclass
+class _InteractiveWorktreeState:
+    context: object
+    state_root: str
+    keep_on_exit: bool = False
+    discard_on_exit: bool = False
+    applied_count: int = 0
+
+
+def _worktree_mode_name(worktree_ctx) -> str:
+    return "git-worktree" if worktree_ctx.created_by_git_worktree else "dirty-copy"
+
+
+def _format_worktree_status(worktree_state: _InteractiveWorktreeState | None) -> str:
+    if worktree_state is None:
+        return "No active isolated worktree."
+    ctx = worktree_state.context
+    return "\n".join([
+        "Worktree: active",
+        f"Mode: {_worktree_mode_name(ctx)}",
+        f"Run id: {ctx.run_id}",
+        f"Source root: {ctx.path}",
+        f"State root: {worktree_state.state_root}",
+        f"Base repo: {ctx.base_repo}",
+        f"Keep on exit: {'yes' if worktree_state.keep_on_exit else 'no'}",
+        f"Discard on exit: {'yes' if worktree_state.discard_on_exit else 'no'}",
+        f"Apply count: {worktree_state.applied_count}",
+    ])
+
+
+def _resolve_worktree_command(
+    worktree_state: _InteractiveWorktreeState | None,
+    command_arg: str,
+) -> str:
+    parts = command_arg.split(maxsplit=1)
+    subcommand = parts[0] if parts else "status"
+    if subcommand in ("", "status"):
+        return _format_worktree_status(worktree_state)
+    if worktree_state is None:
+        return "No active isolated worktree."
+    ctx = worktree_state.context
+    if subcommand == "diff":
+        diff = ctx.diff()
+        return diff if diff.strip() else "No isolated changes."
+    if subcommand == "apply":
+        result = ctx.apply_back()
+        if result.startswith("Applied "):
+            worktree_state.applied_count += 1
+        return result
+    if subcommand == "discard":
+        worktree_state.discard_on_exit = True
+        return "Discard scheduled. The isolated worktree will be removed when the session exits."
+    return "Usage: /worktree status|diff|apply|discard"
 
 
 def _parse_goal_run_count(value: str) -> int:
@@ -243,6 +436,10 @@ def _format_undo_result(result) -> str:
 
 def _workspace_context(workspace_root: str) -> WorkspaceContext:
     return WorkspaceContext.from_root(workspace_root).ensure_dirs()
+
+
+def _state_root_for_workspace(workspace_root: str) -> str:
+    return build_workspace_paths(workspace_root).state_root_dir
 
 
 def _resolve_user_path(workspace: WorkspaceContext, path: str) -> str:
@@ -428,7 +625,7 @@ def _format_research_loop_exit(
     return "Research loop finished."
 
 
-def _build_cli_tool_registry(smol_rag: SmolRag, workspace: str, llm=None,
+def _build_cli_tool_registry(smol_rag: SmolRag, workspace: str | WorkspaceContext, llm=None,
                               agent_configs=None, session_manager=None, enable_subagents: bool = False):
     runtime = _build_cli_runtime(
         workspace,
@@ -446,7 +643,7 @@ def _build_multiagent(
     agents_config_path: str,
     session_key: str,
     smol_rag: SmolRag,
-    workspace: str,
+    workspace: str | WorkspaceContext,
     session_manager: SessionManager,
     auto_export: bool,
     child_loop_registrar=None,
@@ -478,7 +675,7 @@ def _build_default_chat_agent(
     session_key: str,
     model: str,
     smol_rag: SmolRag,
-    workspace: str,
+    workspace: str | WorkspaceContext,
     session_manager: SessionManager,
     child_loop_registrar=None,
 ) -> AgentLoop:
@@ -513,11 +710,165 @@ def chat(
     model: str = typer.Option(AGENT_MODEL, "--model", "-m", help="LLM model to use"),
     agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Agent name from agents.yaml"),
     agents_config: str = typer.Option(DEFAULT_AGENTS_CONFIG, "--agents-config", help="Path to agents YAML config"),
-    auto_export: bool = typer.Option(True, "--auto-export/--no-auto-export", help="Auto-export session on close"),
+    auto_export: bool = typer.Option(False, "--auto-export/--no-auto-export", help="Auto-export session to memory on close"),
     show_actions: bool = typer.Option(False, "--show-actions/--hide-actions", help="Show recent tool activity details while the agent works"),
+    worktree: bool = typer.Option(False, "--worktree", help="Run chat in an isolated git worktree"),
+    copy_dirty_worktree: bool = typer.Option(False, "--copy-dirty-worktree", help="Copy a dirty workspace instead of refusing worktree mode"),
+    keep_worktree: bool = typer.Option(False, "--keep-worktree", help="Keep the isolated worktree after chat exits"),
 ):
     """Start an interactive chat session."""
-    asyncio.run(_tui_chat_loop(session_key, workspace, model, agent, agents_config, auto_export, show_actions))
+    asyncio.run(_tui_chat_loop(
+        session_key,
+        workspace,
+        model,
+        agent,
+        agents_config,
+        auto_export,
+        show_actions,
+        worktree=worktree,
+        copy_dirty_worktree=copy_dirty_worktree,
+        keep_worktree=keep_worktree,
+    ))
+
+
+@app.command(name="run")
+def run_once(
+    prompt: str = typer.Argument(..., help="Prompt to run non-interactively"),
+    session_key: str = typer.Option("default", "--session", "-s", help="Session key"),
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root"),
+    model: str = typer.Option(AGENT_MODEL, "--model", "-m", help="LLM model to use"),
+    agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Agent name from agents.yaml"),
+    agents_config: str = typer.Option(DEFAULT_AGENTS_CONFIG, "--agents-config", help="Path to agents YAML config"),
+    max_turns: int = typer.Option(1, "--max-turns", help="Maximum goal-loop turns when --goal is set"),
+    goal: bool = typer.Option(False, "--goal", help="Treat the prompt as a goal and run goal-loop turns"),
+    auto_export: bool = typer.Option(False, "--auto-export/--no-auto-export", help="Auto-export session to memory on close"),
+    worktree: bool = typer.Option(False, "--worktree", help="Run in an isolated git worktree"),
+    copy_dirty_worktree: bool = typer.Option(False, "--copy-dirty-worktree", help="Copy a dirty workspace instead of refusing worktree mode"),
+    keep_worktree: bool = typer.Option(False, "--keep-worktree", help="Keep the isolated worktree after the run"),
+):
+    """Run one non-interactive agent prompt and print a JSON result."""
+    if max_turns < 1:
+        raise typer.BadParameter("--max-turns must be greater than 0")
+    result = asyncio.run(_run_once(
+        prompt=prompt,
+        session_key=session_key,
+        workspace=workspace,
+        model=model,
+        agent_name=agent,
+        agents_config=agents_config,
+        max_turns=max_turns,
+        goal=goal,
+        auto_export=auto_export,
+        worktree=worktree,
+        copy_dirty_worktree=copy_dirty_worktree,
+        keep_worktree=keep_worktree,
+    ))
+    console.print(json.dumps(result, indent=2, sort_keys=True))
+
+
+@app.command(name="init")
+def init_command(
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root"),
+):
+    """Create or update SmolClaw guidance in AGENTS.md."""
+    result = init_project_guidance(_workspace_context(workspace))
+    console.print(_format_bootstrap_result(result))
+
+
+async def _run_once(
+    *,
+    prompt: str,
+    session_key: str,
+    workspace: str,
+    model: str,
+    agent_name: Optional[str] = None,
+    agents_config: str = DEFAULT_AGENTS_CONFIG,
+    max_turns: int = 1,
+    goal: bool = False,
+    auto_export: bool = False,
+    worktree: bool = False,
+    copy_dirty_worktree: bool = False,
+    keep_worktree: bool = False,
+) -> dict:
+    worktree_ctx = None
+    active_workspace: str | WorkspaceContext = workspace
+    if worktree:
+        worktree_ctx = WorktreeRunner().create(
+            workspace,
+            f"smolclaw-{uuid.uuid4().hex[:12]}",
+            copy_dirty=copy_dirty_worktree,
+        )
+        active_workspace = WorkspaceContext.from_root(worktree_ctx.path, state_root=_state_root_for_workspace(workspace))
+    agent = None
+    smol_rag = None
+    responses: list[str] = []
+    try:
+        runtime = _build_cli_runtime(active_workspace)
+        workspace_ctx = runtime.workspace
+        paths = workspace_ctx.paths
+        smol_rag = runtime.smol_rag
+        session_manager = runtime.session_manager
+        goal_store = GoalLedgerStore(paths.ledgers_dir, legacy_sessions_dir=paths.sessions_dir)
+        if agent_name:
+            agent = _build_multiagent(
+                agent_name,
+                agents_config,
+                session_key,
+                smol_rag,
+                active_workspace,
+                session_manager,
+                auto_export,
+            )
+        else:
+            agent = _build_default_chat_agent(
+                agents_config_path=agents_config,
+                session_key=session_key,
+                model=model,
+                smol_rag=smol_rag,
+                workspace=active_workspace,
+                session_manager=session_manager,
+            )
+        if goal:
+            current_goal = goal_store.load(agent.session.key)
+            if current_goal is None or current_goal.status != "active":
+                goal_store.start(agent.session.key, prompt)
+            for _ in range(max_turns):
+                current_goal = goal_store.load(agent.session.key)
+                if current_goal is None or current_goal.status != "active":
+                    break
+                responses.append(await agent.process(_build_goal_loop_prompt()))
+        else:
+            responses.append(await agent.process(prompt))
+        trace_store = RunTraceStore(paths.traces_dir)
+        latest_trace = trace_store.latest_summary(agent.session.key)
+        current_goal = goal_store.load(agent.session.key)
+        return {
+            "session_key": agent.session.key,
+            "status": current_goal.status if current_goal is not None else "complete",
+            "response": responses[-1] if responses else "",
+            "responses": responses,
+            "turns": len(responses),
+            "trace_path": latest_trace.trace_path if latest_trace is not None else None,
+            "trace_summary_path": (
+                trace_store.summary_path(agent.session.key, latest_trace.run_id)
+                if latest_trace is not None else None
+            ),
+            "ledger_path": (
+                os.path.join(paths.ledgers_dir, f"{agent.session.key}.ledger.json")
+                if current_goal is not None else None
+            ),
+            "stop_reason": latest_trace.stop_reason if latest_trace is not None else None,
+            "worktree_path": worktree_ctx.path if worktree_ctx is not None else None,
+            "worktree_diff": worktree_ctx.diff() if worktree_ctx is not None else None,
+        }
+    finally:
+        if agent is not None:
+            await agent.close()
+        try:
+            await _close_async_resource(smol_rag)
+        finally:
+            if worktree_ctx is not None and not keep_worktree:
+                worktree_ctx.cleanup()
 
 
 async def _tui_chat_loop(
@@ -526,17 +877,35 @@ async def _tui_chat_loop(
     model: str,
     agent_name: Optional[str] = None,
     agents_config: str = DEFAULT_AGENTS_CONFIG,
-    auto_export: bool = True,
+    auto_export: bool = False,
     show_actions: bool = False,
     display_label: Optional[str] = None,
+    worktree: bool = False,
+    copy_dirty_worktree: bool = False,
+    keep_worktree: bool = False,
 ):
-    runtime = _build_cli_runtime(workspace)
+    worktree_state: _InteractiveWorktreeState | None = None
+    active_workspace: str | WorkspaceContext = workspace
+    if worktree:
+        worktree_ctx = WorktreeRunner().create(
+            workspace,
+            f"smolclaw-{uuid.uuid4().hex[:12]}",
+            copy_dirty=copy_dirty_worktree,
+        )
+        active_workspace = WorkspaceContext.from_root(worktree_ctx.path, state_root=_state_root_for_workspace(workspace))
+        worktree_state = _InteractiveWorktreeState(
+            context=worktree_ctx,
+            state_root=_state_root_for_workspace(workspace),
+            keep_on_exit=keep_worktree,
+        )
+    runtime = _build_cli_runtime(active_workspace)
     workspace_ctx = runtime.workspace
     paths = workspace_ctx.paths
     smol_rag = runtime.smol_rag
     session_manager = runtime.session_manager
-    goal_store = GoalStore(paths.sessions_dir)
+    goal_store = GoalLedgerStore(paths.ledgers_dir, legacy_sessions_dir=paths.sessions_dir)
     checkpoint_store = CheckpointStore(paths.checkpoints_dir)
+    approval_store = ApprovalRequestStore(paths.approvals_dir)
     memory_dir = ensure_dir(paths.memory_docs_dir)
     register_session_end_hooks = _make_session_end_hook_registrar(paths, memory_dir, auto_export)
 
@@ -546,7 +915,7 @@ async def _tui_chat_loop(
             agents_config,
             session_key,
             smol_rag,
-            workspace,
+            active_workspace,
             session_manager,
             auto_export,
             child_loop_registrar=register_session_end_hooks,
@@ -558,7 +927,7 @@ async def _tui_chat_loop(
             session_key=session_key,
             model=model,
             smol_rag=smol_rag,
-            workspace=workspace,
+            workspace=active_workspace,
             session_manager=session_manager,
             child_loop_registrar=register_session_end_hooks,
         )
@@ -587,7 +956,9 @@ async def _tui_chat_loop(
         session_export_hook=session_export_hook,
         smol_rag=smol_rag,
         checkpoint_store=checkpoint_store,
+        approval_store=approval_store,
         workspace_root=workspace_ctx.root_dir,
+        log_dir=paths.log_dir,
         model=model,
         auto_export=auto_export,
         show_actions=show_actions,
@@ -595,10 +966,23 @@ async def _tui_chat_loop(
         format_goal_status=_format_goal_status,
         parse_goal_run_count=_parse_goal_run_count,
         build_goal_loop_prompt=_build_goal_loop_prompt,
+        format_trace_status=lambda session_key, command_arg: _resolve_trace_command(
+            paths.traces_dir,
+            session_key,
+            command_arg,
+            goal_store=goal_store,
+        ),
+        resolve_approval_command=lambda session_key, arg: _resolve_approval_command(approval_store, session_key, arg),
+        resolve_worktree_command=lambda arg: _resolve_worktree_command(worktree_state, arg),
+        initialize_project=lambda: _format_bootstrap_result(init_project_guidance(workspace_ctx)),
         format_action_event=_format_action_event,
         label=label,
     )
-    await tui.run()
+    try:
+        await tui.run()
+    finally:
+        if worktree_state is not None and (worktree_state.discard_on_exit or not worktree_state.keep_on_exit):
+            worktree_state.context.cleanup()
 
 
 async def _chat_loop(
@@ -607,17 +991,35 @@ async def _chat_loop(
     model: str,
     agent_name: Optional[str] = None,
     agents_config: str = DEFAULT_AGENTS_CONFIG,
-    auto_export: bool = True,
+    auto_export: bool = False,
     show_actions: bool = True,
     display_label: Optional[str] = None,
+    worktree: bool = False,
+    copy_dirty_worktree: bool = False,
+    keep_worktree: bool = False,
 ):
-    runtime = _build_cli_runtime(workspace)
+    worktree_state: _InteractiveWorktreeState | None = None
+    active_workspace: str | WorkspaceContext = workspace
+    if worktree:
+        worktree_ctx = WorktreeRunner().create(
+            workspace,
+            f"smolclaw-{uuid.uuid4().hex[:12]}",
+            copy_dirty=copy_dirty_worktree,
+        )
+        active_workspace = WorkspaceContext.from_root(worktree_ctx.path, state_root=_state_root_for_workspace(workspace))
+        worktree_state = _InteractiveWorktreeState(
+            context=worktree_ctx,
+            state_root=_state_root_for_workspace(workspace),
+            keep_on_exit=keep_worktree,
+        )
+    runtime = _build_cli_runtime(active_workspace)
     workspace_ctx = runtime.workspace
     paths = workspace_ctx.paths
     smol_rag = runtime.smol_rag
     session_manager = runtime.session_manager
-    goal_store = GoalStore(paths.sessions_dir)
+    goal_store = GoalLedgerStore(paths.ledgers_dir, legacy_sessions_dir=paths.sessions_dir)
     checkpoint_store = CheckpointStore(paths.checkpoints_dir)
+    approval_store = ApprovalRequestStore(paths.approvals_dir)
     memory_dir = ensure_dir(paths.memory_docs_dir)
     register_session_end_hooks = _make_session_end_hook_registrar(paths, memory_dir, auto_export)
 
@@ -627,7 +1029,7 @@ async def _chat_loop(
             agents_config,
             session_key,
             smol_rag,
-            workspace,
+            active_workspace,
             session_manager,
             auto_export,
             child_loop_registrar=register_session_end_hooks,
@@ -639,7 +1041,7 @@ async def _chat_loop(
             session_key=session_key,
             model=model,
             smol_rag=smol_rag,
-            workspace=workspace,
+            workspace=active_workspace,
             session_manager=session_manager,
             child_loop_registrar=register_session_end_hooks,
         )
@@ -719,10 +1121,34 @@ async def _chat_loop(
                 session_manager.save(agent.session)
                 console.print("[dim]Session cleared.[/dim]")
                 continue
+            if user_input == "/init":
+                console.print(f"[dim]{_format_bootstrap_result(init_project_guidance(workspace_ctx))}[/dim]")
+                continue
             if user_input == "/undo":
                 result = checkpoint_store.undo_last(session_key=agent.session.key)
                 style = "dim" if result.ok else "red"
                 console.print(f"[{style}]{_format_undo_result(result)}[/{style}]")
+                continue
+            if command == "/trace":
+                trace_output = _resolve_trace_command(
+                    paths.traces_dir,
+                    agent.session.key,
+                    command_arg,
+                    goal_store=goal_store,
+                )
+                console.print(
+                    f"[dim]{trace_output}[/dim]"
+                )
+                continue
+            if command == "/approval":
+                console.print(
+                    f"[dim]{_resolve_approval_command(approval_store, agent.session.key, command_arg)}[/dim]"
+                )
+                continue
+            if command == "/worktree":
+                console.print(
+                    f"[dim]{_resolve_worktree_command(worktree_state, command_arg)}[/dim]"
+                )
                 continue
             if command == "/model":
                 if not command_arg:
@@ -822,12 +1248,23 @@ async def _chat_loop(
                 console.print(f"[dim]{result}[/dim]")
                 continue
             if command == "/remember-thread":
-                with console.status("[bold cyan]remembering current thread...[/bold cyan]"):
-                    await session_export_hook({
-                        "session_key": agent.session.key,
-                        "session": agent.session,
-                    })
-                console.print("[dim]Current thread exported to memory.[/dim]")
+                console.print("[dim]Exporting current thread to memory. This can take a while on long sessions.[/dim]")
+                try:
+                    with console.status("[bold cyan]remembering current thread...[/bold cyan]"):
+                        await session_export_hook({
+                            "session_key": agent.session.key,
+                            "session": agent.session,
+                        })
+                    console.print("[dim]Current thread exported to memory.[/dim]")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    incident_id = diagnostics.record_exception(
+                        exc,
+                        boundary="cli.remember_thread",
+                        session_key=getattr(getattr(agent, "session", None), "key", ""),
+                    )
+                    console.print(f"[red]{diagnostics.user_error_message(incident_id, str(exc))}[/red]")
                 continue
 
             await _run_agent_turn(user_input)
@@ -841,7 +1278,11 @@ async def _chat_loop(
                 await agent.close()
             _print_usage_summary(console, agent.session_usage)
         finally:
-            await _close_async_resource(smol_rag)
+            try:
+                await _close_async_resource(smol_rag)
+            finally:
+                if worktree_state is not None and (worktree_state.discard_on_exit or not worktree_state.keep_on_exit):
+                    worktree_state.context.cleanup()
 
 
 @app.command(name="research-loop")
@@ -853,7 +1294,7 @@ def research_loop(
     session_key: str = typer.Option("research-loop", "--session", "-s", help="Session key used across research runs"),
     interval: float = typer.Option(300.0, "--interval", "-i", help="Seconds to wait between research runs"),
     max_runs: Optional[int] = typer.Option(None, "--max-runs", help="Optional limit on research cycles"),
-    auto_export: bool = typer.Option(True, "--auto-export/--no-auto-export", help="Auto-export session on close"),
+    auto_export: bool = typer.Option(False, "--auto-export/--no-auto-export", help="Auto-export session to memory on close"),
     show_actions: bool = typer.Option(True, "--show-actions/--hide-actions", help="Show live tool activity while the agent works"),
 ):
     """Run recurring automated research until stopped."""
@@ -884,7 +1325,7 @@ async def _research_loop(
     session_key: str = "research-loop",
     interval: float = 300.0,
     max_runs: Optional[int] = None,
-    auto_export: bool = True,
+    auto_export: bool = False,
     show_actions: bool = True,
 ):
     runtime = _build_cli_runtime(workspace)
@@ -1140,8 +1581,8 @@ async def _recall(query: str, mode: str, days: float, workspace: str):
 
 @app.command(name="index-sessions")
 def index_sessions(
-    sessions_dir: Optional[str] = typer.Option(None, "--sessions-dir", help="Sessions directory (defaults to <workspace>/stores/sessions)"),
-    memory_dir: Optional[str] = typer.Option(None, "--memory-dir", help="Memory docs directory (defaults to <workspace>/memory)"),
+    sessions_dir: Optional[str] = typer.Option(None, "--sessions-dir", help="Sessions directory (defaults to <workspace>/.smolclaw/stores/sessions)"),
+    memory_dir: Optional[str] = typer.Option(None, "--memory-dir", help="Memory docs directory (defaults to <workspace>/.smolclaw/memory)"),
     workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root (isolated store, memory, research)"),
 ):
     """Index all past sessions into SmolRAG for recall."""
@@ -1169,21 +1610,45 @@ async def _index_sessions(sessions_dir: Optional[str], memory_dir: Optional[str]
 def reset(
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
     workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root (isolated store, memory, research)"),
+    logs: bool = typer.Option(False, "--logs", help="Clear workspace logs only"),
+    memories: bool = typer.Option(False, "--memories", help="Clear memory documents except journals"),
+    journals: bool = typer.Option(False, "--journals", help="Clear journal memory documents"),
+    rag: bool = typer.Option(False, "--rag", help="Clear SmolRAG SQLite state"),
+    kg: bool = typer.Option(False, "--kg", help="Clear knowledge graph state"),
+    all_state: bool = typer.Option(False, "--all", help="Clear all mutable workspace state"),
 ):
-    """Wipe all persistent data (memories, sessions, indexes) for a full reset."""
+    """Wipe all persistent data, or selected state such as logs, memories, RAG, and KG."""
+    components = {
+        name
+        for name, enabled in (
+            ("logs", logs),
+            ("memories", memories),
+            ("journals", journals),
+            ("rag", rag),
+            ("kg", kg),
+        )
+        if enabled
+    }
+    full_reset = all_state or not components
+    target = "all mutable workspace state" if full_reset else ", ".join(sorted(components))
     if not force:
         confirm = typer.confirm(
-            "This will delete all memories, sessions, and indexes. Continue?"
+            f"This will delete {target}. Continue?"
         )
         if not confirm:
             raise typer.Abort()
-    asyncio.run(_reset(workspace))
+    asyncio.run(_reset(workspace, components=None if full_reset else components))
 
 
-async def _reset(workspace: str):
-    from app.reset import reset_workspace
+async def _reset(workspace: str, components: set[str] | None = None):
+    from app.reset import reset_workspace, reset_workspace_components
 
-    deleted = await reset_workspace(_workspace_context(workspace))
+    workspace_ctx = _workspace_context(workspace)
+    deleted = (
+        await reset_workspace(workspace_ctx)
+        if components is None
+        else await reset_workspace_components(workspace_ctx, components)
+    )
     if deleted:
         for line in deleted:
             console.print(f"  [red]{line}[/red]")
@@ -1195,7 +1660,7 @@ async def _reset(workspace: str):
 @app.command(name="clear-logs")
 def clear_logs_command(
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
-    logs_dir: Optional[str] = typer.Option(None, "--logs-dir", help="Logs directory (defaults to <workspace>/stores/logs)"),
+    logs_dir: Optional[str] = typer.Option(None, "--logs-dir", help="Logs directory (defaults to <workspace>/.smolclaw/stores/logs)"),
     workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root (isolated store, memory, research)"),
 ):
     """Delete log files without touching memories, sessions, or indexes."""
@@ -1223,7 +1688,7 @@ def _smolclaw_main(
     workspace: str = typer.Option(".", "--workspace", "-w", help="Workspace root"),
     model: str = typer.Option(AGENT_MODEL, "--model", "-m", help="LLM model to use"),
     agents_config: str = typer.Option(DEFAULT_AGENTS_CONFIG, "--agents-config", help="Path to agents YAML config"),
-    auto_export: bool = typer.Option(True, "--auto-export/--no-auto-export", help="Auto-export session on close"),
+    auto_export: bool = typer.Option(False, "--auto-export/--no-auto-export", help="Auto-export session to memory on close"),
     show_actions: bool = typer.Option(False, "--show-actions/--hide-actions", help="Show recent tool activity details while the agent works"),
 ):
     """Start SmolClaw's coding harness in the current workspace."""

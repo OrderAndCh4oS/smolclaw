@@ -9,12 +9,21 @@ class WorkspaceContext:
     paths: WorkspacePaths
 
     @classmethod
-    def from_root(cls, workspace_root: str | None = None) -> "WorkspaceContext":
-        return cls(build_workspace_paths(workspace_root))
+    def from_root(
+        cls,
+        workspace_root: str | None = None,
+        *,
+        state_root: str | None = None,
+    ) -> "WorkspaceContext":
+        return cls(build_workspace_paths(workspace_root, state_root=state_root))
 
     @property
     def root_dir(self) -> str:
         return os.path.realpath(self.paths.root_dir)
+
+    @property
+    def state_root_dir(self) -> str:
+        return os.path.realpath(self.paths.state_root_dir)
 
     def ensure_dirs(self) -> "WorkspaceContext":
         ensure_workspace_dirs(self.paths)

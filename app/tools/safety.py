@@ -17,6 +17,15 @@ STATUS_TOOLS = {"git_status"}
 FILESYSTEM_WRITE_TOOLS = {"write_file", "edit_file", "apply_patch"}
 
 
+@dataclass(frozen=True)
+class ExplorationEvidence:
+    kind: str
+    path: str | None = None
+    query: str | None = None
+    tool_call_id: str | None = None
+    timestamp: float | None = None
+
+
 @dataclass
 class SafetyState:
     """Tracks what the agent has inspected for the active task."""
@@ -26,6 +35,7 @@ class SafetyState:
     did_git_status: bool = False
     did_search: bool = False
     read_paths: set[str] = field(default_factory=set)
+    evidence: list[ExplorationEvidence] = field(default_factory=list)
     max_identical_tool_calls: int = 3
     _last_tool_call_key: str | None = None
     _last_tool_call_count: int = 0
@@ -37,6 +47,7 @@ class SafetyState:
         self.did_git_status = False
         self.did_search = False
         self.read_paths.clear()
+        self.evidence.clear()
         self._last_tool_call_key = None
         self._last_tool_call_count = 0
 
@@ -60,12 +71,19 @@ class SafetyState:
             return
         if tool_name in STATUS_TOOLS or self._is_status_command(tool_name, arguments):
             self.did_git_status = True
+            self.evidence.append(ExplorationEvidence(kind="status", path=self._evidence_path(tool_name, arguments)))
         if tool_name in SEARCH_TOOLS:
             self.did_search = True
+            self.evidence.append(ExplorationEvidence(
+                kind="diff" if tool_name == "git_diff" else "search",
+                path=self._evidence_path(tool_name, arguments),
+                query=str(arguments.get("query") or arguments.get("pattern") or ""),
+            ))
         if tool_name in READ_TOOLS:
             path = self.normalize_path(arguments.get("path"))
             if path:
                 self.read_paths.add(path)
+                self.evidence.append(ExplorationEvidence(kind="read", path=path))
 
     def normalize_path(self, path: str | None) -> str | None:
         if not path:
@@ -85,6 +103,22 @@ class SafetyState:
         normalized = self.normalize_path(path)
         return bool(normalized and normalized in self.read_paths)
 
+    def has_relevant_exploration(self, path: str | None) -> bool:
+        target = self.normalize_path(path)
+        if not target:
+            return False
+        parent = target if os.path.isdir(target) else os.path.dirname(target)
+        for item in self.evidence:
+            if not item.path:
+                continue
+            evidence_path = os.path.realpath(item.path)
+            if item.kind == "read" and evidence_path == target:
+                return True
+            if item.kind in {"search", "diff"}:
+                if self._path_contains(evidence_path, target) or self._path_contains(evidence_path, parent):
+                    return True
+        return False
+
     def exploration_errors(self) -> list[str]:
         errors = []
         if not self.did_git_status:
@@ -96,6 +130,20 @@ class SafetyState:
     def _is_status_command(self, tool_name: str, arguments: dict[str, Any]) -> bool:
         command = str(arguments.get("command") or "").strip()
         return tool_name == "run_command" and command in {"git status", "git status --short", "git status --porcelain"}
+
+    def _evidence_path(self, tool_name: str, arguments: dict[str, Any]) -> str | None:
+        if tool_name in {"find_files", "grep_search", "list_dir"}:
+            return self.normalize_path(arguments.get("path") or ".")
+        if tool_name == "git_diff":
+            return self.normalize_path(arguments.get("path") or arguments.get("cwd") or ".")
+        if tool_name == "git_status" or self._is_status_command(tool_name, arguments):
+            return self.normalize_path(arguments.get("cwd") or ".")
+        return None
+
+    def _path_contains(self, root: str, candidate: str) -> bool:
+        root = os.path.realpath(root)
+        candidate = os.path.realpath(candidate)
+        return candidate == root or candidate.startswith(root + os.sep)
 
     def _tool_call_key(self, tool_name: str, arguments: dict[str, Any]) -> str:
         payload = json.dumps(
@@ -137,6 +185,10 @@ class SafetyMiddleware:
             return None
 
         errors = self.state.exploration_errors()
+        targets = self._target_paths(tool_name, arguments)
+        for path in targets:
+            if not self.state.has_relevant_exploration(path):
+                errors.append(f"inspect target path or parent directory first: {path}")
         unread_paths = self._unread_existing_targets(tool_name, arguments)
         for path in unread_paths:
             errors.append(f"read target file first: {path}")
@@ -171,6 +223,14 @@ class SafetyMiddleware:
                 for kind, path in self._patch_targets(arguments.get("patch_text") or "")
                 if kind in {"update", "delete"} and not self.state.has_read_path(path)
             ]
+        return []
+
+    def _target_paths(self, tool_name: str, arguments: dict[str, Any]) -> list[str]:
+        if tool_name in {"write_file", "edit_file"}:
+            path = arguments.get("path")
+            return [path] if path else []
+        if tool_name == "apply_patch":
+            return [path for _, path in self._patch_targets(arguments.get("patch_text") or "")]
         return []
 
     def _patch_targets(self, patch_text: str) -> list[tuple[str, str]]:

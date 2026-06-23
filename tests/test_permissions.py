@@ -4,9 +4,18 @@ import os
 
 import pytest
 
+from app.approvals import ApprovalRequestStore
 from app.tools.base import Tool, ToolCallPolicy
 from app.tools.middleware import MiddlewareChain
 from app.tools.permissions import PERMISSION_BLOCKED, PermissionMiddleware
+from app.tools.policy import (
+    PermissionPolicy,
+    PermissionRule,
+    PolicyPermissionMiddleware,
+    baseline_policy_for_mode,
+    load_permission_policy,
+)
+from app.run_trace import RunTraceStore
 from app.workspace import WorkspaceContext
 
 
@@ -40,6 +49,264 @@ class PolicyTool(FakeTool):
         if self._policy_fn is not None:
             return self._policy_fn(arguments or {})
         return self._policy or ToolCallPolicy()
+
+
+class TestPolicyPermissionMiddleware:
+    @pytest.mark.asyncio
+    async def test_policy_denies_command_pattern(self):
+        policy = PermissionPolicy(rules=(
+            PermissionRule(
+                subject="command",
+                pattern="npm install*",
+                action="deny",
+                reason="dependency installs require review",
+            ),
+        ))
+        chain = MiddlewareChain([PolicyPermissionMiddleware("full", policy=policy)])
+
+        result = await chain.run(FakeTool("run_command"), {"command": "npm install left-pad"})
+
+        assert result.startswith("Error:")
+        assert "dependency installs require review" in result
+
+    @pytest.mark.asyncio
+    async def test_policy_ask_blocks_with_approval_required(self):
+        policy = PermissionPolicy(rules=(
+            PermissionRule(
+                subject="path",
+                pattern="../shared/*",
+                action="ask",
+                reason="external shared path",
+            ),
+        ))
+        chain = MiddlewareChain([PolicyPermissionMiddleware("full", policy=policy)])
+
+        result = await chain.run(FakeTool("read_file"), {"path": "../shared/config.json"})
+
+        assert result.startswith("Error: Approval required")
+        assert "external shared path" in result
+
+    @pytest.mark.asyncio
+    async def test_policy_ask_creates_pending_approval_and_allows_approved_exact_retry(self, temp_dir):
+        approval_store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+        shared_state = {
+            "approval_store": approval_store,
+            "session_key": "session-a",
+        }
+        policy = PermissionPolicy(rules=(
+            PermissionRule(
+                subject="command",
+                pattern="npm install*",
+                action="ask",
+                reason="dependency installs require review",
+            ),
+        ))
+        chain = MiddlewareChain([
+            PolicyPermissionMiddleware("full", policy=policy, shared_state=shared_state),
+        ])
+
+        first = await chain.run(FakeTool("run_command"), {"command": "npm install left-pad"})
+        pending = approval_store.list("session-a", status="pending")
+        approval_store.approve("session-a", pending[0].id)
+        second = await chain.run(FakeTool("run_command"), {"command": "npm install left-pad"})
+        third = await chain.run(FakeTool("run_command"), {"command": "npm install left-pad"})
+
+        assert "Approval id: apr-" in first
+        assert len(pending) == 1
+        assert pending[0].scope == "once"
+        assert pending[0].requested_action == "ask"
+        assert pending[0].matched_subject == "command"
+        assert pending[0].matched_pattern == "npm install*"
+        assert second == "run_command executed"
+        assert third.startswith("Error: Approval required")
+
+    @pytest.mark.asyncio
+    async def test_policy_approved_call_does_not_allow_changed_arguments(self, temp_dir):
+        approval_store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+        shared_state = {
+            "approval_store": approval_store,
+            "session_key": "session-a",
+        }
+        policy = PermissionPolicy(rules=(
+            PermissionRule(subject="command", pattern="npm install*", action="ask"),
+        ))
+        chain = MiddlewareChain([
+            PolicyPermissionMiddleware("full", policy=policy, shared_state=shared_state),
+        ])
+
+        await chain.run(FakeTool("run_command"), {"command": "npm install left-pad"})
+        pending = approval_store.list("session-a", status="pending")
+        approval_store.approve("session-a", pending[0].id)
+        changed = await chain.run(FakeTool("run_command"), {"command": "npm install is-odd"})
+
+        assert changed.startswith("Error: Approval required")
+        assert len(approval_store.list("session-a", status="pending")) == 1
+
+    @pytest.mark.asyncio
+    async def test_policy_cannot_override_secret_hard_deny(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        policy = PermissionPolicy(rules=(
+            PermissionRule(subject="path", pattern=".env", action="allow"),
+        ))
+        chain = MiddlewareChain([
+            PolicyPermissionMiddleware("full", workspace=workspace, policy=policy),
+        ])
+
+        result = await chain.run(FakeTool("read_file"), {"path": ".env"})
+
+        assert result.startswith("Error:")
+        assert "secret path" in result
+
+    @pytest.mark.asyncio
+    async def test_policy_cannot_override_mode_deny(self):
+        policy = PermissionPolicy(rules=(
+            PermissionRule(subject="tool", pattern="write_file", action="allow"),
+        ))
+        chain = MiddlewareChain([PolicyPermissionMiddleware("plan", policy=policy)])
+
+        result = await chain.run(FakeTool("write_file"), {"path": "allowed.txt"})
+
+        assert result.startswith("Error:")
+        assert "'plan'" in result
+
+    @pytest.mark.asyncio
+    async def test_policy_emits_permission_decision_trace(self, temp_dir):
+        trace_store = RunTraceStore(os.path.join(temp_dir, "traces"))
+        recorder = trace_store.start_run("session-a")
+        shared_state = {"trace_recorder": recorder}
+        policy = PermissionPolicy(rules=(
+            PermissionRule(subject="tool", pattern="read_file", action="allow", reason="ok"),
+        ))
+        chain = MiddlewareChain([
+            PolicyPermissionMiddleware("full", policy=policy, shared_state=shared_state),
+        ])
+
+        result = await chain.run(FakeTool("read_file"), {"path": "README.md"})
+        recorder.finish("complete", stop_reason="test")
+
+        assert result == "read_file executed"
+        events = trace_store.load_events("session-a", recorder.run_id)
+        decisions = [event for event in events if event.event == "permission.decided"]
+        assert decisions[0].data["action"] == "allow"
+        assert decisions[0].data["source"] == "rule"
+        assert decisions[0].data["matched_subject"] == "tool"
+        assert decisions[0].data["matched_pattern"] == "read_file"
+
+    @pytest.mark.asyncio
+    async def test_policy_ask_traces_approval_metadata(self, temp_dir):
+        approval_store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+        trace_store = RunTraceStore(os.path.join(temp_dir, "traces"))
+        recorder = trace_store.start_run("session-a")
+        shared_state = {
+            "approval_store": approval_store,
+            "session_key": "session-a",
+            "trace_recorder": recorder,
+        }
+        policy = PermissionPolicy(rules=(
+            PermissionRule(
+                subject="command",
+                pattern="npm install*",
+                action="ask",
+                reason="dependency installs require review",
+            ),
+        ))
+        chain = MiddlewareChain([
+            PolicyPermissionMiddleware("full", policy=policy, shared_state=shared_state),
+        ])
+
+        first = await chain.run(FakeTool("run_command"), {"command": "npm install left-pad"})
+        pending = approval_store.list("session-a", status="pending")
+        approval_store.approve("session-a", pending[0].id)
+        second = await chain.run(FakeTool("run_command"), {"command": "npm install left-pad"})
+        recorder.finish("complete", stop_reason="test")
+
+        assert first.startswith("Error: Approval required")
+        assert second == "run_command executed"
+        events = trace_store.load_events("session-a", recorder.run_id)
+        requested = [event for event in events if event.event == "approval.requested"][0]
+        resolved = [event for event in events if event.event == "approval.resolved"][0]
+        assert requested.data["approval_id"] == pending[0].id
+        assert requested.data["scope"] == "once"
+        assert requested.data["matched_subject"] == "command"
+        assert requested.data["matched_pattern"] == "npm install*"
+        assert requested.data["arguments_hash"] == pending[0].arguments_hash
+        assert resolved.data["approval_id"] == pending[0].id
+        assert resolved.data["scope"] == "once"
+
+    def test_baseline_policy_for_mode_exports_mode_blocks(self):
+        policy = baseline_policy_for_mode("plan")
+        tool_rules = {rule.pattern for rule in policy.rules if rule.subject == "tool"}
+
+        assert "write_file" in tool_rules
+        assert policy.default_action == "allow"
+
+    def test_load_permission_policy_reads_workspace_file(self, temp_dir, monkeypatch):
+        monkeypatch.delenv("SMOLCLAW_PERMISSION_POLICY", raising=False)
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        policy_dir = os.path.join(temp_dir, ".smolclaw")
+        os.makedirs(policy_dir, exist_ok=True)
+        with open(os.path.join(policy_dir, "permissions.yaml"), "w", encoding="utf-8") as handle:
+            handle.write(
+                "rules:\n"
+                "  - subject: command\n"
+                "    pattern: npm install*\n"
+                "    action: ask\n"
+                "    reason: dependency changes need approval\n"
+            )
+
+        policy = load_permission_policy(workspace, include_user=False)
+
+        assert len(policy.rules) == 1
+        assert policy.rules[0].subject == "command"
+        assert policy.rules[0].action == "ask"
+
+    def test_load_permission_policy_never_reads_agents_md(self, temp_dir, monkeypatch):
+        monkeypatch.delenv("SMOLCLAW_PERMISSION_POLICY", raising=False)
+        with open(os.path.join(temp_dir, "AGENTS.md"), "w", encoding="utf-8") as handle:
+            handle.write(
+                "default_action: deny\n"
+                "rules:\n"
+                "  - subject: tool\n"
+                "    pattern: read_file\n"
+                "    action: deny\n"
+            )
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+
+        policy = load_permission_policy(workspace, include_user=False)
+
+        assert policy.default_action == "allow"
+        assert policy.rules == ()
+
+    def test_load_permission_policy_uses_user_rules_before_workspace_rules(self, temp_dir, monkeypatch):
+        monkeypatch.delenv("SMOLCLAW_PERMISSION_POLICY", raising=False)
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        user_policy = os.path.join(temp_dir, "user-permissions.yaml")
+        with open(user_policy, "w", encoding="utf-8") as handle:
+            handle.write(
+                "rules:\n"
+                "  - subject: tool\n"
+                "    pattern: read_file\n"
+                "    action: allow\n"
+                "    reason: user override\n"
+            )
+        policy_dir = os.path.join(temp_dir, ".smolclaw")
+        os.makedirs(policy_dir, exist_ok=True)
+        with open(os.path.join(policy_dir, "permissions.yaml"), "w", encoding="utf-8") as handle:
+            handle.write(
+                "rules:\n"
+                "  - subject: tool\n"
+                "    pattern: read_file\n"
+                "    action: deny\n"
+                "    reason: project deny\n"
+            )
+
+        policy = load_permission_policy(
+            workspace,
+            explicit_paths=(user_policy,),
+            include_user=False,
+        )
+
+        assert [rule.action for rule in policy.rules] == ["allow", "deny"]
 
 
 class TestFullMode:
@@ -404,6 +671,7 @@ class TestPermissionBlockedMapping:
             "edit_file",
             "exec",
             "memory_store",
+            "research_source_store",
             "memory_relate",
             "sequential_pipeline",
             "fanout_pipeline",
@@ -437,6 +705,7 @@ class TestPermissionBlockedMapping:
             "edit_file",
             "exec",
             "memory_store",
+            "research_source_store",
             "memory_relate",
         }
         assert PERMISSION_BLOCKED["delegate_only"] == expected

@@ -42,6 +42,16 @@ For the roadmap, see [docs/reliability-roadmap.md](docs/reliability-roadmap.md).
 - Constrained command tools for project checks.
 - Git status and diff helpers.
 - Checkpoints for file mutations and `/undo` for restoring the last SmolClaw change.
+- Permission policies with exact-call approval commands:
+  - `/approval status`
+  - `/approval approve <id>`
+  - `/approval deny <id>`
+- Run trace inspection:
+  - `/trace`
+  - `/trace list`
+  - `/trace events [run_id] [limit]`
+  - `/trace replay [run_id]`
+- Project bootstrap with `/init` or `smolclaw init`.
 - Goal commands:
   - `/goal start ...`
   - `/goal run N`
@@ -70,6 +80,14 @@ OPENAI_API_KEY=...
 ANTHROPIC_API_KEY=...
 ```
 
+Optional SmolRAG memory model defaults:
+
+```bash
+MEMORY_EXTRACT_MODEL=gpt-5.4-mini
+MEMORY_QUERY_MODEL=gpt-5.4
+EMBEDDING_MODEL=text-embedding-3-small
+```
+
 Then run:
 
 ```bash
@@ -89,11 +107,15 @@ Inside the TUI:
 /model gpt-5.5 medium
 /model subagents gpt-5.5 medium
 /undo
+/approval status
+/approval approve apr-...
 /goal start Add a regression test for the parser
 /goal run 3
 /goal status
 /quit
 ```
+
+Sessions are not exported to memory on shutdown by default. Use `/remember-thread` for an explicit session export, or start with `--auto-export` when you intentionally want close-time memory export.
 
 Model compatibility:
 
@@ -111,9 +133,19 @@ run the relevant tests
 make this a goal and work through it
 ```
 
+Reset examples:
+
+```bash
+smolclaw reset --force --logs
+smolclaw reset --force --journals
+smolclaw reset --force --memories
+smolclaw reset --force --rag --kg
+smolclaw reset --force --all
+```
+
 ## Workspaces And State
 
-The active project directory is the workspace for local file tools. Runtime state is stored under the project-owned state layout rather than mixed into arbitrary user files.
+The active project directory is the workspace for local file tools. Runtime state is stored under `.smolclaw/` in that project rather than mixed into the repository root.
 
 For workspace behavior and reset semantics, see [docs/workspaces.md](docs/workspaces.md).
 
@@ -121,6 +153,7 @@ For workspace behavior and reset semantics, see [docs/workspaces.md](docs/worksp
 
 The maintained runtime architecture doc is [docs/architecture-runtime.md](docs/architecture-runtime.md).
 The supporting research for the architecture and roadmap is [docs/research-agentic-coding-harnesses.md](docs/research-agentic-coding-harnesses.md).
+The next-phase implementation design is [docs/next-phase-implementation-design.md](docs/next-phase-implementation-design.md).
 
 At a high level:
 
@@ -141,16 +174,17 @@ python -m pytest -q
 ```
 
 Tests use mocked model paths where possible and should not require live provider keys for normal unit coverage.
+Agent eval tasks can be run with `scripts/run_agent_eval.py` in `mock`, `recorded`, or opt-in `live` mode. Pass multiple task directories to emit a suite report with aggregate check rates, failure classes, recommended actions, and optional score deltas from `--baseline`.
 
 ## Current Reliability Work
 
-The next major work is tracked in [docs/reliability-roadmap.md](docs/reliability-roadmap.md). The highest-priority items are:
+The next major work is tracked in [docs/reliability-roadmap.md](docs/reliability-roadmap.md) and [docs/next-phase-implementation-design.md](docs/next-phase-implementation-design.md). The highest-priority items are:
 
-1. Add a goal ledger with acceptance criteria and verification evidence.
-2. Add a local agent-eval harness.
-3. Add worktree or sandbox isolation for risky or remote-origin work.
-4. Add configurable approval workflows beyond the current hard-deny secret/external-path policy.
-5. Keep TUI transcript, status, logs, traces, and errors isolated as features grow.
+1. Harden shared run presentation across `/trace`, `/goal status`, eval reports, non-interactive JSON, and TUI drawers.
+2. Expand the eval suite with realistic fixtures and CI score-delta reporting.
+3. Harden worktree dirty-copy behavior and add richer apply-back review.
+4. Improve approval UX while keeping exact-call approvals as the safe default.
+5. Tune target-aware safety using eval-backed fixtures before tightening heuristics.
 
 ## Non-Goals For Now
 

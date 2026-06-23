@@ -88,6 +88,10 @@ class McpFileWriteTool(McpToolBase):
             "properties": {
                 "path": {"type": "string", "description": "Path to the file"},
                 "content": {"type": "string", "description": "Content to write"},
+                "reason": {
+                    "type": "string",
+                    "description": "Short reason for this mutation, recorded in trace and ledger evidence",
+                },
             },
             "required": ["path", "content"],
         }
@@ -121,6 +125,10 @@ class McpEditFileTool(McpToolBase):
                 "path": {"type": "string", "description": "File path to edit"},
                 "old_text": {"type": "string", "description": "Text to find"},
                 "new_text": {"type": "string", "description": "Replacement text"},
+                "reason": {
+                    "type": "string",
+                    "description": "Short reason for this mutation, recorded in trace and ledger evidence",
+                },
             },
             "required": ["path", "old_text", "new_text"],
         }

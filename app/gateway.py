@@ -15,9 +15,7 @@ from app.hooks import ON_SESSION_END
 from app.lifecycle_hooks import ContradictionExpiryHook
 from app.runtime import build_configured_agent
 from app.runtime_builder import build_runtime_services
-from app.session_export_hook import SessionExportHook
 from app.smol_rag import SmolRag
-from app.utilities import ensure_dir
 from app.workspace import WorkspaceContext
 
 logger = logging.getLogger("smolclaw.gateway")
@@ -259,8 +257,6 @@ class Gateway:
         config = configs["default"]
         paths = self._workspace_ctx.paths
 
-        memory_dir = ensure_dir(paths.memory_docs_dir)
-
         def register_session_end_hooks(loop):
             from app.usage import UsagePersistHook
 
@@ -268,12 +264,6 @@ class Gateway:
             rag = getattr(loop, "smol_rag", None)
             if rag is None:
                 return
-
-            loop.hook_runner.on(ON_SESSION_END, SessionExportHook(
-                smol_rag=rag,
-                llm=loop.llm,
-                memory_dir=memory_dir,
-            ))
             if getattr(rag, "contradiction_detector", None):
                 loop.hook_runner.on(
                     ON_SESSION_END,

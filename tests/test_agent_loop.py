@@ -7,8 +7,13 @@ import pytest
 from app.agent_loop import AgentLoop
 from app.context_builder import ContextBuilder
 from app.goal import GoalStore
+from app.run_trace import RunTraceStore
 from app.session import Session, SessionManager
-from app.tools.base import ToolResult
+from app.tools.base import (
+    ACTIVE_TOOL_CALL_ID_STATE_KEY,
+    ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY,
+    ToolResult,
+)
 from app.tools.registry import ToolRegistry
 from app.tools.base import Tool, ToolCallPolicy
 from app.tools.permissions import FILESYSTEM_WRITE
@@ -62,6 +67,32 @@ class MemoryLookupTool(Tool):
         )
 
 
+class SharedStateProbeTool(Tool):
+    def __init__(self, shared_state):
+        self.shared_state = shared_state
+        self.observed_tool_trace_event_id = None
+        self.observed_tool_call_id = None
+
+    @property
+    def name(self) -> str:
+        return "probe_shared_state"
+
+    @property
+    def description(self) -> str:
+        return "Probe shared runtime state."
+
+    @property
+    def parameters(self) -> dict:
+        return {"type": "object", "properties": {}}
+
+    async def execute(self, **kwargs) -> str:
+        self.observed_tool_trace_event_id = self.shared_state.get(
+            ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY,
+        )
+        self.observed_tool_call_id = self.shared_state.get(ACTIVE_TOOL_CALL_ID_STATE_KEY)
+        return "probed"
+
+
 class FakeEditTool(Tool):
     @property
     def name(self) -> str:
@@ -89,6 +120,23 @@ def _make_tool_call(name, arguments):
         "name": name,
         "arguments": arguments,
     }
+
+
+def test_summarize_tool_arguments_hashes_patch_and_content_values():
+    patch = "*** Update File: app.py\n-old\n+new\n"
+    summary = AgentLoop.summarize_tool_arguments({
+        "path": "app.py",
+        "patch_text": patch,
+        "content": "secret body",
+        "command": "pytest",
+    })
+
+    assert summary["path"] == "app.py"
+    assert summary["command"] == "pytest"
+    assert summary["patch_text"].startswith(f"<{len(patch)} chars sha256=")
+    assert summary["content"].startswith("<11 chars sha256=")
+    assert "old" not in summary["patch_text"]
+    assert "secret body" not in summary["content"]
 
 
 class TestAgentLoop:
@@ -213,6 +261,109 @@ class TestAgentLoop:
         assert llm.get_tool_completion.call_count == 2
 
     @pytest.mark.asyncio
+    async def test_process_writes_run_trace_for_tool_turn(self, temp_dir):
+        llm = MagicMock()
+        llm.completion_model = "gpt-test"
+        llm.get_tool_completion = AsyncMock(side_effect=[
+            {
+                "content": None,
+                "tool_calls": [_make_tool_call("echo", {"text": "hi"})],
+                "has_tool_calls": True,
+            },
+            {
+                "content": "Done echoing",
+                "tool_calls": None,
+                "has_tool_calls": False,
+            },
+        ])
+
+        registry = ToolRegistry()
+        registry.register(EchoTool())
+        session = Session(key="trace-tool-turn")
+        trace_store = RunTraceStore(os.path.join(temp_dir, "traces"))
+        loop = AgentLoop(
+            llm=llm,
+            tool_registry=registry,
+            context_builder=ContextBuilder(),
+            session=session,
+            session_manager=SessionManager(temp_dir),
+            trace_store=trace_store,
+        )
+
+        result = await loop.process("do echo")
+
+        assert result == "Done echoing"
+        session_trace_dir = trace_store.session_dir(session.key)
+        summaries = [name for name in os.listdir(session_trace_dir) if name.endswith(".summary.json")]
+        assert len(summaries) == 1
+        run_id = summaries[0].removesuffix(".summary.json")
+        events = trace_store.load_events(session.key, run_id)
+        event_names = [event.event for event in events]
+        assert event_names == [
+            "run.started",
+            "turn.started",
+            "llm.started",
+            "llm.ended",
+            "tool.started",
+            "tool.ended",
+            "llm.started",
+            "llm.ended",
+            "turn.ended",
+            "run.ended",
+        ]
+        summary = trace_store.load_summary(session.key, run_id)
+        assert summary is not None
+        assert summary.status == "complete"
+        assert summary.stop_reason == "assistant_final"
+        assert summary.model == "gpt-test"
+        assert summary.tool_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_process_sets_active_tool_trace_event_during_tool_execution(self, temp_dir):
+        llm = MagicMock()
+        llm.get_tool_completion = AsyncMock(side_effect=[
+            {
+                "content": None,
+                "tool_calls": [_make_tool_call("probe_shared_state", {})],
+                "has_tool_calls": True,
+            },
+            {
+                "content": "done",
+                "tool_calls": None,
+                "has_tool_calls": False,
+            },
+        ])
+        shared_state = {}
+        probe = SharedStateProbeTool(shared_state)
+        registry = ToolRegistry()
+        registry.register(probe)
+        session = Session(key="active-tool-trace-event")
+        trace_store = RunTraceStore(os.path.join(temp_dir, "traces"))
+        loop = AgentLoop(
+            llm=llm,
+            tool_registry=registry,
+            context_builder=ContextBuilder(),
+            session=session,
+            session_manager=SessionManager(temp_dir),
+            trace_store=trace_store,
+            runtime_shared_state=shared_state,
+        )
+
+        await loop.process("probe")
+
+        run_id = next(
+            name.removesuffix(".summary.json")
+            for name in os.listdir(trace_store.session_dir(session.key))
+            if name.endswith(".summary.json")
+        )
+        events = trace_store.load_events(session.key, run_id)
+        tool_started = next(event for event in events if event.event == "tool.started")
+        assert probe.observed_tool_trace_event_id == tool_started.event_id
+        assert probe.observed_tool_call_id == "call_1"
+        assert ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY not in shared_state
+        assert ACTIVE_TOOL_CALL_ID_STATE_KEY not in shared_state
+
+    @pytest.mark.asyncio
     async def test_process_safety_blocks_edit_first_tool_call(self, temp_dir):
         with open(os.path.join(temp_dir, "app.py"), "w") as f:
             f.write("print('hi')\n")
@@ -262,6 +413,64 @@ class TestAgentLoop:
             if message.get("role") == "tool"
         ]
         assert "safety gate blocked" in tool_messages[-1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_process_trace_records_safety_block(self, temp_dir):
+        with open(os.path.join(temp_dir, "app.py"), "w") as f:
+            f.write("print('hi')\n")
+        llm = MagicMock()
+        calls = 0
+
+        async def fake_completion(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return {
+                    "content": None,
+                    "tool_calls": [
+                        _make_tool_call(
+                            "edit_file",
+                            {"path": "app.py", "old_text": "hi", "new_text": "bye"},
+                        ),
+                    ],
+                    "has_tool_calls": True,
+                }
+            return {
+                "content": "blocked",
+                "tool_calls": None,
+                "has_tool_calls": False,
+            }
+
+        llm.get_tool_completion = AsyncMock(side_effect=fake_completion)
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        safety_state = SafetyState(workspace=workspace)
+        registry = ToolRegistry()
+        registry.register(FakeEditTool())
+        registry.use(SafetyMiddleware(safety_state))
+        session = Session(key="trace-safety-block")
+        trace_store = RunTraceStore(os.path.join(temp_dir, "traces"))
+        loop = AgentLoop(
+            llm=llm,
+            tool_registry=registry,
+            context_builder=ContextBuilder(),
+            session=session,
+            session_manager=SessionManager(temp_dir),
+            safety_state=safety_state,
+            trace_store=trace_store,
+        )
+
+        await loop.process("change app.py")
+
+        summary_name = next(
+            name for name in os.listdir(trace_store.session_dir(session.key))
+            if name.endswith(".summary.json")
+        )
+        run_id = summary_name.removesuffix(".summary.json")
+        events = trace_store.load_events(session.key, run_id)
+        assert "safety.blocked" in [event.event for event in events]
+        summary = trace_store.load_summary(session.key, run_id)
+        assert summary is not None
+        assert summary.denied_tool_calls == 1
 
     @pytest.mark.asyncio
     async def test_process_max_iterations(self, temp_dir):

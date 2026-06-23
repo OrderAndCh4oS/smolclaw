@@ -119,6 +119,85 @@ class TestSafetyMiddleware:
         assert "read target file first: app.py" in result
 
     @pytest.mark.asyncio
+    async def test_unrelated_search_does_not_unlock_target_edit(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        os.makedirs(os.path.join(temp_dir, "src"), exist_ok=True)
+        os.makedirs(os.path.join(temp_dir, "docs"), exist_ok=True)
+        with open(os.path.join(temp_dir, "src", "app.py"), "w") as f:
+            f.write("print('hi')\n")
+        _, chain = _chain(workspace)
+
+        await chain.run(FakeTool("git_status"), {})
+        await chain.run(FakeTool("grep_search"), {"path": "docs", "query": "hi"})
+        result = await chain.run(
+            FakeTool("edit_file", ToolCallPolicy(mutates_state=True, tags=frozenset({FILESYSTEM_WRITE}))),
+            {"path": "src/app.py", "old_text": "hi", "new_text": "bye"},
+        )
+
+        assert result.startswith("Error: safety gate blocked")
+        assert "inspect target path or parent directory first: src/app.py" in result
+
+    @pytest.mark.asyncio
+    async def test_adding_new_file_requires_parent_directory_evidence(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        os.makedirs(os.path.join(temp_dir, "src"), exist_ok=True)
+        _, chain = _chain(workspace)
+
+        await chain.run(FakeTool("git_status"), {})
+        await chain.run(FakeTool("grep_search"), {"path": "docs", "query": "new"})
+        blocked = await chain.run(
+            FakeTool("write_file", ToolCallPolicy(mutates_state=True, tags=frozenset({FILESYSTEM_WRITE}))),
+            {"path": "src/new.py", "content": "print('new')\n"},
+        )
+        await chain.run(FakeTool("list_dir"), {"path": "src"})
+        allowed = await chain.run(
+            FakeTool("write_file", ToolCallPolicy(mutates_state=True, tags=frozenset({FILESYSTEM_WRITE}))),
+            {"path": "src/new.py", "content": "print('new')\n"},
+        )
+
+        assert blocked.startswith("Error: safety gate blocked")
+        assert "inspect target path or parent directory first: src/new.py" in blocked
+        assert allowed == "write_file ok"
+
+    @pytest.mark.asyncio
+    async def test_apply_patch_checks_all_targets(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        os.makedirs(os.path.join(temp_dir, "src"), exist_ok=True)
+        with open(os.path.join(temp_dir, "src", "app.py"), "w") as f:
+            f.write("print('hi')\n")
+        with open(os.path.join(temp_dir, "src", "other.py"), "w") as f:
+            f.write("print('other')\n")
+        _, chain = _chain(workspace)
+        patch = "\n".join([
+            "*** Begin Patch",
+            "*** Update File: src/app.py",
+            "@@",
+            "-print('hi')",
+            "+print('bye')",
+            "*** Delete File: src/other.py",
+            "*** Add File: src/new.py",
+            "+print('new')",
+            "*** End Patch",
+        ])
+
+        await chain.run(FakeTool("git_status"), {})
+        await chain.run(FakeTool("list_dir"), {"path": "src"})
+        await chain.run(FakeTool("read_file"), {"path": "src/app.py"})
+        blocked = await chain.run(
+            FakeTool("apply_patch", ToolCallPolicy(mutates_state=True, tags=frozenset({FILESYSTEM_WRITE}))),
+            {"patch_text": patch},
+        )
+        await chain.run(FakeTool("read_file"), {"path": "src/other.py"})
+        allowed = await chain.run(
+            FakeTool("apply_patch", ToolCallPolicy(mutates_state=True, tags=frozenset({FILESYSTEM_WRITE}))),
+            {"patch_text": patch},
+        )
+
+        assert blocked.startswith("Error: safety gate blocked")
+        assert "read target file first: src/other.py" in blocked
+        assert allowed == "apply_patch ok"
+
+    @pytest.mark.asyncio
     async def test_blocks_write_capable_shell_before_exploration(self, temp_dir):
         workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
         _, chain = _chain(workspace)

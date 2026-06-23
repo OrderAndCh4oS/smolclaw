@@ -32,6 +32,12 @@ class TestReadFileTool:
 
 
 class TestWriteFileTool:
+    def test_write_file_schema_accepts_mutation_reason(self):
+        params = WriteFileTool().parameters
+
+        assert "reason" in params["properties"]
+        assert "reason" not in params["required"]
+
     @pytest.mark.asyncio
     async def test_write_file(self, temp_dir):
         path = os.path.join(temp_dir, "out.txt")
@@ -52,6 +58,12 @@ class TestWriteFileTool:
 
 
 class TestEditFileTool:
+    def test_edit_file_schema_accepts_mutation_reason(self):
+        params = EditFileTool().parameters
+
+        assert "reason" in params["properties"]
+        assert "reason" not in params["required"]
+
     @pytest.mark.asyncio
     async def test_edit_file(self, temp_dir):
         path = os.path.join(temp_dir, "edit.txt")
@@ -112,6 +124,12 @@ class TestFindFilesTool:
 
 
 class TestApplyPatchTool:
+    def test_apply_patch_schema_accepts_mutation_reason(self):
+        params = ApplyPatchTool().parameters
+
+        assert "reason" in params["properties"]
+        assert "reason" not in params["required"]
+
     @pytest.mark.asyncio
     async def test_add_update_delete_file(self, temp_dir):
         workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()

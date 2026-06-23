@@ -82,6 +82,10 @@ class WriteFileTool(_WorkspacePathMixin, Tool):
             "properties": {
                 "path": {"type": "string", "description": "File path to write"},
                 "content": {"type": "string", "description": "Content to write"},
+                "reason": {
+                    "type": "string",
+                    "description": "Short reason for this mutation, recorded in trace and ledger evidence",
+                },
             },
             "required": ["path", "content"],
         }
@@ -124,6 +128,10 @@ class EditFileTool(_WorkspacePathMixin, Tool):
                 "path": {"type": "string", "description": "File path to edit"},
                 "old_text": {"type": "string", "description": "Text to find"},
                 "new_text": {"type": "string", "description": "Replacement text"},
+                "reason": {
+                    "type": "string",
+                    "description": "Short reason for this mutation, recorded in trace and ledger evidence",
+                },
             },
             "required": ["path", "old_text", "new_text"],
         }
@@ -311,6 +319,10 @@ class ApplyPatchTool(_WorkspacePathMixin, Tool):
                 "patch_text": {
                     "type": "string",
                     "description": "Patch text wrapped in *** Begin Patch and *** End Patch markers",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Short reason for this mutation, recorded in trace and ledger evidence",
                 },
             },
             "required": ["patch_text"],

@@ -127,22 +127,31 @@ def build_tool_registry(
                 registry.register(GitDiffTool(workspace), capability_name=capability_name)
                 registry.register(RunCommandTool(workspace), capability_name=capability_name)
         elif capability_name == CAPABILITY_GOAL and session_manager:
-            from app.tools.goal import GoalStartTool, GoalStatusTool, GoalUpdateTool
+            from app.tools.goal import (
+                GoalRecordEvidenceTool,
+                GoalStartTool,
+                GoalStatusTool,
+                GoalUpdateTool,
+            )
 
             registry.register(GoalStartTool(), capability_name=capability_name)
             registry.register(GoalStatusTool(), capability_name=capability_name)
             registry.register(GoalUpdateTool(), capability_name=capability_name)
+            registry.register(GoalRecordEvidenceTool(), capability_name=capability_name)
         elif capability_name == CAPABILITY_MEMORY and smol_rag is not None:
             from app.tools.memory_tools import (
                 MemorySearchTool, MemoryGraphQueryTool, MemoryStoreTool,
                 MemoryRelateTool, MemoryRecallTool, MemoryGetTool,
                 ContradictionReviewTool,
             )
+            from app.tools.research_sources import ResearchSourceStoreTool
 
             docs_dir = ensure_dir(workspace.paths.memory_docs_dir)
+            research_dir = ensure_dir(workspace.paths.research_dir)
             registry.register(MemorySearchTool(smol_rag), capability_name=capability_name)
             registry.register(MemoryGraphQueryTool(smol_rag), capability_name=capability_name)
             registry.register(MemoryStoreTool(smol_rag, docs_dir, llm=llm), capability_name=capability_name)
+            registry.register(ResearchSourceStoreTool(research_dir, smol_rag=smol_rag), capability_name=capability_name)
             registry.register(MemoryRelateTool(smol_rag), capability_name=capability_name)
             registry.register(MemoryRecallTool(smol_rag), capability_name=capability_name)
             registry.register(MemoryGetTool(smol_rag), capability_name=capability_name)

@@ -57,7 +57,7 @@ flowchart TD
 ### What This Means
 
 - The CLI and gateway do not own separate agent implementations. They differ mainly in transport and lifecycle wiring, but both end up at the same runtime builder and `build_configured_agent()`.
-- `WorkspaceContext` is the ownership boundary for runtime state. It owns the workspace root plus the canonical `stores/`, `memory/`, and `research/` layout.
+- `WorkspaceContext` is the ownership boundary for source access and runtime state. In normal runs the source root is the project and the state root is `<workspace>/.smolclaw`; in isolation modes the source root can be a temporary worktree while `.smolclaw/` state remains under the original workspace.
 - `RuntimeEnvironment` carries the shared dependencies and mode switches: transport, workspace, session manager, agent configs, subagent support, and memory backend.
 - `build_configured_agent()` resolves an agent's capability list, builds a master registry for those capabilities, chooses the right context builder, installs hook configurers, validates that requested tools are satisfiable for the current transport, and then hands everything to `build_agent_loop()`.
 - `build_agent_loop()` creates the actual loop instance, binds runtime context into tools, projects the registry to the agent's allowed tool surface, and applies middleware and permission mode restrictions.
@@ -113,17 +113,24 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    ROOT["Workspace root"] --> STORE["stores/"]
-    ROOT --> MEM["memory/"]
-    ROOT --> RESEARCH["research/"]
+    ROOT["Source root"] --> FILES["project files"]
+    STATE["State root<br/><workspace>/.smolclaw"] --> STORE["stores/"]
+    STATE --> MEM["memory/"]
+    STATE --> RESEARCH["research/"]
 
     STORE --> DB["smolclaw.db"]
     STORE --> KG["kg_db.graphml"]
     STORE --> SESS["sessions/"]
+    STORE --> APPR["approvals/"]
+    STORE --> TRACES["traces/"]
+    STORE --> LEDGERS["ledgers/"]
+    STORE --> EVALS["evals/"]
     STORE --> LOGS["logs/"]
     STORE --> CACHE["cache/"]
 
-    WS["WorkspaceContext"] --> RESOLVE["resolve_contained_path()"]
+    WS["WorkspaceContext"] --> ROOT
+    WS --> STATE
+    WS --> RESOLVE["resolve_contained_path()"]
     WS --> RESET["reset_workspace()"]
 
     RESET --> DB
@@ -137,11 +144,14 @@ flowchart TD
 
 ### Current Behavior
 
-- Relative filesystem tool paths resolve against the workspace root by default.
-- Absolute filesystem tool paths are allowed only when they remain inside the workspace root.
+- Relative filesystem tool paths resolve against the source root by default.
+- Absolute filesystem tool paths are allowed only when they remain inside the source root.
+- Runtime state paths resolve under the state root. For normal local use this is `<workspace>/.smolclaw`; for isolated worktree runs it is the original workspace's `.smolclaw` directory.
+- Run traces live under `.smolclaw/stores/traces/` as JSONL plus summaries. `/trace`, `/trace list`, and `/trace events` consume those files rather than operational logs.
+- Goal ledgers, approvals, checkpoints, sessions, memory, and eval artifacts follow the same state-root rule.
 - Local policy denies `.env` and `.env.*` paths except example/template files, and denies command working directories outside the workspace.
 - `reset_workspace()` is workspace-owned rather than `data_dir`-owned, so the runtime clears mutable state consistently across the new layout.
-- `research/` is preserved across reset because it is treated as source material rather than derived mutable state.
+- `.smolclaw/research/` is preserved across reset because it is treated as source material rather than derived mutable state.
 
 ## 4. Memory And Hook Flow
 

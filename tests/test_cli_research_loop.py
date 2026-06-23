@@ -99,6 +99,24 @@ def test_research_loop_help_renders():
     assert "--max-runs" in result.stdout
 
 
+def test_research_loop_command_defaults_auto_export_off():
+    from cli.main import app
+
+    async def fake_coro():
+        return None
+
+    coro = fake_coro()
+    mock_research_loop = MagicMock(return_value=coro)
+    with patch("cli.main._research_loop", new=mock_research_loop), \
+        patch("cli.main.asyncio.run") as mock_run:
+        result = CliRunner().invoke(app, ["research-loop", "Track model releases"])
+
+    assert result.exit_code == 0
+    assert mock_research_loop.call_args.kwargs["auto_export"] is False
+    mock_run.assert_called_once_with(coro)
+    coro.close()
+
+
 def test_build_research_loop_prompt_emphasizes_delta_after_first_run():
     from cli.main import _build_research_loop_prompt
 

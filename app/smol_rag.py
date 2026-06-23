@@ -5,7 +5,8 @@ from aiolimiter import AsyncLimiter
 from app.bm25_store import BM25Store
 from app.chunking import preserve_markdown_code_excerpts
 from app.definitions import INPUT_DOCS_DIR, SQLITE_DB_PATH, EMBEDDINGS_TABLE, \
-    KG_DB, ENTITIES_TABLE, RELATIONSHIPS_TABLE, COMPLETION_MODEL, EMBEDDING_MODEL
+    KG_DB, ENTITIES_TABLE, RELATIONSHIPS_TABLE, MEMORY_EXTRACT_MODEL, \
+    MEMORY_QUERY_MODEL, EMBEDDING_MODEL
 from app.graph_store import NetworkXGraphStore
 from app.sqlite_store import SqliteKvStore
 from app.sqlite_mapping_store import SqliteMappingStore
@@ -44,9 +45,11 @@ class SmolRag:
             contradiction_detector=None,
             input_docs_dir=None,
             log_dir=None,
+            memory_extract_model=None,
+            memory_query_model=None,
     ):
         _db = db_path or SQLITE_DB_PATH
-        set_logger("main.log", log_dir=log_dir)
+        set_logger("smolclaw-rag.log", log_dir=log_dir)
         self.llm_limiter = AsyncLimiter(max_rate=100, time_period=1)
 
         self.excerpt_fn = excerpt_fn or preserve_markdown_code_excerpts
@@ -54,9 +57,11 @@ class SmolRag:
         self.overlap = overlap
         self.ingest_concurrency = max(1, ingest_concurrency)
         self.input_docs_dir = input_docs_dir or INPUT_DOCS_DIR
+        self.memory_extract_model = memory_extract_model or MEMORY_EXTRACT_MODEL
+        self.memory_query_model = memory_query_model or MEMORY_QUERY_MODEL
 
         self.llm = llm or create_llm(
-            COMPLETION_MODEL,
+            self.memory_extract_model,
             EMBEDDING_MODEL,
             query_cache_kv=query_cache_kv,
             embedding_cache_kv=embedding_cache_kv,
@@ -154,6 +159,16 @@ class SmolRag:
         return self.stores.provenance_lock
 
     async def rate_limited_get_completion(self, *args, **kwargs):
+        """Backward-compatible completion helper; defaults to extraction model."""
+        return await self.rate_limited_get_extract_completion(*args, **kwargs)
+
+    async def rate_limited_get_extract_completion(self, *args, **kwargs):
+        kwargs.setdefault("model", self.memory_extract_model)
+        async with self.llm_limiter:
+            return await self.llm.get_completion(*args, **kwargs)
+
+    async def rate_limited_get_query_completion(self, *args, **kwargs):
+        kwargs.setdefault("model", self.memory_query_model)
         async with self.llm_limiter:
             return await self.llm.get_completion(*args, **kwargs)
 
@@ -319,7 +334,7 @@ def create_smol_rag(**kwargs) -> SmolRag:
         return await rag.rate_limited_get_embedding(text)
 
     async def _llm_fn(prompt):
-        return await rag.rate_limited_get_completion(prompt)
+        return await rag.rate_limited_get_extract_completion(prompt)
 
     db_path = kwargs.get("db_path") or SQLITE_DB_PATH
     contradiction_store = SqliteKvStore(db_path, "contradictions")

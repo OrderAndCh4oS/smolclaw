@@ -5,6 +5,9 @@ import os
 import pytest
 
 from app.checkpoints import CheckpointStore, MAX_SNAPSHOT_BYTES
+from app.goal_ledger import GoalLedgerStore
+from app.run_trace import RunTraceStore
+from app.tools.base import ACTIVE_TOOL_CALL_ID_STATE_KEY, ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY
 from app.tools.checkpointing import CheckpointMiddleware
 from app.tools.filesystem import ApplyPatchTool, EditFileTool, WriteFileTool
 from app.tools.middleware import MiddlewareChain
@@ -33,6 +36,7 @@ class TestCheckpointMiddleware:
         result = await chain.run(WriteFileTool(workspace=workspace), {
             "path": "new.txt",
             "content": "hello",
+            "reason": "create file for test",
         })
 
         assert "Written" in result
@@ -46,6 +50,7 @@ class TestCheckpointMiddleware:
         assert record["before"][changed_path]["exists"] is False
         assert record["after"][changed_path]["exists"] is True
         assert record["after"][changed_path]["sha256"]
+        assert record["metadata"]["reason"] == "create file for test"
 
     @pytest.mark.asyncio
     async def test_records_before_content_for_edit_checkpoint(self, temp_dir):
@@ -93,6 +98,71 @@ class TestCheckpointMiddleware:
 
         assert result.startswith("Error:")
         assert _checkpoint_records(checkpoints_dir) == []
+
+    @pytest.mark.asyncio
+    async def test_records_checkpoint_trace_and_goal_evidence(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        trace_store = RunTraceStore(os.path.join(temp_dir, "stores", "traces"))
+        recorder = trace_store.start_run("session-a")
+        tool_started_event = recorder.append("tool.started", {
+            "name": "write_file",
+            "summary": "write_file path=new.txt",
+        })
+        shared_state = {
+            "trace_recorder": recorder,
+            ACTIVE_TOOL_CALL_ID_STATE_KEY: "call-write-1",
+            ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY: tool_started_event.event_id,
+        }
+        goal_store = GoalLedgerStore(os.path.join(temp_dir, "stores", "ledgers"))
+        goal_store.start("session-a", "Track mutation")
+        checkpoints_dir = os.path.join(temp_dir, "stores", "checkpoints")
+        store = CheckpointStore(checkpoints_dir)
+        chain = MiddlewareChain([
+            CheckpointMiddleware(
+                store,
+                workspace=workspace,
+                session_key="session-a",
+                shared_state=shared_state,
+                goal_store=goal_store,
+            ),
+        ])
+
+        result = await chain.run(WriteFileTool(workspace=workspace), {
+            "path": "new.txt",
+            "content": "hello",
+            "reason": "add requested fixture",
+        })
+        recorder.finish("complete", stop_reason="test")
+
+        assert "Written" in result
+        events = trace_store.load_events("session-a", recorder.run_id)
+        assert "checkpoint.created" in [event.event for event in events]
+        checkpoint_event = next(event for event in events if event.event == "checkpoint.created")
+        ledger_event = next(event for event in events if event.event == "ledger.updated")
+        records = _checkpoint_records(checkpoints_dir)
+        assert records[0]["metadata"]["tool_call_id"] == "call-write-1"
+        assert records[0]["metadata"]["tool_trace_event_id"] == tool_started_event.event_id
+        assert ledger_event.data["kind"] == "checkpoint"
+        assert ledger_event.data["evidence_id"].startswith("change-")
+        assert ledger_event.data["ledger_path"].endswith("session-a.ledger.json")
+        assert ledger_event.data["related_trace_event_id"] == checkpoint_event.event_id
+        assert checkpoint_event.data["tool_call_id"] == "call-write-1"
+        assert checkpoint_event.data["tool_trace_event_id"] == tool_started_event.event_id
+        assert ledger_event.data["tool_call_id"] == "call-write-1"
+        assert ledger_event.data["tool_trace_event_id"] == tool_started_event.event_id
+        assert ledger_event.data["checkpoint_id"] == checkpoint_event.data["checkpoint_id"]
+        assert checkpoint_event.data["reason"] == "add requested fixture"
+        assert ledger_event.data["reason"] == "add requested fixture"
+        summary = trace_store.load_summary("session-a", recorder.run_id)
+        assert summary.checkpoints
+        assert summary.files_changed == ["new.txt"]
+        ledger = goal_store.load("session-a")
+        assert [item.path for item in ledger.changed_files] == ["new.txt"]
+        assert "add requested fixture" in ledger.changed_files[0].summary
+        assert ledger.changed_files[0].id == ledger_event.data["evidence_id"]
+        assert ledger.changed_files[0].checkpoint_id == checkpoint_event.data["checkpoint_id"]
+        assert ledger.changed_files[0].tool_call_id == "call-write-1"
+        assert ledger.changed_files[0].tool_trace_event_id == tool_started_event.event_id
 
 
 class TestCheckpointUndo:

@@ -54,7 +54,7 @@ def configure(log_dir: str | os.PathLike[str], *, log_file: str = _DEFAULT_LOG_F
     level = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
     formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
-    for logger_name in ("app", "smolclaw", "mini-rag"):
+    for logger_name in ("app", "smolclaw", "smolclaw.rag"):
         logger = logging.getLogger(logger_name)
         logger.setLevel(level)
         logger.propagate = False

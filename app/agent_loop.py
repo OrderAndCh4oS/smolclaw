@@ -1,3 +1,4 @@
+import hashlib
 import inspect
 import json
 import time
@@ -10,7 +11,13 @@ from app.definitions import MAX_ITERATIONS, MEMORY_WINDOW
 from app.hooks import HookRunner, ON_SESSION_START, ON_BEFORE_TURN, ON_AFTER_TURN, ON_SESSION_END
 from app.logger import logger
 from app.session import Session, SessionManager
-from app.tools.base import ToolResult, normalize_tool_result
+from app.tools.base import (
+    ACTIVE_TOOL_CALL_ID_STATE_KEY,
+    ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY,
+    TRACE_RECORDER_STATE_KEY,
+    ToolResult,
+    normalize_tool_result,
+)
 from app.tools.registry import ToolRegistry
 from app.usage import UsageCollector, SessionUsage, TurnUsage
 
@@ -33,6 +40,8 @@ class AgentLoop:
         goal_store=None,
         safety_state=None,
         model_settings=None,
+        trace_store=None,
+        runtime_shared_state=None,
     ):
         self.llm = llm
         self.tool_registry = tool_registry
@@ -48,6 +57,8 @@ class AgentLoop:
         self.goal_store = goal_store
         self.safety_state = safety_state
         self.model_settings = model_settings
+        self.trace_store = trace_store
+        self.runtime_shared_state = runtime_shared_state if runtime_shared_state is not None else {}
         if not self.behaviors:
             legacy_behavior_names = []
             if planning:
@@ -62,6 +73,8 @@ class AgentLoop:
         self._closed = False
         self.session_usage = SessionUsage(session_key=session.key)
         self._usage_collector = UsageCollector()
+        self._trace_recorder = None
+        self._last_stop_reason: str | None = None
 
     @staticmethod
     def _truncate_text(value: str, limit: int = 80) -> str:
@@ -70,11 +83,18 @@ class AgentLoop:
             return text
         return text[: limit - 3] + "..."
 
+    @staticmethod
+    def _content_fingerprint(value: str) -> str:
+        digest = hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:12]
+        return f"<{len(value)} chars sha256={digest}>"
+
     @classmethod
     def _summarize_argument_value(cls, key: str, value):
         if isinstance(value, str):
-            if key in {"content", "old_text", "new_text"}:
-                return f"<{len(value)} chars>"
+            if key in {"content", "old_text", "new_text", "patch_text"}:
+                return cls._content_fingerprint(value)
+            if "\n" in value:
+                return cls._content_fingerprint(value)
             return cls._truncate_text(value)
         if isinstance(value, (int, float, bool)) or value is None:
             return value
@@ -97,6 +117,13 @@ class AgentLoop:
     @classmethod
     def summarize_tool_result(cls, result: str, limit: int = 100) -> str:
         return cls._truncate_text(result or "", limit=limit)
+
+    @classmethod
+    def summarize_tool_arguments(cls, arguments: dict) -> dict:
+        return {
+            key: cls._summarize_argument_value(key, value)
+            for key, value in (arguments or {}).items()
+        }
 
     @staticmethod
     def _format_tool_message_content(tool_result: ToolResult) -> str:
@@ -132,6 +159,56 @@ class AgentLoop:
         except Exception as exc:
             logger.warning("Failed to emit agent event: %s", exc)
 
+    def _trace_append(
+        self,
+        event: str,
+        data: dict | None = None,
+        *,
+        turn_index: int | None = None,
+        iteration: int | None = None,
+    ):
+        if self._trace_recorder is None:
+            return None
+        try:
+            return self._trace_recorder.append(
+                event,
+                data or {},
+                turn_index=turn_index,
+                iteration=iteration,
+            )
+        except Exception as exc:
+            logger.warning("Failed to append run trace event %s: %s", event, exc)
+            return None
+
+    def _start_trace(self, user_content: str):
+        if self.trace_store is None:
+            return None
+        goal = self.goal_store.load(self.session.key) if self.goal_store is not None else None
+        recorder = self.trace_store.start_run(
+            self.session.key,
+            goal_id=getattr(goal, "goal_id", None),
+            metadata={
+                "message_length": len(user_content or ""),
+                "model": getattr(self.llm, "completion_model", "unknown"),
+                "has_active_goal": bool(goal is not None and goal.status == "active"),
+            },
+        )
+        self._trace_recorder = recorder
+        self.runtime_shared_state[TRACE_RECORDER_STATE_KEY] = recorder
+        return recorder
+
+    def _finish_trace(self, status: str, stop_reason: str | None = None):
+        recorder = self._trace_recorder
+        if recorder is None:
+            return
+        try:
+            recorder.finish(status, stop_reason=stop_reason)
+        except Exception as exc:
+            logger.warning("Failed to finish run trace: %s", exc)
+        finally:
+            self._trace_recorder = None
+            self.runtime_shared_state.pop(TRACE_RECORDER_STATE_KEY, None)
+
     async def _invoke_tool(self, name: str, arguments: dict) -> ToolResult:
         invoke = getattr(self.tool_registry, "invoke", None)
         if callable(invoke):
@@ -160,10 +237,20 @@ class AgentLoop:
             message_length=len(user_content or ""),
             model=getattr(self.llm, "completion_model", "unknown"),
         )
+        self._last_stop_reason = None
+        recorder = self._start_trace(user_content)
+        turn_index = len(self.session_usage.turns)
+        self._trace_append("turn.started", {
+            "message_length": len(user_content or ""),
+        }, turn_index=turn_index)
         started_at = time.perf_counter()
         try:
             response = await self._process_impl(user_content, on_output=on_output, on_event=on_event)
         except Exception as exc:
+            self._trace_append("error", {
+                "error_type": exc.__class__.__name__,
+                "message": str(exc),
+            }, turn_index=turn_index)
             incident_id = diagnostics.record_exception(
                 exc,
                 boundary="agent_loop",
@@ -175,14 +262,32 @@ class AgentLoop:
                 session_key=self.session.key,
                 incident_id=incident_id,
             )
+            self._finish_trace("error", stop_reason="error")
             raise
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
         diagnostics.record_event(
             "agent.turn.end",
             session_key=self.session.key,
-            duration_ms=int((time.perf_counter() - started_at) * 1000),
+            duration_ms=duration_ms,
             response_length=len(response or ""),
             total_tokens=self.session_usage.total_tokens,
         )
+        stop_reason = self._last_stop_reason or "assistant_final"
+        self._trace_append("turn.ended", {
+            "duration_ms": duration_ms,
+            "response_length": len(response or ""),
+            "total_tokens": self.session_usage.total_tokens,
+            "stop_reason": stop_reason,
+        }, turn_index=turn_index)
+        trace_status = "stopped" if stop_reason in {"max_iterations", "stop_requested"} else "complete"
+        self._finish_trace(trace_status, stop_reason=stop_reason)
+        if recorder is not None:
+            diagnostics.record_event(
+                "agent.trace",
+                session_key=self.session.key,
+                run_id=recorder.run_id,
+                trace_path=recorder.summary.trace_path,
+            )
         return response
 
     async def _process_impl(
@@ -236,6 +341,7 @@ class AgentLoop:
                 self.session.add_message({"role": "assistant", "content": msg})
                 self.session_manager.save(self.session)
                 _turn_span.end()
+                self._last_stop_reason = "stop_requested"
                 return msg
 
             await self.hook_runner.fire(ON_BEFORE_TURN, {
@@ -267,6 +373,11 @@ class AgentLoop:
                     await on_output(text)
 
             tools = self.tool_registry.get_definitions() or None
+            current_turn_index = len(self.session_usage.turns)
+            self._trace_append("llm.started", {
+                "model": getattr(self.llm, "completion_model", "unknown"),
+                "tools_count": len(tools or []),
+            }, turn_index=current_turn_index, iteration=iteration)
 
             with self._usage_collector.category("agent_turn"):
                 llm_started = time.perf_counter()
@@ -303,6 +414,14 @@ class AgentLoop:
                 "total_tokens": sum(r.total_tokens for r in llm_records),
                 "model": getattr(self.llm, "completion_model", "unknown"),
             })
+            self._trace_append("llm.ended", {
+                "duration_ms": llm_duration_ms,
+                "has_tool_calls": bool(result["has_tool_calls"]),
+                "prompt_tokens": sum(r.prompt_tokens for r in llm_records),
+                "completion_tokens": sum(r.completion_tokens for r in llm_records),
+                "total_tokens": sum(r.total_tokens for r in llm_records),
+                "model": getattr(self.llm, "completion_model", "unknown"),
+            }, turn_index=current_turn_index, iteration=iteration)
 
             if not result["has_tool_calls"]:
                 content = result["content"] or ""
@@ -310,6 +429,7 @@ class AgentLoop:
                     await on_output(content)
                 self.session.add_message({"role": "assistant", "content": content})
                 self.session_manager.save(self.session)
+                self._last_stop_reason = "assistant_final"
 
                 self.session_usage.turns.append(turn)
 
@@ -352,10 +472,40 @@ class AgentLoop:
                     "arguments": arguments,
                     "summary": summary,
                 })
+                tool_started_event = self._trace_append("tool.started", {
+                    "name": name,
+                    "arguments": self.summarize_tool_arguments(arguments),
+                    "summary": summary,
+                    "command": arguments.get("command"),
+                }, turn_index=current_turn_index, iteration=iteration)
 
                 started_at = time.perf_counter()
-                with self._usage_collector.category("context_retrieval"):
-                    tool_result = await self._invoke_tool(name, arguments)
+                previous_tool_trace_event_id = self.runtime_shared_state.get(
+                    ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY,
+                )
+                previous_tool_call_id = self.runtime_shared_state.get(ACTIVE_TOOL_CALL_ID_STATE_KEY)
+                if tool_started_event is not None:
+                    self.runtime_shared_state[ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY] = (
+                        tool_started_event.event_id
+                    )
+                if tool_call.get("id"):
+                    self.runtime_shared_state[ACTIVE_TOOL_CALL_ID_STATE_KEY] = tool_call["id"]
+                try:
+                    with self._usage_collector.category("context_retrieval"):
+                        tool_result = await self._invoke_tool(name, arguments)
+                finally:
+                    if previous_tool_trace_event_id is None:
+                        self.runtime_shared_state.pop(ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY, None)
+                    else:
+                        self.runtime_shared_state[ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY] = (
+                            previous_tool_trace_event_id
+                        )
+                    if previous_tool_call_id is None:
+                        self.runtime_shared_state.pop(ACTIVE_TOOL_CALL_ID_STATE_KEY, None)
+                    else:
+                        self.runtime_shared_state[ACTIVE_TOOL_CALL_ID_STATE_KEY] = (
+                            previous_tool_call_id
+                        )
                 tool_duration_ms = int((time.perf_counter() - started_at) * 1000)
                 turn.tool_duration_ms += tool_duration_ms
                 ok = tool_result.ok
@@ -371,6 +521,35 @@ class AgentLoop:
                     "status": tool_result.status,
                     "result_preview": self.summarize_tool_result(tool_result.content),
                 })
+                tool_event_data = {
+                    "name": name,
+                    "arguments": self.summarize_tool_arguments(arguments),
+                    "summary": summary,
+                    "ok": ok,
+                    "duration_ms": tool_duration_ms,
+                    "status": tool_result.status,
+                    "result_preview": self.summarize_tool_result(tool_result.content),
+                }
+                self._trace_append(
+                    "tool.ended",
+                    tool_event_data,
+                    turn_index=current_turn_index,
+                    iteration=iteration,
+                )
+                if tool_result.status == "denied" or "not permitted" in tool_result.content:
+                    self._trace_append(
+                        "tool.denied",
+                        tool_event_data,
+                        turn_index=current_turn_index,
+                        iteration=iteration,
+                    )
+                if "safety gate blocked" in tool_result.content:
+                    self._trace_append(
+                        "safety.blocked",
+                        tool_event_data,
+                        turn_index=current_turn_index,
+                        iteration=iteration,
+                    )
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call["id"],
@@ -415,6 +594,7 @@ class AgentLoop:
         msg = "Stopped: reached max iterations without a final response."
         self.session.add_message({"role": "assistant", "content": msg})
         self.session_manager.save(self.session)
+        self._last_stop_reason = "max_iterations"
         return msg
 
     def _begin_safety_task(self):
