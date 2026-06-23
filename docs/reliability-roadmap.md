@@ -2,7 +2,7 @@
 
 This roadmap turns the current SmolClaw codebase into a more reliable harness-style coding assistant while preserving the project's useful small-core shape.
 
-It is based on the local implementation as of June 2026 and on a research pass over current agent harnesses and guidance from OpenCode, OpenClaw, Claude Code, OpenAI Agents, SWE-agent, and mini-SWE-agent.
+It is based on the local implementation as of June 2026 and on the evidence collected in [research-agentic-coding-harnesses.md](research-agentic-coding-harnesses.md).
 
 ## Goal
 
@@ -29,21 +29,24 @@ The product direction is closer to a focused local coding harness than a broad a
 - Memory-backed context assembly and persistent session storage.
 - Tool middleware for logging, retries, timeouts, tracing, and hooks.
 - Workspace-owned path resolution for filesystem tools.
+- Safe state path helpers for user-controlled session, goal, usage, and checkpoint keys.
 - Narrow command tools instead of open local shell access.
 - Coding tools: file read/write/edit/list/find/grep/apply_patch, git status/diff, constrained command execution.
 - Safety gate before mutation requiring status/search/read evidence.
+- Permission modes for agent tool access, with v1 hard-deny checks for `.env*` secrets and external workspace paths.
+- Repeated identical tool call guard.
 - Atomic patch application with rollback tests.
+- Mutation checkpoints and `/undo` for session-scoped file restoration.
+- OpenAI Responses API routing for reasoning tool turns on supported models.
 - Goal persistence, `/goal run`, and agent-started goals.
 - TUI with status bar, spinner/status state, and bounded shutdown improvements.
 - Large pytest suite covering the harness internals.
 
 ### Not Reliable Enough Yet
 
-- OpenAI tool turns still need a Responses API path for model reasoning effort to match `/model` UI claims.
-- Session and goal storage must treat user-controlled session keys as untrusted path input.
 - The safety gate proves exploration happened, not that exploration was sufficient or relevant.
-- There is no checkpoint/undo system for agent-made mutations.
-- TUI output streams are not fully isolated from transcript rendering, debug traces, and crash output.
+- Permission policy is still a v1 hard-deny model, not a configurable `ask` approval system.
+- TUI output streams are much better isolated, but trace export and richer log-drawer workflows remain incomplete.
 - The agent loop does not yet have a structured task ledger with acceptance criteria, verification state, and blockers.
 - Evals mostly prove code paths, not full agent behavior on realistic coding tasks.
 - There is no sandbox or worktree-backed isolation mode for risky edits or remote-control scenarios.
@@ -71,16 +74,11 @@ The product direction is closer to a focused local coding harness than a broad a
 
 ## References And Lessons
 
-- [OpenCode docs](https://opencode.ai/docs/) emphasize terminal-first workflow, plan/build mode, `/undo`, project initialization, and codebase context files.
-- [OpenCode agents](https://opencode.ai/docs/agents/) and [permissions](https://opencode.ai/docs/permissions/) are the best current reference for per-agent permission policy: `allow`, `ask`, `deny`, command patterns, external directory gates, `.env` denial, and repeated-tool guards.
-- [OpenClaw architecture](https://docs.openclaw.ai/concepts/architecture) shows a gateway with typed WebSocket frames, pairing, lifecycle events, idempotency keys, and device/node boundaries.
-- [OpenClaw agent loop](https://docs.openclaw.ai/concepts/agent-loop) is useful for serialized session lanes, stream events, run IDs, locks, timeouts, compaction, and lifecycle telemetry.
-- [OpenClaw security](https://docs.openclaw.ai/gateway/security) is useful for trust-boundary language: one operator boundary, sandboxing for non-main sessions, security audit commands, and treating message channels as untrusted input.
-- [Anthropic Building Effective Agents](https://www.anthropic.com/engineering/building-effective-agents) reinforces simple composable patterns, clear tool interfaces, environmental feedback, stopping conditions, sandboxed testing, and evaluator-optimizer loops.
-- [Claude Code best practices](https://code.claude.com/docs/en/best-practices) provide strong precedents for checkpoints, `/rewind`, aggressive context management, subagents for investigation, and fresh-context review.
-- [OpenAI practical guide to building agents](https://cdn.openai.com/business-guides-and-resources/a-practical-guide-to-building-agents.pdf) gives the clean model/tools/instructions foundation, explicit loop exit conditions, model selection through evals, and incremental single-agent-first orchestration.
-- [OpenAI Agents SDK guardrails](https://openai.github.io/openai-agents-python/guardrails/) and [tracing](https://openai.github.io/openai-agents-python/tracing/) provide useful vocabulary for input, output, and tool guardrails, tripwires, spans, and sensitive-data controls.
-- [SWE-agent](https://github.com/SWE-agent/SWE-agent) and [mini-SWE-agent](https://github.com/SWE-agent/mini-swe-agent) show the value of simple agent-computer interfaces, trajectories, batch evaluation, sandbox substitution, and independent command execution.
+The supporting research is tracked in [docs/research-agentic-coding-harnesses.md](research-agentic-coding-harnesses.md). The short version:
+
+- OpenCode validates the near-term product shape: terminal-first coding, plan/build separation, role-specific agents, granular permissions, and undo.
+- OpenClaw is the right reference for later gateway work: typed protocol frames, pairing, session lanes, stream events, idempotency, sandboxing, and untrusted-content handling.
+- Anthropic, OpenAI, SWE-agent, SWE-bench, SWE-Adept, SeaView, ReAct, and recent guardrail research all point toward simple observable loops, strong tool interfaces, structural safety, checkpoints, traces, and evals.
 
 ## Roadmap Overview
 
@@ -628,7 +626,9 @@ Success criteria:
 
 ### Milestone A - Trust The Local CLI
 
-Scope:
+Status: mostly complete for the local CLI path.
+
+Completed scope:
 
 - Responses API for tool turns.
 - Safe session/goal storage keys.
@@ -642,13 +642,20 @@ The user-facing product must stop saying or displaying things that are not true.
 
 ### Milestone B - Safe Mutation
 
-Scope:
+Status: complete for v1 hard-deny local safety; approval workflows remain future work.
+
+Completed scope:
 
 - Permission policy engine.
 - Checkpoints before writes.
 - `/undo`.
 - Secret and external-directory gates.
-- Better exploration evidence.
+- Repeated identical tool call guard.
+
+Remaining follow-up:
+
+- Better structured exploration evidence and trace export.
+- Configurable `ask` approvals for riskier local workflows.
 
 Why second:
 
@@ -698,33 +705,25 @@ Telegram/Signal/WebSocket control should wait until mutation and identity bounda
 
 ## Suggested Immediate Backlog
 
-1. Fix OpenAI model execution.
-   - Add Responses API path for tool turns.
-   - Make `/model` report endpoint and compatibility.
-
-2. Harden state paths.
-   - Hash/slug session keys.
-   - Add traversal tests for sessions and goals.
-
-3. Split TUI streams.
-   - Ensure logs and tool traces never render in the prompt/input area.
-   - Add contained exception rendering.
-
-4. Add checkpoint store.
-   - Snapshot before `write_file`, `edit_file`, and `apply_patch`.
-   - Implement `/undo`.
-
-5. Add permission policy v1.
-   - Start with file read/edit, command, external directory, and secrets.
-
-6. Add goal ledger v1.
+1. Add goal ledger v1.
    - Store plan, inspected files, changed files, tests, status, and stop reason.
 
-7. Build first eval fixture.
+2. Add completion and verification gates.
+   - Require acceptance criteria or an explicit "no verification possible" note before goal completion.
+   - Store verification commands and results.
+
+3. Build first eval fixture.
    - Use a small intentionally broken project.
    - Require exploration, edit, test, and completion evidence.
 
-8. Refresh operator docs.
+4. Add non-interactive eval runner.
+   - Capture prompt, trajectory, diff, tests, status, and stop reason.
+
+5. Add worktree or sandbox spike.
+   - Run a risky goal in isolation and present the diff back to the main workspace.
+
+6. Expand operator docs.
+   - Document `/undo`, permission denials, secret-file behavior, and troubleshooting.
    - Add install and troubleshooting docs.
    - Keep README, workspace docs, and roadmap aligned.
 

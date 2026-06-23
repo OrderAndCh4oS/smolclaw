@@ -4,9 +4,9 @@ import os
 
 import pytest
 
-from app.checkpoints import CheckpointStore
+from app.checkpoints import CheckpointStore, MAX_SNAPSHOT_BYTES
 from app.tools.checkpointing import CheckpointMiddleware
-from app.tools.filesystem import EditFileTool, WriteFileTool
+from app.tools.filesystem import ApplyPatchTool, EditFileTool, WriteFileTool
 from app.tools.middleware import MiddlewareChain
 from app.workspace import WorkspaceContext
 
@@ -93,3 +93,160 @@ class TestCheckpointMiddleware:
 
         assert result.startswith("Error:")
         assert _checkpoint_records(checkpoints_dir) == []
+
+
+class TestCheckpointUndo:
+    @pytest.mark.asyncio
+    async def test_undo_restores_edited_file(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        path = os.path.realpath(os.path.join(temp_dir, "app.py"))
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("print('old')\n")
+        store = CheckpointStore(os.path.join(temp_dir, "stores", "checkpoints"))
+        chain = MiddlewareChain([
+            CheckpointMiddleware(store, workspace=workspace, session_key="session-a"),
+        ])
+
+        result = await chain.run(EditFileTool(workspace=workspace), {
+            "path": "app.py",
+            "old_text": "old",
+            "new_text": "new",
+        })
+
+        assert "Edited" in result
+        undo = store.undo_last(session_key="session-a")
+        assert undo.ok is True
+        assert undo.restored_paths == [path]
+        with open(path, encoding="utf-8") as handle:
+            assert handle.read() == "print('old')\n"
+        assert store.latest(session_key="session-a") is None
+
+    @pytest.mark.asyncio
+    async def test_undo_deletes_created_file(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        path = os.path.realpath(os.path.join(temp_dir, "new.txt"))
+        store = CheckpointStore(os.path.join(temp_dir, "stores", "checkpoints"))
+        chain = MiddlewareChain([
+            CheckpointMiddleware(store, workspace=workspace, session_key="session-a"),
+        ])
+
+        result = await chain.run(WriteFileTool(workspace=workspace), {
+            "path": "new.txt",
+            "content": "hello",
+        })
+
+        assert "Written" in result
+        assert os.path.exists(path)
+        undo = store.undo_last(session_key="session-a")
+        assert undo.ok is True
+        assert undo.restored_paths == [path]
+        assert not os.path.exists(path)
+
+    @pytest.mark.asyncio
+    async def test_undo_is_scoped_to_session(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        store = CheckpointStore(os.path.join(temp_dir, "stores", "checkpoints"))
+
+        chain_a = MiddlewareChain([
+            CheckpointMiddleware(store, workspace=workspace, session_key="session-a"),
+        ])
+        chain_b = MiddlewareChain([
+            CheckpointMiddleware(store, workspace=workspace, session_key="session-b"),
+        ])
+
+        await chain_a.run(WriteFileTool(workspace=workspace), {
+            "path": "a.txt",
+            "content": "a",
+        })
+        await chain_b.run(WriteFileTool(workspace=workspace), {
+            "path": "b.txt",
+            "content": "b",
+        })
+
+        undo = store.undo_last(session_key="session-a")
+        assert undo.ok is True
+        assert not os.path.exists(os.path.join(temp_dir, "a.txt"))
+        assert os.path.exists(os.path.join(temp_dir, "b.txt"))
+        assert store.latest(session_key="session-b") is not None
+
+    @pytest.mark.asyncio
+    async def test_undo_refuses_conflict_when_file_changed_after_checkpoint(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        path = os.path.realpath(os.path.join(temp_dir, "app.py"))
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("old\n")
+        store = CheckpointStore(os.path.join(temp_dir, "stores", "checkpoints"))
+        chain = MiddlewareChain([
+            CheckpointMiddleware(store, workspace=workspace, session_key="session-a"),
+        ])
+
+        await chain.run(EditFileTool(workspace=workspace), {
+            "path": "app.py",
+            "old_text": "old",
+            "new_text": "new",
+        })
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("external\n")
+
+        undo = store.undo_last(session_key="session-a")
+        assert undo.ok is False
+        assert undo.conflicts == [f"{path}: changed since checkpoint"]
+        with open(path, encoding="utf-8") as handle:
+            assert handle.read() == "external\n"
+
+    @pytest.mark.asyncio
+    async def test_undo_apply_patch_restores_add_update_and_delete(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        app_path = os.path.realpath(os.path.join(temp_dir, "app.py"))
+        old_path = os.path.realpath(os.path.join(temp_dir, "old.txt"))
+        new_path = os.path.realpath(os.path.join(temp_dir, "new.txt"))
+        with open(app_path, "w", encoding="utf-8") as handle:
+            handle.write("print('old')\n")
+        with open(old_path, "w", encoding="utf-8") as handle:
+            handle.write("remove me\n")
+        store = CheckpointStore(os.path.join(temp_dir, "stores", "checkpoints"))
+        chain = MiddlewareChain([
+            CheckpointMiddleware(store, workspace=workspace, session_key="session-a"),
+        ])
+        patch_text = "\n".join([
+            "*** Begin Patch",
+            "*** Update File: app.py",
+            "@@",
+            "-print('old')",
+            "+print('new')",
+            "*** Delete File: old.txt",
+            "*** Add File: new.txt",
+            "+created",
+            "*** End Patch",
+        ])
+
+        result = await chain.run(ApplyPatchTool(workspace=workspace), {"patch_text": patch_text})
+
+        assert "Applied patch" in result
+        assert os.path.exists(new_path)
+        assert not os.path.exists(old_path)
+        undo = store.undo_last(session_key="session-a")
+        assert undo.ok is True
+        with open(app_path, encoding="utf-8") as handle:
+            assert handle.read() == "print('old')\n"
+        with open(old_path, encoding="utf-8") as handle:
+            assert handle.read() == "remove me\n"
+        assert not os.path.exists(new_path)
+
+    @pytest.mark.asyncio
+    async def test_undo_refuses_skipped_snapshot(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        store = CheckpointStore(os.path.join(temp_dir, "stores", "checkpoints"))
+        chain = MiddlewareChain([
+            CheckpointMiddleware(store, workspace=workspace, session_key="session-a"),
+        ])
+
+        await chain.run(WriteFileTool(workspace=workspace), {
+            "path": "large.txt",
+            "content": "x" * (MAX_SNAPSHOT_BYTES + 1),
+        })
+
+        undo = store.undo_last(session_key="session-a")
+        assert undo.ok is False
+        assert len(undo.conflicts) == 1
+        assert "cannot restore skipped snapshot" in undo.conflicts[0]

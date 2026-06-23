@@ -19,6 +19,11 @@ def _fake_tui(show_actions=False):
     agent.safety_state = object()
     goal_store = MagicMock()
     goal_store.load.return_value = None
+    checkpoint_store = MagicMock()
+    checkpoint_store.undo_last.return_value.ok = True
+    checkpoint_store.undo_last.return_value.message = "Undid checkpoint chk-1; restored 1 path."
+    checkpoint_store.undo_last.return_value.restored_paths = ["/tmp/file.txt"]
+    checkpoint_store.undo_last.return_value.conflicts = []
     return CoderTui(
         agent=agent,
         goal_store=goal_store,
@@ -26,6 +31,7 @@ def _fake_tui(show_actions=False):
         memory_store_tool=MagicMock(),
         session_export_hook=MagicMock(),
         smol_rag=MagicMock(),
+        checkpoint_store=checkpoint_store,
         workspace_root=".",
         model="fallback-model",
         auto_export=True,
@@ -242,6 +248,18 @@ async def test_tui_logs_command_shows_workspace_diagnostics_paths():
     assert "Diagnostics logs:" in rendered
     assert "events.jsonl" in rendered
     assert "smolclaw.log" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_undo_command_uses_checkpoint_store():
+    tui = _fake_tui()
+
+    await tui.submit("/undo")
+
+    tui.checkpoint_store.undo_last.assert_called_once_with(session_key="session")
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Undid checkpoint chk-1; restored 1 path." in rendered
+    assert "/tmp/file.txt" in rendered
 
 
 def test_tui_transcript_clips_to_available_terminal_height(monkeypatch):

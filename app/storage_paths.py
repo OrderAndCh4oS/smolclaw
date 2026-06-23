@@ -51,18 +51,17 @@ def _fsync_directory(directory: str):
         os.close(fd)
 
 
-def atomic_write_text(path: str, content: str, *, encoding: str = "utf-8", backup: bool = True):
-    """Atomically write text and retain a backup of the previous complete file."""
+def atomic_write_bytes(path: str, content: bytes, *, backup: bool = True):
+    """Atomically write bytes and retain a backup of the previous complete file."""
     directory = os.path.dirname(os.path.realpath(path)) or "."
     os.makedirs(directory, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
         prefix=f".{os.path.basename(path)}.",
         suffix=".tmp",
         dir=directory,
-        text=True,
     )
     try:
-        with os.fdopen(fd, "w", encoding=encoding) as handle:
+        with os.fdopen(fd, "wb") as handle:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
@@ -76,6 +75,10 @@ def atomic_write_text(path: str, content: str, *, encoding: str = "utf-8", backu
         except FileNotFoundError:
             pass
         raise
+
+
+def atomic_write_text(path: str, content: str, *, encoding: str = "utf-8", backup: bool = True):
+    atomic_write_bytes(path, content.encode(encoding), backup=backup)
 
 
 def atomic_write_json(path: str, data: Any, *, indent: int = 2, backup: bool = True):

@@ -23,6 +23,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.styles import Style
 
 from app import diagnostics
+from app.checkpoints import CheckpointStore, CheckpointUndoResult
 from app.model_settings import (
     apply_subagent_model_selection,
     apply_runtime_model_selection,
@@ -143,6 +144,7 @@ class CoderTui:
         memory_store_tool,
         session_export_hook,
         smol_rag,
+        checkpoint_store: CheckpointStore,
         workspace_root: str,
         model: str,
         auto_export: bool,
@@ -160,6 +162,7 @@ class CoderTui:
         self.memory_store_tool = memory_store_tool
         self.session_export_hook = session_export_hook
         self.smol_rag = smol_rag
+        self.checkpoint_store = checkpoint_store
         self.workspace_root = os.path.abspath(os.path.expanduser(workspace_root))
         self.auto_export = auto_export
         self.show_actions = show_actions
@@ -370,6 +373,9 @@ class CoderTui:
         if text == "/logs":
             self._append("system", self._diagnostics_paths())
             return
+        if text == "/undo":
+            self._handle_undo()
+            return
         if command == "/model":
             self._handle_model(command_arg)
             return
@@ -487,6 +493,12 @@ class CoderTui:
             self.state.run_state = "idle"
             self.state.activity = "idle"
             self._invalidate()
+
+    def _handle_undo(self):
+        result = self.checkpoint_store.undo_last(session_key=self.agent.session.key)
+        self._append("system" if result.ok else "error", self._format_undo_result(result))
+        self.state.git_state = _git_state(self.workspace_root)
+        self._invalidate()
 
     async def _start_agent_turn(self, prompt: str):
         if self._agent_task is not None and not self._agent_task.done():
@@ -744,6 +756,16 @@ class CoderTui:
         self.state.model = selection.model
         self.state.reasoning_effort = get_reasoning_effort(self.agent.llm) or ""
         self._append("system", f"Switched {model_status(self.agent.llm)}")
+
+    def _format_undo_result(self, result: CheckpointUndoResult) -> str:
+        if not result.ok:
+            if result.conflicts:
+                return "\n".join([result.message, *result.conflicts])
+            return result.message
+        lines = [result.message]
+        if result.restored_paths:
+            lines.extend(f"- {path}" for path in result.restored_paths)
+        return "\n".join(lines)
 
     def _refresh_goal_state(self):
         goal = self.goal_store.load(self.agent.session.key)

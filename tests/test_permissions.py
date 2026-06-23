@@ -1,10 +1,13 @@
 """Tests for permission modes and PermissionMiddleware."""
 
+import os
+
 import pytest
 
 from app.tools.base import Tool, ToolCallPolicy
 from app.tools.middleware import MiddlewareChain
 from app.tools.permissions import PERMISSION_BLOCKED, PermissionMiddleware
+from app.workspace import WorkspaceContext
 
 
 class FakeTool(Tool):
@@ -315,6 +318,79 @@ class TestUnknownMode:
     def test_unknown_mode_raises(self):
         with pytest.raises(ValueError, match="Unknown permission mode"):
             PermissionMiddleware("unknown_mode")
+
+
+class TestPathPolicy:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["full", "execute", "research"])
+    async def test_blocks_secret_env_paths_in_all_modes(self, mode):
+        mw = PermissionMiddleware(mode)
+        chain = MiddlewareChain([mw])
+
+        result = await chain.run(FakeTool("read_file"), {"path": ".env.local"})
+
+        assert result.startswith("Error:")
+        assert "secret path" in result
+
+    @pytest.mark.asyncio
+    async def test_allows_env_example(self):
+        mw = PermissionMiddleware("full")
+        chain = MiddlewareChain([mw])
+
+        result = await chain.run(FakeTool("read_file"), {"path": ".env.example"})
+
+        assert result == "read_file executed"
+
+    @pytest.mark.asyncio
+    async def test_blocks_external_workspace_path(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        outside = os.path.realpath(os.path.join(temp_dir, "..", "outside.txt"))
+        mw = PermissionMiddleware("full", workspace=workspace)
+        chain = MiddlewareChain([mw])
+
+        result = await chain.run(FakeTool("read_file"), {"path": outside})
+
+        assert result.startswith("Error:")
+        assert "external path" in result
+
+    @pytest.mark.asyncio
+    async def test_blocks_external_run_command_cwd(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        outside = os.path.realpath(os.path.join(temp_dir, ".."))
+        mw = PermissionMiddleware("full", workspace=workspace)
+        chain = MiddlewareChain([mw])
+
+        result = await chain.run(FakeTool("run_command"), {"command": "git status", "cwd": outside})
+
+        assert result.startswith("Error:")
+        assert "external path" in result
+
+    @pytest.mark.asyncio
+    async def test_blocks_secret_git_diff_path(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        mw = PermissionMiddleware("full", workspace=workspace)
+        chain = MiddlewareChain([mw])
+
+        result = await chain.run(FakeTool("git_diff"), {"path": ".env.local"})
+
+        assert result.startswith("Error:")
+        assert "secret path" in result
+
+    @pytest.mark.asyncio
+    async def test_blocks_secret_apply_patch_target(self):
+        mw = PermissionMiddleware("full")
+        chain = MiddlewareChain([mw])
+        patch_text = "\n".join([
+            "*** Begin Patch",
+            "*** Add File: .env.test",
+            "+TOKEN=secret",
+            "*** End Patch",
+        ])
+
+        result = await chain.run(FakeTool("apply_patch"), {"patch_text": patch_text})
+
+        assert result.startswith("Error:")
+        assert "secret path" in result
 
 
 class TestPermissionBlockedMapping:

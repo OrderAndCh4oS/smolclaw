@@ -660,6 +660,64 @@ class TestCliMultiagent:
         fake_agent.close.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_chat_loop_undo_command_uses_checkpoint_store(self):
+        from cli.main import DEFAULT_AGENTS_CONFIG, _chat_loop
+
+        class FakePromptSession:
+            def __init__(self, **kwargs):
+                self._inputs = iter(["/undo", "/quit"])
+
+            async def prompt_async(self, _prompt):
+                try:
+                    return next(self._inputs)
+                except StopIteration:
+                    raise EOFError
+
+        class FakeConsole:
+            def __init__(self):
+                self.lines = []
+
+            def status(self, *args, **kwargs):
+                return nullcontext()
+
+            def print(self, *args, **kwargs):
+                self.lines.append(" ".join(str(arg) for arg in args))
+
+        fake_console = FakeConsole()
+        fake_result = MagicMock()
+        fake_result.ok = True
+        fake_result.message = "Undid checkpoint chk-1; restored 1 path."
+        fake_result.restored_paths = ["/tmp/file.txt"]
+        fake_result.conflicts = []
+        checkpoint_store = MagicMock()
+        checkpoint_store.undo_last.return_value = fake_result
+        fake_agent = MagicMock()
+        fake_agent.llm = MagicMock()
+        fake_agent.hook_runner = HookRunner()
+        fake_agent.close = AsyncMock()
+        fake_agent.process = AsyncMock()
+        fake_agent.session = MagicMock()
+        fake_agent.session.key = "default"
+        fake_agent.session_usage = None
+
+        smol_rag = MagicMock()
+        session_manager = MagicMock()
+
+        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
+            patch("cli.main.PromptSession", FakePromptSession), \
+            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
+            patch("cli.main.CheckpointStore", return_value=checkpoint_store), \
+            patch("cli.main.console", fake_console):
+            await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+
+        checkpoint_store.undo_last.assert_called_once_with(session_key="default")
+        output = "\n".join(fake_console.lines)
+        assert "Undid checkpoint chk-1; restored 1 path." in output
+        assert "/tmp/file.txt" in output
+        fake_agent.process.assert_not_called()
+        fake_agent.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_chat_loop_model_subagents_command_updates_subagent_default(self):
         from cli.main import DEFAULT_AGENTS_CONFIG, _chat_loop
 

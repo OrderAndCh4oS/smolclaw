@@ -14,13 +14,14 @@ your-project/
     smolclaw.db
     kg_db.graphml
     sessions/
+    checkpoints/
     logs/
     cache/
   memory/
   research/
 ```
 
-- `stores/` holds derived runtime state. This includes the SQLite database, knowledge graph, sessions, logs, and caches.
+- `stores/` holds derived runtime state. This includes the SQLite database, knowledge graph, sessions, checkpoints, logs, and caches.
 - `memory/` holds exported markdown memories and session documents.
 - `research/` holds optional source material you want SmolClaw to ingest and preserve.
 
@@ -59,6 +60,7 @@ Research loops still exist, but the main product direction is local coding relia
 `reset` clears derived state for the active workspace:
 
 - `stores/sessions/`
+- `stores/checkpoints/`
 - `stores/logs/`
 - `stores/cache/`
 - `smolclaw.db`
@@ -80,6 +82,8 @@ The direct local runtime uses the active workspace as its boundary for local sta
 - Relative file paths resolve from the workspace root.
 - Local derived state is written only under that workspace.
 - Different workspaces keep recall, memory promotion, sessions, and logs isolated from one another.
+- Secret files named `.env` or `.env.*` are denied by local tool policy, except example/template files such as `.env.example`.
+- Local tools reject file paths and command working directories outside the workspace in the v1 safety policy.
 
 Gateway mode still exists in the codebase, but it is not the primary product surface while local safety, checkpoints, and evals are being hardened.
 

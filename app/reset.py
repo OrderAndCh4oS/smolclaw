@@ -42,6 +42,7 @@ async def reset_workspace(workspace: WorkspaceContext) -> list[str]:
 
     for directory in (
         Path(paths.sessions_dir),
+        Path(paths.checkpoints_dir),
         Path(paths.memory_docs_dir),
         Path(paths.log_dir),
         Path(paths.cache_dir),

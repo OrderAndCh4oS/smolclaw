@@ -61,6 +61,7 @@ flowchart TD
 - `RuntimeEnvironment` carries the shared dependencies and mode switches: transport, workspace, session manager, agent configs, subagent support, and memory backend.
 - `build_configured_agent()` resolves an agent's capability list, builds a master registry for those capabilities, chooses the right context builder, installs hook configurers, validates that requested tools are satisfiable for the current transport, and then hands everything to `build_agent_loop()`.
 - `build_agent_loop()` creates the actual loop instance, binds runtime context into tools, projects the registry to the agent's allowed tool surface, and applies middleware and permission mode restrictions.
+- Every live agent registry runs tool hooks, permission/path policy, exploration safety, and checkpoint middleware before filesystem mutations reach the underlying tool.
 
 ## 2. Dynamic Tool Surface
 
@@ -106,6 +107,7 @@ flowchart TD
 - Memory can be disabled per agent by omitting the `memory` capability, which also removes memory hooks and the memory-aware context assembler.
 - Orchestration and subagent capabilities are enabled from the runtime environment and then constrained again per agent config.
 - Direct local shell execution is intentionally disabled until a real sandbox backend exists. If `shell` is requested on direct transport, runtime construction fails fast.
+- Permission middleware is installed for every permission mode, including `full`, so secret-path and external-path denial is structural rather than prompt-only.
 
 ## 3. Workspace Ownership And Reset
 
@@ -137,6 +139,7 @@ flowchart TD
 
 - Relative filesystem tool paths resolve against the workspace root by default.
 - Absolute filesystem tool paths are allowed only when they remain inside the workspace root.
+- Local policy denies `.env` and `.env.*` paths except example/template files, and denies command working directories outside the workspace.
 - `reset_workspace()` is workspace-owned rather than `data_dir`-owned, so the runtime clears mutable state consistently across the new layout.
 - `research/` is preserved across reset because it is treated as source material rather than derived mutable state.
 
@@ -203,6 +206,7 @@ flowchart TD
 - Transport is selected by runtime and cannot be overridden by agent config.
 - Memory hooks are installed only when memory is enabled for that agent.
 - `tool_search` only exposes deferred tools that already exist within the projected registry.
+- Mutation tools create file checkpoints under the workspace state directory and `/undo` restores the latest non-conflicting checkpoint for the active session.
 - Child agents are created through `ChildAgentFactory`, not ad hoc loop construction in tool code.
 - Direct local shell is not part of the shipped direct runtime path until a real sandbox exists.
 

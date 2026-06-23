@@ -41,6 +41,7 @@ For the roadmap, see [docs/reliability-roadmap.md](docs/reliability-roadmap.md).
   - `grep_search`
 - Constrained command tools for project checks.
 - Git status and diff helpers.
+- Checkpoints for file mutations and `/undo` for restoring the last SmolClaw change.
 - Goal commands:
   - `/goal start ...`
   - `/goal run N`
@@ -87,6 +88,7 @@ Inside the TUI:
 /model list
 /model gpt-5.5 medium
 /model subagents gpt-5.5 medium
+/undo
 /goal start Add a regression test for the parser
 /goal run 3
 /goal status
@@ -118,6 +120,7 @@ For workspace behavior and reset semantics, see [docs/workspaces.md](docs/worksp
 ## Architecture
 
 The maintained runtime architecture doc is [docs/architecture-runtime.md](docs/architecture-runtime.md).
+The supporting research for the architecture and roadmap is [docs/research-agentic-coding-harnesses.md](docs/research-agentic-coding-harnesses.md).
 
 At a high level:
 
@@ -143,13 +146,11 @@ Tests use mocked model paths where possible and should not require live provider
 
 The next major work is tracked in [docs/reliability-roadmap.md](docs/reliability-roadmap.md). The highest-priority items are:
 
-1. Route OpenAI tool-using turns through an endpoint that supports reasoning effort.
-2. Harden session and goal storage paths.
-3. Separate TUI transcript, status, logs, traces, and errors.
-4. Add structural permissions and secret/external-directory gates.
-5. Add checkpoints and `/undo`.
-6. Add a goal ledger with acceptance criteria and verification evidence.
-7. Add a local agent-eval harness.
+1. Add a goal ledger with acceptance criteria and verification evidence.
+2. Add a local agent-eval harness.
+3. Add worktree or sandbox isolation for risky or remote-origin work.
+4. Add configurable approval workflows beyond the current hard-deny secret/external-path policy.
+5. Keep TUI transcript, status, logs, traces, and errors isolated as features grow.
 
 ## Non-Goals For Now
 

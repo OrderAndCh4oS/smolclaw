@@ -19,6 +19,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 
 from app.agent_loop import AgentLoop
+from app.checkpoints import CheckpointStore
 from app.definitions import (
     AGENT_MODEL, WORKSPACE_DIR,
 )
@@ -108,6 +109,7 @@ SLASH_COMMANDS_HELP = "\n".join([
     "  /logs                    Show workspace diagnostics log paths",
     "  /details                 Toggle recent tool/thinking activity",
     "  /model [model] [effort]  Show or switch gpt-5.4/gpt-5.5 model",
+    "  /undo                    Undo the last SmolClaw file checkpoint",
     "  /goal status             Show the current session goal",
     "  /goal start <objective>  Set the session goal",
     "  /goal run [max_turns]    Continue the goal loop (default: 3)",
@@ -226,6 +228,17 @@ def _build_goal_loop_prompt() -> str:
         "If the user asks to make something the active goal, call goal_start with the concrete objective. "
         "If the goal is complete or blocked, call goal_update with the appropriate status and a brief note."
     )
+
+
+def _format_undo_result(result) -> str:
+    if not result.ok:
+        if result.conflicts:
+            return "\n".join([result.message, *result.conflicts])
+        return result.message
+    lines = [result.message]
+    if result.restored_paths:
+        lines.extend(f"- {path}" for path in result.restored_paths)
+    return "\n".join(lines)
 
 
 def _workspace_context(workspace_root: str) -> WorkspaceContext:
@@ -523,6 +536,7 @@ async def _tui_chat_loop(
     smol_rag = runtime.smol_rag
     session_manager = runtime.session_manager
     goal_store = GoalStore(paths.sessions_dir)
+    checkpoint_store = CheckpointStore(paths.checkpoints_dir)
     memory_dir = ensure_dir(paths.memory_docs_dir)
     register_session_end_hooks = _make_session_end_hook_registrar(paths, memory_dir, auto_export)
 
@@ -572,6 +586,7 @@ async def _tui_chat_loop(
         memory_store_tool=memory_store_tool,
         session_export_hook=session_export_hook,
         smol_rag=smol_rag,
+        checkpoint_store=checkpoint_store,
         workspace_root=workspace_ctx.root_dir,
         model=model,
         auto_export=auto_export,
@@ -602,6 +617,7 @@ async def _chat_loop(
     smol_rag = runtime.smol_rag
     session_manager = runtime.session_manager
     goal_store = GoalStore(paths.sessions_dir)
+    checkpoint_store = CheckpointStore(paths.checkpoints_dir)
     memory_dir = ensure_dir(paths.memory_docs_dir)
     register_session_end_hooks = _make_session_end_hook_registrar(paths, memory_dir, auto_export)
 
@@ -702,6 +718,11 @@ async def _chat_loop(
                 agent.session.clear()
                 session_manager.save(agent.session)
                 console.print("[dim]Session cleared.[/dim]")
+                continue
+            if user_input == "/undo":
+                result = checkpoint_store.undo_last(session_key=agent.session.key)
+                style = "dim" if result.ok else "red"
+                console.print(f"[{style}]{_format_undo_result(result)}[/{style}]")
                 continue
             if command == "/model":
                 if not command_arg:

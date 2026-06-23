@@ -21,6 +21,7 @@ def workspace(temp_dir):
 
     for subdir in (
         paths.sessions_dir,
+        paths.checkpoints_dir,
         paths.memory_docs_dir,
         paths.log_dir,
         paths.cache_dir,
@@ -47,6 +48,7 @@ async def test_reset_workspace_deletes_mutable_state(workspace):
 
     for subdir in (
         paths.sessions_dir,
+        paths.checkpoints_dir,
         paths.memory_docs_dir,
         paths.log_dir,
         paths.cache_dir,

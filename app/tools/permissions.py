@@ -1,5 +1,6 @@
 """Permission modes for restricting tool access per agent."""
 
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, Final, Mapping, Set
 
@@ -15,6 +16,15 @@ SHELL_READ: Final[str] = "shell_read"
 SHELL_WRITE: Final[str] = "shell_write"
 EXTERNAL_PATH: Final[str] = "external_path"
 DELETE: Final[str] = "delete"
+SECRET_PATH: Final[str] = "secret_path"
+
+SECRET_FILENAMES: Final[frozenset[str]] = frozenset({".env"})
+SECRET_PREFIXES: Final[tuple[str, ...]] = (".env.",)
+SECRET_FILENAME_EXCEPTIONS: Final[frozenset[str]] = frozenset({
+    ".env.example",
+    ".env.sample",
+    ".env.template",
+})
 
 DIRECT_MUTATION_TOOLS: Final[Set[str]] = {
     "write_file",
@@ -104,13 +114,14 @@ def _policy_capabilities(tool: Tool, kwargs: Mapping[str, Any]) -> set[str]:
 class PermissionMiddleware:
     """Middleware that blocks tool calls not permitted by the agent's permission mode."""
 
-    def __init__(self, mode: str):
+    def __init__(self, mode: str, *, workspace=None):
         if mode not in VALID_PERMISSION_MODES:
             supported = ", ".join(sorted(VALID_PERMISSION_MODES))
             raise ValueError(
                 f"Unknown permission mode '{mode}'. Expected one of: {supported}."
             )
         self.mode = mode
+        self.workspace = workspace
         self.config = PERMISSION_MODES[mode]
         self.decision = PermissionDecision(
             blocked_capabilities=self.config.blocked_capabilities,
@@ -118,6 +129,9 @@ class PermissionMiddleware:
         self.blocked_tools = set(self.config.blocked_tools)
 
     async def __call__(self, tool: Tool, kwargs: Dict[str, Any], next_fn: NextFn):
+        path_error = self._path_policy_error(tool.name, kwargs)
+        if path_error:
+            return path_error
         if tool.name in self.blocked_tools:
             return f"Error: tool '{tool.name}' is not permitted in '{self.mode}' mode."
         capabilities = _policy_capabilities(tool, kwargs)
@@ -128,3 +142,53 @@ class PermissionMiddleware:
             caps = ", ".join(blocked)
             return f"Error: tool '{tool.name}' is not permitted in '{self.mode}' mode ({caps})."
         return await next_fn(tool, kwargs)
+
+    def _path_policy_error(self, tool_name: str, kwargs: Mapping[str, Any]) -> str | None:
+        for label, path in self._path_arguments(tool_name, kwargs):
+            if not path:
+                continue
+            if self._is_secret_path(path):
+                return f"Error: tool '{tool_name}' is not permitted to access secret path '{path}'."
+            if self.workspace is not None:
+                _, err = self.workspace.resolve_contained_path(path, label=label)
+                if err:
+                    return f"Error: tool '{tool_name}' is not permitted to access external path '{path}'."
+        return None
+
+    def _path_arguments(self, tool_name: str, kwargs: Mapping[str, Any]) -> list[tuple[str, str]]:
+        if tool_name in {"read_file", "write_file", "edit_file", "list_dir"}:
+            return [("path", str(kwargs.get("path") or ""))]
+        if tool_name in {"find_files", "grep_search"}:
+            return [("path", str(kwargs.get("path") or "."))]
+        if tool_name == "git_status":
+            return [("cwd", str(kwargs.get("cwd") or "."))]
+        if tool_name == "git_diff":
+            paths = [("cwd", str(kwargs.get("cwd") or "."))]
+            if kwargs.get("path"):
+                paths.append(("path", str(kwargs.get("path"))))
+            return paths
+        if tool_name == "run_command":
+            return [("cwd", str(kwargs.get("cwd") or "."))]
+        if tool_name == "apply_patch":
+            return [("path", path) for path in self._patch_targets(str(kwargs.get("patch_text") or ""))]
+        return []
+
+    def _patch_targets(self, patch_text: str) -> list[str]:
+        targets = []
+        for line in patch_text.splitlines():
+            if line.startswith("*** Add File: "):
+                targets.append(line.removeprefix("*** Add File: ").strip())
+            elif line.startswith("*** Update File: "):
+                targets.append(line.removeprefix("*** Update File: ").strip())
+            elif line.startswith("*** Delete File: "):
+                targets.append(line.removeprefix("*** Delete File: ").strip())
+        return targets
+
+    def _is_secret_path(self, path: str) -> bool:
+        parts = os.path.normpath(path).split(os.sep)
+        for part in parts:
+            if part in SECRET_FILENAME_EXCEPTIONS:
+                continue
+            if part in SECRET_FILENAMES or part.startswith(SECRET_PREFIXES):
+                return True
+        return False

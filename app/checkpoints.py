@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.storage_paths import atomic_write_json, contained_storage_path
+from app.storage_paths import atomic_write_bytes, atomic_write_json, contained_storage_path, load_json_with_backup
 
 
 MAX_SNAPSHOT_BYTES = 1_000_000
@@ -72,6 +72,19 @@ class FileSnapshot:
             "skip_reason": self.skip_reason,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FileSnapshot":
+        return cls(
+            path=str(data["path"]),
+            exists=bool(data["exists"]),
+            is_file=bool(data["is_file"]),
+            size=int(data.get("size") or 0),
+            sha256=data.get("sha256"),
+            content_b64=data.get("content_b64"),
+            skipped=bool(data.get("skipped")),
+            skip_reason=str(data.get("skip_reason") or ""),
+        )
+
 
 @dataclass
 class CheckpointRecord:
@@ -104,6 +117,38 @@ class CheckpointRecord:
             "metadata": self.metadata,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CheckpointRecord":
+        return cls(
+            id=str(data["id"]),
+            created_at=float(data["created_at"]),
+            session_key=data.get("session_key"),
+            tool_name=str(data["tool_name"]),
+            arguments_hash=str(data["arguments_hash"]),
+            changed_paths=[str(path) for path in data.get("changed_paths", [])],
+            before={
+                str(path): FileSnapshot.from_dict(snapshot)
+                for path, snapshot in data.get("before", {}).items()
+            },
+            after={
+                str(path): FileSnapshot.from_dict(snapshot)
+                for path, snapshot in data.get("after", {}).items()
+            },
+            run_id=data.get("run_id"),
+            prompt_id=data.get("prompt_id"),
+            tool_call_id=data.get("tool_call_id"),
+            metadata=dict(data.get("metadata") or {}),
+        )
+
+
+@dataclass
+class CheckpointUndoResult:
+    ok: bool
+    message: str
+    checkpoint_id: str | None = None
+    restored_paths: list[str] = field(default_factory=list)
+    conflicts: list[str] = field(default_factory=list)
+
 
 class CheckpointStore:
     def __init__(self, checkpoints_dir: str):
@@ -115,6 +160,68 @@ class CheckpointStore:
 
     def save(self, record: CheckpointRecord):
         atomic_write_json(self.path_for(record.id), record.to_dict())
+
+    def load(self, checkpoint_id: str) -> CheckpointRecord | None:
+        data = load_json_with_backup(self.path_for(checkpoint_id))
+        if not data:
+            return None
+        return CheckpointRecord.from_dict(data)
+
+    def list_records(self, *, session_key: str | None = None) -> list[CheckpointRecord]:
+        records: list[CheckpointRecord] = []
+        for name in os.listdir(self.checkpoints_dir):
+            if not name.endswith(".json") or name.endswith(".json.bak"):
+                continue
+            checkpoint_id = name.removesuffix(".json")
+            record = self.load(checkpoint_id)
+            if record is None:
+                continue
+            if session_key is not None and record.session_key != session_key:
+                continue
+            records.append(record)
+        return sorted(records, key=lambda record: record.created_at)
+
+    def latest(self, *, session_key: str | None = None, include_undone: bool = False) -> CheckpointRecord | None:
+        records = self.list_records(session_key=session_key)
+        for record in reversed(records):
+            if include_undone or not record.metadata.get("undone_at"):
+                return record
+        return None
+
+    def undo_last(self, *, session_key: str | None = None) -> CheckpointUndoResult:
+        record = self.latest(session_key=session_key)
+        if record is None:
+            return CheckpointUndoResult(ok=False, message="No checkpoint to undo.")
+
+        conflicts = self._undo_conflicts(record)
+        if conflicts:
+            return CheckpointUndoResult(
+                ok=False,
+                message="Checkpoint undo refused because current files no longer match the checkpoint.",
+                checkpoint_id=record.id,
+                conflicts=conflicts,
+            )
+
+        restored_paths = []
+        for path in record.changed_paths:
+            before = record.before[path]
+            if before.exists:
+                os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+                atomic_write_bytes(path, base64.b64decode(before.content_b64 or ""), backup=True)
+            elif os.path.exists(path):
+                os.unlink(path)
+            restored_paths.append(path)
+
+        record.metadata["undone_at"] = time.time()
+        self.save(record)
+        count = len(restored_paths)
+        plural = "" if count == 1 else "s"
+        return CheckpointUndoResult(
+            ok=True,
+            message=f"Undid checkpoint {record.id}; restored {count} path{plural}.",
+            checkpoint_id=record.id,
+            restored_paths=restored_paths,
+        )
 
     def create_record(
         self,
@@ -179,3 +286,23 @@ class CheckpointStore:
             snapshot.size,
             snapshot.skipped,
         )
+
+    def _undo_conflicts(self, record: CheckpointRecord) -> list[str]:
+        conflicts = []
+        for path in record.changed_paths:
+            before = record.before.get(path)
+            after = record.after.get(path)
+            if before is None or after is None:
+                conflicts.append(f"{path}: incomplete checkpoint record")
+                continue
+            if before.skipped or after.skipped:
+                reason = before.skip_reason or after.skip_reason or "snapshot skipped"
+                conflicts.append(f"{path}: cannot restore skipped snapshot ({reason})")
+                continue
+            if before.exists and not before.content_b64:
+                conflicts.append(f"{path}: checkpoint does not contain original content")
+                continue
+            current = FileSnapshot.capture(path)
+            if self._snapshot_hash(current) != self._snapshot_hash(after):
+                conflicts.append(f"{path}: changed since checkpoint")
+        return conflicts

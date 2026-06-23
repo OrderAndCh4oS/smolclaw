@@ -20,6 +20,7 @@ class WorkspacePaths:
     sqlite_db_path: str
     kg_db_path: str
     sessions_dir: str
+    checkpoints_dir: str
     memory_docs_dir: str
     log_dir: str
     cache_dir: str
@@ -43,6 +44,7 @@ def build_workspace_paths(workspace_root: str | None = None) -> WorkspacePaths:
         sqlite_db_path=os.path.join(data_dir, "smolclaw.db"),
         kg_db_path=os.path.join(data_dir, "kg_db.graphml"),
         sessions_dir=sessions_dir,
+        checkpoints_dir=os.path.join(data_dir, "checkpoints"),
         memory_docs_dir=os.path.join(root_dir, "memory"),
         log_dir=os.path.join(data_dir, "logs"),
         cache_dir=os.path.join(data_dir, "cache"),
@@ -57,6 +59,7 @@ def ensure_workspace_dirs(paths: WorkspacePaths) -> WorkspacePaths:
         paths.root_dir,
         paths.data_dir,
         paths.sessions_dir,
+        paths.checkpoints_dir,
         paths.memory_docs_dir,
         paths.log_dir,
         paths.cache_dir,

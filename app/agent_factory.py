@@ -205,15 +205,14 @@ def build_agent_loop(
     )
     filtered_registry.use(HookFiringMiddleware(hook_runner))
 
-    # Apply permission mode restrictions
-    if config.permission_mode != "full":
-        from app.tools.permissions import PermissionMiddleware
-        filtered_registry.use(PermissionMiddleware(config.permission_mode))
+    # Apply permission mode and path safety restrictions.
+    from app.tools.permissions import PermissionMiddleware
+    filtered_registry.use(PermissionMiddleware(config.permission_mode, workspace=workspace))
     filtered_registry.use(SafetyMiddleware(safety_state))
     if workspace is not None:
         from app.tools.checkpointing import CheckpointMiddleware
 
-        checkpoint_store = CheckpointStore(os.path.join(workspace.paths.data_dir, "checkpoints"))
+        checkpoint_store = CheckpointStore(workspace.paths.checkpoints_dir)
         runtime_ctx.shared_state["checkpoint_store"] = checkpoint_store
         filtered_registry.use(CheckpointMiddleware(
             checkpoint_store,
