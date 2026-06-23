@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import sys
+import time
 import pytest
 
 from cli.tui import ActivityEntry, CoderTui, DETAILS_HEIGHT, TranscriptEntry, UiState, _fit_line
@@ -618,6 +619,28 @@ async def test_tui_submit_streams_agent_events_without_real_llm():
     assert tui.state.active_tool == "idle"
     assert tui.state.run_state == "idle"
     assert tui.state.activity == "idle"
+
+
+@pytest.mark.asyncio
+async def test_tui_agent_processing_does_not_block_render_loop():
+    tui = _fake_tui()
+
+    async def blocking_process(prompt, on_output=None, on_event=None):
+        time.sleep(0.2)
+        if on_output:
+            await on_output("done")
+        return "done"
+
+    tui.agent.process = blocking_process
+
+    submit_task = asyncio.create_task(tui.submit("slow work"))
+    tick_task = asyncio.create_task(asyncio.sleep(0.01))
+
+    await asyncio.wait_for(tick_task, timeout=0.05)
+    await submit_task
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "done" in rendered
 
 
 @pytest.mark.asyncio

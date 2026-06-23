@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import textwrap
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
@@ -39,6 +40,38 @@ SPINNER_FRAMES = ("|", "/", "-", "\\")
 DETAILS_HEIGHT = 4
 MAX_ACTIVITY_ENTRIES = 80
 SHUTDOWN_PHASE_TIMEOUT = 8.0
+
+
+class _WorkerLoop:
+    """Dedicated event loop for agent/tool work that should not starve rendering."""
+
+    def __init__(self):
+        self._ready = threading.Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread = threading.Thread(target=self._run, name="smolclaw-tui-worker", daemon=True)
+        self._thread.start()
+        self._ready.wait()
+
+    def _run(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._loop = loop
+        self._ready.set()
+        try:
+            loop.run_forever()
+        finally:
+            loop.close()
+
+    def submit(self, awaitable: Awaitable):
+        if self._loop is None:
+            raise RuntimeError("worker loop is not ready")
+        return asyncio.run_coroutine_threadsafe(awaitable, self._loop)
+
+    def stop(self):
+        if self._loop is None:
+            return
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=2.0)
 
 
 @dataclass
@@ -195,6 +228,8 @@ class CoderTui:
         self.input_buffer = Buffer(multiline=True)
         self._transcript_window: Window | None = None
         self._app: Application | None = None
+        self._ui_loop: asyncio.AbstractEventLoop | None = None
+        self._worker_loop: _WorkerLoop | None = None
         self._agent_task: asyncio.Task | None = None
         self._spinner_task: asyncio.Task | None = None
         self._shutdown_task: asyncio.Task | None = None
@@ -207,6 +242,7 @@ class CoderTui:
         self._shutdown_forced = False
 
     async def run(self):
+        self._ui_loop = asyncio.get_running_loop()
         self._refresh_goal_state()
         self._append("system", "SmolClaw ready. Type /help for commands, /quit to exit.")
         self._app = self._build_app()
@@ -365,6 +401,8 @@ class CoderTui:
         )
 
     async def submit(self, text: str):
+        if self._ui_loop is None:
+            self._ui_loop = asyncio.get_running_loop()
         self._append("user", text, title="you")
         command_parts = text.split(maxsplit=1)
         command = command_parts[0]
@@ -496,7 +534,9 @@ class CoderTui:
         self.state.activity = "storing"
         self._invalidate()
         try:
-            result = await self.memory_store_tool.execute(content=command_arg)
+            result = await self._run_in_worker(
+                lambda: self.memory_store_tool.execute(content=command_arg)
+            )
             self._append("system", str(result))
         finally:
             self.state.run_state = "idle"
@@ -512,10 +552,12 @@ class CoderTui:
         )
         self._invalidate()
         try:
-            await self.session_export_hook({
-                "session_key": self.agent.session.key,
-                "session": self.agent.session,
-            })
+            await self._run_in_worker(
+                lambda: self.session_export_hook({
+                    "session_key": self.agent.session.key,
+                    "session": self.agent.session,
+                })
+            )
             self._append("system", "Current thread exported to memory.")
         except asyncio.CancelledError:
             raise
@@ -545,6 +587,8 @@ class CoderTui:
         await self._agent_task
 
     async def _run_agent_turn(self, prompt: str):
+        if self._ui_loop is None:
+            self._ui_loop = asyncio.get_running_loop()
         self.state.run_state = "running"
         self.state.active_tool = "idle"
         self.state.activity = "running"
@@ -554,17 +598,18 @@ class CoderTui:
         self._invalidate()
 
         async def on_output(chunk: str):
-            self._pending_llm_output += chunk
-            self._invalidate_throttled()
+            await self._run_on_ui(lambda: self._handle_output_chunk(chunk))
 
         async def on_event(event: dict):
-            await self._handle_agent_event(event)
+            await self._run_on_ui(lambda: self._handle_agent_event(event))
 
         try:
-            response = await self.agent.process(
-                prompt,
-                on_output=on_output,
-                on_event=on_event,
+            response = await self._run_in_worker(
+                lambda: self.agent.process(
+                    prompt,
+                    on_output=on_output,
+                    on_event=on_event,
+                )
             )
             if self._pending_llm_output and not assistant_entry.text.strip():
                 self._flush_pending_llm_output(has_tool_calls=False)
@@ -589,6 +634,29 @@ class CoderTui:
             self._refresh_goal_state()
             self.state.git_state = _git_state(self.workspace_root)
             self._invalidate()
+
+    async def _handle_output_chunk(self, chunk: str):
+        self._pending_llm_output += chunk
+        self._invalidate_throttled()
+
+    async def _run_on_ui(self, coro_factory: Callable[[], Awaitable]):
+        ui_loop = self._ui_loop
+        if ui_loop is None:
+            return await coro_factory()
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        if current_loop is ui_loop:
+            return await coro_factory()
+        future = asyncio.run_coroutine_threadsafe(coro_factory(), ui_loop)
+        return await asyncio.wrap_future(future)
+
+    async def _run_in_worker(self, coro_factory: Callable[[], Awaitable]):
+        if self._worker_loop is None:
+            self._worker_loop = _WorkerLoop()
+        future = self._worker_loop.submit(coro_factory())
+        return await asyncio.wrap_future(future)
 
     async def _handle_agent_event(self, event: dict):
         if event.get("type") == "llm":
@@ -680,19 +748,19 @@ class CoderTui:
         try:
             await self._await_shutdown_step(
                 "Closing agent session and hooks.",
-                self.agent.close(),
+                self._run_in_worker(lambda: self.agent.close()),
                 active_tool="agent",
             )
         finally:
-            close_fn = getattr(self.smol_rag, "close", None)
-            if callable(close_fn):
-                result = close_fn()
-                if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
-                    await self._await_shutdown_step(
-                        "Closing memory stores.",
-                        result,
-                        active_tool="memory",
-                    )
+            if callable(getattr(self.smol_rag, "close", None)):
+                await self._await_shutdown_step(
+                    "Closing memory stores.",
+                    self._run_in_worker(self._close_smol_rag),
+                    active_tool="memory",
+                )
+            if self._worker_loop is not None:
+                self._worker_loop.stop()
+                self._worker_loop = None
             if not self._shutdown_forced:
                 self._shutdown_complete = True
                 self.state.run_state = "idle"
@@ -700,6 +768,14 @@ class CoderTui:
                 self.state.activity = "idle"
                 self._record_activity("system", "Shutdown complete.")
                 self._invalidate()
+
+    async def _close_smol_rag(self):
+        close_fn = getattr(self.smol_rag, "close", None)
+        if not callable(close_fn):
+            return
+        result = close_fn()
+        if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
+            await result
 
     async def _await_shutdown_step(self, message: str, awaitable, *, active_tool: str) -> bool:
         if self._shutdown_forced:
