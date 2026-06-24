@@ -1,0 +1,29 @@
+id: csv_memory_policy
+prompt: Fix parse_csv_row so it handles comma-separated rows with surrounding whitespace.
+verification:
+  - python -m pytest
+memory:
+  source_id: csv-parser-policy
+  required_terms:
+    - preserve empty fields
+    - backslash escapes literally
+  content: |
+    Project decision: parse_csv_row must preserve empty fields because downstream
+    column positions are significant. Treat backslash escapes literally; this
+    parser intentionally does not use Python's csv module because the project
+    has a custom lightweight dialect.
+patches:
+  memory_off:
+    parser.py: |
+      def parse_csv_row(value: str) -> list[str]:
+          """Parse one comma-separated row."""
+          if not value:
+              return []
+          return [part.strip() for part in value.split(",") if part.strip()]
+  memory_on:
+    parser.py: |
+      def parse_csv_row(value: str) -> list[str]:
+          """Parse one comma-separated row."""
+          if value == "":
+              return [""]
+          return [part.strip() for part in value.split(",")]

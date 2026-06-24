@@ -66,8 +66,38 @@ def test_goal_ledger_store_start_record_and_complete(temp_dir):
     completed = store.update("session-a", status="complete", note="done")
 
     assert completed.status == "complete"
+    assert completed.loop_status == "complete"
     assert completed.verification[0].summary == "pytest passed"
     assert store.load("session-a").status == "complete"
+
+
+def test_goal_ledger_records_durable_loop_state(temp_dir):
+    store = GoalLedgerStore(os.path.join(temp_dir, "ledgers"))
+    store.start("session-a", "Ship ledger")
+
+    running = store.mark_loop_started("session-a", run_id="run-123")
+
+    assert running.run_id == "run-123"
+    assert running.loop_status == "running"
+    assert running.loop_started_at is not None
+    assert running.stop_reason is None
+
+    waiting = store.mark_loop_finished("session-a", stop_reason="assistant_final")
+
+    assert waiting.loop_status == "waiting"
+    assert waiting.stop_reason == "assistant_final"
+    assert waiting.loop_finished_at is not None
+
+    paused = store.mark_loop_finished(
+        "session-a",
+        stop_reason="assistant_final",
+        pending_approvals=2,
+    )
+
+    assert paused.loop_status == "paused"
+    assert paused.pending_approvals == 2
+    assert "Loop status: paused" in paused.render_for_prompt()
+    assert "Pending approvals: 2" in paused.render_for_prompt()
 
 
 def test_goal_ledger_completion_requires_criteria_or_verification_reason(temp_dir):
@@ -188,6 +218,8 @@ def test_cli_goal_helpers():
         GoalState(objective="Ship it", status="blocked", note="needs key", turn_count=4)
     )
     assert "Goal: Ship it" in formatted
+
+    assert "Start one with /goal <objective>" in _format_goal_status(None)
     assert "Status: blocked" in formatted
     assert "Turns: 4" in formatted
     assert "Note: needs key" in formatted

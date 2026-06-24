@@ -54,6 +54,11 @@ from cli.commands import (
     _format_bootstrap_result,
     _format_diagnostics_paths,
     _format_goal_status,
+    _format_goal_started,
+    _format_inferred_goal_started,
+    GOAL_COMMAND_HELP,
+    infer_goal_from_thread,
+    _parse_goal_command,
     _format_undo_result,
     _parse_goal_run_count,
     _resolve_approval_command,
@@ -559,6 +564,57 @@ def doctor_command(
     console.print(format_doctor_report(run_doctor(workspace)))
 
 
+@app.command(name="memory-eval")
+def memory_eval_command(
+    suite: list[str] = typer.Argument(..., help="One or more memory eval YAML suites"),
+    mode: str = typer.Option("deterministic", "--mode", help="Eval mode: deterministic, rag, or answer"),
+    output: Optional[str] = typer.Option(None, "--output", help="Directory for eval report JSON"),
+    top_k: int = typer.Option(5, "--top-k", help="Number of corpus sources to retrieve per question"),
+    model: Optional[str] = typer.Option(None, "--model", help="Completion model for --mode answer"),
+    baseline: Optional[str] = typer.Option(None, "--baseline", help="Optional prior report/suite JSON for score deltas"),
+    write_baseline: Optional[str] = typer.Option(None, "--write-baseline", help="Optional path to write the current suite JSON"),
+    max_score_drop: Optional[float] = typer.Option(None, "--max-score-drop", help="Fail if any baseline score delta drops by more than this amount"),
+):
+    """Run a corpus-memory and knowledge-graph eval suite."""
+    from app.memory_eval import (
+        MemoryEvalRunner,
+        build_memory_eval_suite_report,
+        load_memory_eval_baseline_scores,
+        memory_eval_regressions,
+        memory_eval_report_to_json,
+        memory_eval_suite_report_to_json,
+    )
+
+    if mode not in {"deterministic", "rag", "answer"}:
+        raise typer.BadParameter("--mode must be one of: deterministic, rag, answer")
+    runner = MemoryEvalRunner(
+        mode=mode,  # type: ignore[arg-type]
+        output_dir=output,
+        top_k=top_k,
+        answer_model=model,
+    )
+    reports = [runner.run(suite_path) for suite_path in suite]
+    if len(reports) == 1 and not baseline and not write_baseline:
+        typer.echo(memory_eval_report_to_json(reports[0]))
+        raise typer.Exit(0 if reports[0].status == "passed" else 2)
+    baseline_scores = load_memory_eval_baseline_scores(baseline) if baseline else {}
+    suite_report = build_memory_eval_suite_report(reports, baseline=baseline_scores)
+    regressions = (
+        memory_eval_regressions(suite_report, max_score_drop=max_score_drop)
+        if max_score_drop is not None
+        else []
+    )
+    if regressions:
+        suite_report["status"] = "failed"
+        suite_report["regressions"] = regressions
+    if write_baseline:
+        with open(write_baseline, "w", encoding="utf-8") as handle:
+            json.dump(suite_report, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+    typer.echo(memory_eval_suite_report_to_json(suite_report))
+    raise typer.Exit(0 if suite_report["status"] == "passed" else 2)
+
+
 async def _run_once(
     *,
     prompt: str,
@@ -629,6 +685,9 @@ async def _run_once(
         return {
             "session_key": agent.session.key,
             "status": current_goal.status if current_goal is not None else "complete",
+            "loop_status": getattr(current_goal, "loop_status", None) if current_goal is not None else None,
+            "goal_run_id": getattr(current_goal, "run_id", None) if current_goal is not None else None,
+            "pending_approvals": getattr(current_goal, "pending_approvals", 0) if current_goal is not None else 0,
             "response": responses[-1] if responses else "",
             "responses": responses,
             "turns": len(responses),
@@ -1005,18 +1064,32 @@ async def _chat_loop(
                 console.print(f"[dim]Switched {model_status(agent.llm)}[/dim]")
                 continue
             if command == "/goal":
-                sub_parts = command_arg.split(maxsplit=1)
-                subcommand = sub_parts[0] if sub_parts else "status"
-                sub_arg = sub_parts[1].strip() if len(sub_parts) > 1 else ""
+                subcommand, sub_arg = _parse_goal_command(command_arg)
+                if subcommand == "help":
+                    console.print(f"[dim]{GOAL_COMMAND_HELP}[/dim]")
+                    continue
                 if subcommand in ("", "status"):
                     console.print(f"[dim]{_format_goal_status(goal_store.load(agent.session.key))}[/dim]")
                     continue
+                if subcommand == "infer":
+                    try:
+                        inferred = await infer_goal_from_thread(agent.llm, agent.session.messages)
+                        goal = goal_store.start(
+                            agent.session.key,
+                            inferred.objective,
+                            acceptance_criteria=inferred.acceptance_criteria,
+                        )
+                    except ValueError as exc:
+                        console.print(f"[dim]Error: {exc}[/dim]")
+                        continue
+                    console.print(f"[dim]{_format_inferred_goal_started(goal, inferred)}[/dim]")
+                    continue
                 if subcommand == "start":
                     if not sub_arg:
-                        console.print("[dim]Usage: /goal start <objective>[/dim]")
+                        console.print(f"[dim]{GOAL_COMMAND_HELP}[/dim]")
                         continue
                     goal = goal_store.start(agent.session.key, sub_arg)
-                    console.print(f"[dim]Goal set: {goal.objective}[/dim]")
+                    console.print(f"[dim]{_format_goal_started(goal)}[/dim]")
                     continue
                 if subcommand == "complete":
                     try:
@@ -1063,7 +1136,7 @@ async def _chat_loop(
                             console.print(f"[dim]{_format_goal_status(goal)}[/dim]")
                             break
                     continue
-                console.print("[dim]Usage: /goal status|start|run|complete|block|clear[/dim]")
+                console.print(f"[dim]{GOAL_COMMAND_HELP}[/dim]")
                 continue
             if command == "/remember":
                 if not command_arg:

@@ -149,6 +149,7 @@ flowchart TD
 - Runtime state paths resolve under the state root. For normal local use this is `<workspace>/.smolclaw`; for isolated worktree runs it is the original workspace's `.smolclaw` directory.
 - Run traces live under `.smolclaw/stores/traces/` as JSONL plus summaries. `/trace`, `/trace list`, and `/trace events` consume those files rather than operational logs.
 - Goal ledgers, approvals, checkpoints, sessions, memory, and eval artifacts follow the same state-root rule.
+- Active goal ledgers persist long-running loop state: latest run id, loop status (`idle`, `running`, `waiting`, `paused`, `complete`, or `blocked`), turn count, stop reason, timestamps, and pending approval count.
 - Local policy denies `.env` and `.env.*` paths except example/template files, and denies command working directories outside the workspace.
 - `reset_workspace()` is workspace-owned rather than `data_dir`-owned, so the runtime clears mutable state consistently across the new layout.
 - `.smolclaw/research/` is preserved across reset because it is treated as source material rather than derived mutable state.
@@ -218,6 +219,7 @@ flowchart TD
 - `tool_search` only exposes deferred tools that already exist within the projected registry.
 - Mutation tools create file checkpoints under the workspace state directory and `/undo` restores the latest non-conflicting checkpoint for the active session.
 - Child agents are created through `ChildAgentFactory`, not ad hoc loop construction in tool code.
+- Goal loops update the durable ledger when a run starts and finishes, so `/goal status`, non-interactive run JSON, and future resume logic can distinguish normal waiting from paused runs caused by stop requests, iteration limits, errors, or pending approvals.
 - Direct local shell is not part of the shipped direct runtime path until a real sandbox exists.
 
 ## Reading Guide

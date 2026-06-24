@@ -47,7 +47,6 @@ Status: paused. The foundation for trace export, goal ledgers, approvals, evals,
   - next steps;
   - trace/ledger/session ids.
 - Add redaction before storing transcript-derived memories.
-- Fix `MemoryStoreTool` so generated `mem-*` ids are passed as `source_id` into `ingest_text`, not only used as filenames.
 - Extend recall so `memory_recall` can include `journal` memories or accept a `memory_type` parameter.
 
 ### Trace And Ledger UX

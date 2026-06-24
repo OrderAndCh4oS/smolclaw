@@ -37,10 +37,15 @@ from app.model_settings import (
 )
 from app.pricing import format_costs
 from cli.commands import (
+    GOAL_COMMAND_HELP,
     SLASH_COMMANDS_HELP,
     SlashCommandDispatcher,
     _format_diagnostics_paths,
+    _format_goal_started,
+    _format_inferred_goal_started,
     _format_undo_result,
+    infer_goal_from_thread,
+    _parse_goal_command,
     parse_slash_command,
 )
 
@@ -677,10 +682,11 @@ class CoderTui:
         return "Session cleared."
 
     async def _handle_goal(self, command_arg: str):
-        sub_parts = command_arg.split(maxsplit=1)
-        subcommand = sub_parts[0] if sub_parts else "status"
-        sub_arg = sub_parts[1].strip() if len(sub_parts) > 1 else ""
+        subcommand, sub_arg = _parse_goal_command(command_arg)
         session_key = self.agent.session.key
+        if subcommand == "help":
+            self._append("system", GOAL_COMMAND_HELP)
+            return
         if subcommand in ("", "status"):
             goal = await self._run_status_task(
                 activity="loading",
@@ -693,9 +699,39 @@ class CoderTui:
             self._append("system", self.format_goal_status(goal))
             self._apply_goal_state(goal)
             return
+        if subcommand == "infer":
+            try:
+                inferred = await self._run_status_task(
+                    activity="loading",
+                    active_tool="goal",
+                    boundary="tui.goal",
+                    worker_fn=lambda: infer_goal_from_thread(self.agent.llm, self.agent.session.messages),
+                    user_error_exceptions=(ValueError,),
+                )
+            except ValueError as exc:
+                self._append("error", str(exc))
+                return
+            if inferred is _TASK_FAILED:
+                return
+            goal = await self._run_status_task(
+                activity="loading",
+                active_tool="goal",
+                boundary="tui.goal",
+                worker_fn=lambda: self.goal_store.start(
+                    session_key,
+                    inferred.objective,
+                    acceptance_criteria=inferred.acceptance_criteria,
+                ),
+                user_error_exceptions=(ValueError,),
+            )
+            if goal is _TASK_FAILED:
+                return
+            self._append("system", _format_inferred_goal_started(goal, inferred))
+            self._apply_goal_state(goal)
+            return
         if subcommand == "start":
             if not sub_arg:
-                self._append("system", "Usage: /goal start <objective>")
+                self._append("system", GOAL_COMMAND_HELP)
                 return
             goal = await self._run_status_task(
                 activity="loading",
@@ -706,7 +742,7 @@ class CoderTui:
             )
             if goal is _TASK_FAILED:
                 return
-            self._append("system", f"Goal set: {goal.objective}")
+            self._append("system", _format_goal_started(goal))
             self._apply_goal_state(goal)
             return
         if subcommand == "complete":
@@ -767,7 +803,7 @@ class CoderTui:
                     break
             self._apply_goal_state(goal)
             return
-        self._append("system", "Usage: /goal status|start|run|complete|block|clear")
+        self._append("system", GOAL_COMMAND_HELP)
 
     async def _load_goal(self, session_key: str):
         return await self._run_status_task(

@@ -16,10 +16,25 @@ GOAL_LEDGER_SCHEMA_VERSION = 1
 CriterionStatus = Literal["pending", "satisfied", "not_applicable"]
 GoalStatus = Literal["active", "complete", "blocked"]
 EvidenceKind = Literal["read", "search", "status", "diff", "command", "test", "checkpoint"]
+LoopStatus = Literal["idle", "running", "waiting", "paused", "complete", "blocked"]
+VALID_LOOP_STATUSES = {"idle", "running", "waiting", "paused", "complete", "blocked"}
 
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
+
+
+def _legacy_loop_status(data: dict) -> str:
+    status = str(data.get("status") or "active")
+    if status == "complete":
+        return "complete"
+    if status == "blocked":
+        return "blocked"
+    if data.get("stop_reason") in {"max_iterations", "stop_requested", "error"}:
+        return "paused"
+    if data.get("stop_reason"):
+        return "waiting"
+    return "idle"
 
 
 @dataclass
@@ -232,6 +247,10 @@ class GoalLedger:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     turn_count: int = 0
+    loop_status: LoopStatus = "idle"
+    loop_started_at: float | None = None
+    loop_finished_at: float | None = None
+    pending_approvals: int = 0
     note: str = ""
     acceptance_criteria: list[AcceptanceCriterion] = field(default_factory=list)
     plan: list[PlanStep] = field(default_factory=list)
@@ -249,6 +268,9 @@ class GoalLedger:
         if self.status not in VALID_GOAL_STATUSES:
             supported = ", ".join(sorted(VALID_GOAL_STATUSES))
             raise ValueError(f"Invalid goal status '{self.status}'. Expected one of: {supported}.")
+        if self.loop_status not in VALID_LOOP_STATUSES:
+            supported = ", ".join(sorted(VALID_LOOP_STATUSES))
+            raise ValueError(f"Invalid loop status '{self.loop_status}'. Expected one of: {supported}.")
 
     def to_dict(self) -> dict:
         return {
@@ -261,6 +283,10 @@ class GoalLedger:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "turn_count": self.turn_count,
+            "loop_status": self.loop_status,
+            "loop_started_at": self.loop_started_at,
+            "loop_finished_at": self.loop_finished_at,
+            "pending_approvals": self.pending_approvals,
             "note": self.note,
             "acceptance_criteria": [item.to_dict() for item in self.acceptance_criteria],
             "plan": [item.to_dict() for item in self.plan],
@@ -286,6 +312,10 @@ class GoalLedger:
             created_at=float(data.get("created_at") or time.time()),
             updated_at=float(data.get("updated_at") or time.time()),
             turn_count=int(data.get("turn_count") or 0),
+            loop_status=str(data.get("loop_status") or _legacy_loop_status(data)),  # type: ignore[arg-type]
+            loop_started_at=float(data["loop_started_at"]) if data.get("loop_started_at") else None,
+            loop_finished_at=float(data["loop_finished_at"]) if data.get("loop_finished_at") else None,
+            pending_approvals=int(data.get("pending_approvals") or 0),
             note=str(data.get("note") or ""),
             acceptance_criteria=[
                 AcceptanceCriterion.from_dict(item)
@@ -319,8 +349,15 @@ class GoalLedger:
             "Current session goal:",
             f"- Objective: {self.objective}",
             f"- Status: {self.status}",
+            f"- Loop status: {self.loop_status}",
             f"- Goal turns: {self.turn_count}",
         ]
+        if self.run_id:
+            lines.append(f"- Latest run id: {self.run_id}")
+        if self.stop_reason:
+            lines.append(f"- Last stop reason: {self.stop_reason}")
+        if self.pending_approvals:
+            lines.append(f"- Pending approvals: {self.pending_approvals}")
         if self.plan:
             current = next((step for step in self.plan if step.id == self.current_step_id), None)
             if current is not None:
@@ -434,6 +471,14 @@ class GoalLedgerStore:
         if status is not None:
             ledger.status = status  # type: ignore[assignment]
             ledger.stop_reason = status
+            if status == "complete":
+                ledger.loop_status = "complete"
+                ledger.loop_finished_at = time.time()
+            elif status == "blocked":
+                ledger.loop_status = "blocked"
+                ledger.loop_finished_at = time.time()
+            elif status == "active" and ledger.loop_status in {"complete", "blocked"}:
+                ledger.loop_status = "idle"
         if note.strip():
             ledger.note = note.strip()
         if note.strip():
@@ -460,6 +505,42 @@ class GoalLedgerStore:
         if ledger is None or ledger.status != "active":
             return ledger
         ledger.turn_count += 1
+        return self.save(session_key, ledger)
+
+    def mark_loop_started(self, session_key: str, *, run_id: str | None = None) -> GoalLedger | None:
+        ledger = self.load(session_key)
+        if ledger is None or ledger.status != "active":
+            return ledger
+        ledger.run_id = run_id or ledger.run_id
+        ledger.loop_status = "running"
+        ledger.loop_started_at = time.time()
+        ledger.loop_finished_at = None
+        ledger.stop_reason = None
+        return self.save(session_key, ledger)
+
+    def mark_loop_finished(
+        self,
+        session_key: str,
+        *,
+        stop_reason: str,
+        pending_approvals: int = 0,
+    ) -> GoalLedger | None:
+        ledger = self.load(session_key)
+        if ledger is None:
+            return None
+        ledger.stop_reason = stop_reason
+        ledger.loop_finished_at = time.time()
+        ledger.pending_approvals = max(0, int(pending_approvals))
+        if ledger.status == "complete":
+            ledger.loop_status = "complete"
+        elif ledger.status == "blocked":
+            ledger.loop_status = "blocked"
+        elif pending_approvals > 0:
+            ledger.loop_status = "paused"
+        elif stop_reason in {"max_iterations", "stop_requested", "error"}:
+            ledger.loop_status = "paused"
+        else:
+            ledger.loop_status = "waiting"
         return self.save(session_key, ledger)
 
     def record_evidence(

@@ -120,9 +120,12 @@ def resolve_hook_runner_configurers(
 
 def build_context_builder_factory(env: RuntimeEnvironment):
     def _build(config: AgentConfig) -> ContextBuilder:
+        from app.memory_eval import load_latest_memory_eval_summary
+
         skills_paths = [f"{PROJECT_ROOT}/skills/{skill}" for skill in config.skills]
         instruction_paths = _instruction_paths_for_workspace(env.workspace)
         agent_smol_rag = resolve_agent_smol_rag(config, env)
+        memory_eval_summary = load_latest_memory_eval_summary(env.workspace.paths.evals_dir)
         if agent_smol_rag is not None:
             return ContextAssembler(
                 smol_rag=agent_smol_rag,
@@ -132,6 +135,7 @@ def build_context_builder_factory(env: RuntimeEnvironment):
                 shared_bootstrap_path=_SHARED_BOOTSTRAP_PATH,
                 skills_paths=skills_paths,
                 instruction_paths=instruction_paths,
+                memory_eval_summary=memory_eval_summary,
             )
         return ContextBuilder(
             bootstrap_path=config.bootstrap_path,
@@ -139,6 +143,7 @@ def build_context_builder_factory(env: RuntimeEnvironment):
             shared_bootstrap_path=_SHARED_BOOTSTRAP_PATH,
             skills_paths=skills_paths,
             instruction_paths=instruction_paths,
+            memory_eval_summary=memory_eval_summary,
         )
 
     return _build

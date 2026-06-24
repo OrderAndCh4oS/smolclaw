@@ -1,6 +1,6 @@
 import inspect
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
 import typer
@@ -18,6 +18,7 @@ from app.run_views import (
     format_trace_status,
 )
 from app.tools.memory_tools import ContradictionReviewTool
+from app.utilities import extract_json_from_text
 
 
 SLASH_COMMANDS_HELP = "\n".join([
@@ -46,9 +47,10 @@ SLASH_COMMANDS_HELP = "\n".join([
     "  /details                 Toggle recent tool/thinking activity",
     "  /model [model] [effort]  Show/switch gpt-5.4 or gpt-5.5 model",
     "  /undo                    Undo the last SmolClaw file checkpoint",
-    "  /goal status             Show the current session goal",
-    "  /goal start <objective>  Set the session goal",
-    "  /goal run [max_turns]    Continue the goal loop (default: 3)",
+    "  /goal                    Show the current goal and loop state",
+    "  /goal <objective>        Start a goal",
+    "  /goal infer              Infer a goal from this chat",
+    "  /goal run [turns]        Continue the goal loop (default: 3)",
     "  /goal complete [note]    Mark the goal complete",
     "  /goal block [note]       Mark the goal blocked",
     "  /goal clear              Clear the session goal",
@@ -105,6 +107,119 @@ def parse_slash_command(text: str) -> ParsedSlashCommand:
 
 def _format_goal_status(goal: GoalState | None) -> str:
     return format_goal_status(goal)
+
+
+GOAL_COMMAND_HELP = "\n".join([
+    "Goal commands:",
+    "  /goal                    Show current goal status",
+    "  /goal <objective>        Start a new goal",
+    "  /goal infer              Infer a goal from the preceding chat",
+    "  /goal start <objective>  Start a new goal explicitly",
+    "  /goal run [turns]        Continue the goal loop, default 3 turns",
+    "  /goal complete [note]    Mark complete",
+    "  /goal block [note]       Mark blocked",
+    "  /goal clear              Clear the goal",
+])
+
+_GOAL_COMMANDS = {
+    "help": "help",
+    "status": "status",
+    "infer": "infer",
+    "start": "start",
+    "run": "run",
+    "complete": "complete",
+    "block": "block",
+    "clear": "clear",
+}
+
+
+def _parse_goal_command(command_arg: str) -> tuple[str, str]:
+    text = command_arg.strip()
+    if not text:
+        return "status", ""
+    parts = text.split(maxsplit=1)
+    first = parts[0].lower()
+    rest = parts[1].strip() if len(parts) > 1 else ""
+    subcommand = _GOAL_COMMANDS.get(first)
+    if subcommand is None:
+        return "start", text
+    return subcommand, rest
+
+
+def _format_goal_started(goal) -> str:
+    return (
+        f"Goal set: {goal.objective}\n"
+        "Next: use /goal run to continue it."
+    )
+
+
+def _format_inferred_goal_started(goal, inferred: "InferredGoal") -> str:
+    lines = [_format_goal_started(goal)]
+    if inferred.acceptance_criteria:
+        lines.append("Acceptance criteria:")
+        lines.extend(f"- {item}" for item in inferred.acceptance_criteria)
+    if inferred.rationale:
+        lines.append(f"Inferred from: {inferred.rationale}")
+    return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class InferredGoal:
+    objective: str
+    acceptance_criteria: list[str] = field(default_factory=list)
+    rationale: str = ""
+
+
+async def infer_goal_from_thread(llm, messages: list[dict], *, max_messages: int = 30) -> InferredGoal:
+    transcript = _format_goal_inference_thread(messages, max_messages=max_messages)
+    if not transcript.strip():
+        raise ValueError("No prior chat messages are available to infer a goal.")
+    prompt = _build_goal_inference_prompt(transcript)
+    raw = await llm.get_completion(prompt)
+    payload = extract_json_from_text(str(raw or "")) or {}
+    if not isinstance(payload, dict):
+        raise ValueError("Could not infer a goal from the chat thread.")
+    objective = str(payload.get("objective") or "").strip()
+    if not objective:
+        raise ValueError("Could not infer a clear goal from the chat thread.")
+    criteria = payload.get("acceptance_criteria") or []
+    if not isinstance(criteria, list):
+        criteria = []
+    return InferredGoal(
+        objective=objective,
+        acceptance_criteria=[str(item).strip() for item in criteria if str(item).strip()],
+        rationale=str(payload.get("rationale") or "").strip(),
+    )
+
+
+def _format_goal_inference_thread(messages: list[dict], *, max_messages: int = 30, max_chars: int = 12000) -> str:
+    lines = []
+    for message in messages[-max_messages:]:
+        role = str(message.get("role") or "unknown")
+        if role == "tool":
+            continue
+        content = str(message.get("content") or "").strip()
+        if content:
+            lines.append(f"{role}: {content}")
+    transcript = "\n\n".join(lines)
+    if len(transcript) <= max_chars:
+        return transcript
+    return transcript[-max_chars:]
+
+
+def _build_goal_inference_prompt(transcript: str) -> str:
+    return (
+        "Infer the current working goal from the preceding chat transcript.\n"
+        "Use only goals, decisions, constraints, and acceptance criteria that were explicitly stated or agreed in the thread. "
+        "Do not invent new scope. Prefer the latest user direction when the thread changes direction.\n\n"
+        "Return only JSON with this shape:\n"
+        "{\n"
+        '  "objective": "one concise goal statement",\n'
+        '  "acceptance_criteria": ["observable completion criterion", "..."],\n'
+        '  "rationale": "short explanation of which agreed decisions shaped the goal"\n'
+        "}\n\n"
+        f"Transcript:\n{transcript}"
+    )
 
 
 def _format_diagnostics_paths(log_dir: str) -> str:

@@ -110,7 +110,11 @@ class GoalStatusTool(Tool):
         return (
             f"Goal: {goal.objective}\n"
             f"Status: {goal.status}\n"
+            f"Loop: {getattr(goal, 'loop_status', 'idle')}\n"
             f"Turns: {goal.turn_count}"
+            f"{chr(10) + 'Latest run: ' + goal.run_id if getattr(goal, 'run_id', None) else ''}"
+            f"{chr(10) + 'Stop reason: ' + goal.stop_reason if getattr(goal, 'stop_reason', None) else ''}"
+            f"{chr(10) + 'Pending approvals: ' + str(goal.pending_approvals) if getattr(goal, 'pending_approvals', 0) else ''}"
             f"{note}"
             f"{criteria_block}"
             f"{verification_block}"

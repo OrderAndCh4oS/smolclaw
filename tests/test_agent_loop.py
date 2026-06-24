@@ -210,6 +210,73 @@ class TestAgentLoop:
         assert len(goal_messages) == 1
         assert "Ship goal loop" in goal_messages[0]["content"]
         assert "Goal turns: 1" in goal_messages[0]["content"]
+        assert "Loop status: running" in goal_messages[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_process_persists_goal_loop_run_state(self, temp_dir):
+        llm = MagicMock()
+        llm.completion_model = "gpt-test"
+        llm.get_tool_completion = AsyncMock(return_value={
+            "content": "ok",
+            "tool_calls": None,
+            "has_tool_calls": False,
+        })
+
+        goal_store = GoalLedgerStore(os.path.join(temp_dir, "ledgers"))
+        session = Session(key="goal-loop-state")
+        goal_store.start(session.key, "Persist loop state")
+        trace_store = RunTraceStore(os.path.join(temp_dir, "traces"))
+        loop = AgentLoop(
+            llm=llm,
+            tool_registry=ToolRegistry(),
+            context_builder=ContextBuilder(),
+            session=session,
+            session_manager=SessionManager(temp_dir),
+            goal_store=goal_store,
+            trace_store=trace_store,
+        )
+
+        await loop.process("continue")
+
+        ledger = goal_store.load(session.key)
+        summary = trace_store.latest_summary(session.key)
+        assert ledger.loop_status == "waiting"
+        assert ledger.stop_reason == "assistant_final"
+        assert ledger.run_id == summary.run_id
+        assert ledger.loop_started_at is not None
+        assert ledger.loop_finished_at is not None
+
+    @pytest.mark.asyncio
+    async def test_process_pauses_goal_loop_when_approvals_are_pending(self, temp_dir):
+        class PendingApprovalStore:
+            def list(self, session_key, *, status=None):
+                return [{"id": "apr-1"}] if status == "pending" else []
+
+        llm = MagicMock()
+        llm.get_tool_completion = AsyncMock(return_value={
+            "content": "approval needed",
+            "tool_calls": None,
+            "has_tool_calls": False,
+        })
+
+        goal_store = GoalLedgerStore(os.path.join(temp_dir, "ledgers"))
+        session = Session(key="goal-approval-state")
+        goal_store.start(session.key, "Wait for approval")
+        loop = AgentLoop(
+            llm=llm,
+            tool_registry=ToolRegistry(),
+            context_builder=ContextBuilder(),
+            session=session,
+            session_manager=SessionManager(temp_dir),
+            goal_store=goal_store,
+            runtime_shared_state={"approval_store": PendingApprovalStore()},
+        )
+
+        await loop.process("continue")
+
+        ledger = goal_store.load(session.key)
+        assert ledger.loop_status == "paused"
+        assert ledger.pending_approvals == 1
 
     @pytest.mark.asyncio
     async def test_process_returns_response(self, mock_tool_llm, temp_dir):

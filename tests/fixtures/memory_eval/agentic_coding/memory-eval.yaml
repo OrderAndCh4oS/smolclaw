@@ -1,0 +1,54 @@
+id: agentic_coding_memory
+corpus:
+  - path: corpus/long-running-loops.md
+  - path: corpus/anthropic-agents.md
+  - path: corpus/outdated-loop-note.md
+questions:
+  - id: long_running_loop_state
+    query: What should SmolClaw remember about long-running loop state and stop reasons?
+    expected_sources:
+      - smolclaw-loop-design
+    expected_entities:
+      - SmolClaw
+      - Run state
+    expected_relationships:
+      - source: SmolClaw
+        relation: needs
+        target: Run state
+      - source: Run state
+        relation: tracks
+        target: Stop reasons
+    required_terms:
+      - pending approvals
+      - verification evidence
+  - id: coding_agent_verification
+    query: What sourced evidence supports using automated tests for coding agents?
+    expected_sources:
+      - anthropic-effective-agents
+    expected_entities:
+      - Coding agents
+      - Automated tests
+    expected_relationships:
+      - source: Automated tests
+        relation: provide
+        target: Verification evidence
+    required_terms:
+      - environment feedback
+staleness:
+  - id: current_loop_design_is_fresh
+    source_id: smolclaw-loop-design
+    expected: fresh
+    max_age_days: 90
+    as_of: "2026-06-24"
+  - id: outdated_loop_note_is_stale
+    source_id: outdated-loop-note
+    expected: stale
+    max_age_days: 365
+    as_of: "2026-06-24"
+contradictions:
+  - id: loop_state_persistence_conflict
+    subject: SmolClaw loop state
+    predicate: persistence
+    sources:
+      - smolclaw-loop-design
+      - outdated-loop-note

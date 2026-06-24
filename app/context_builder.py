@@ -11,12 +11,14 @@ class ContextBuilder:
         shared_bootstrap_path: str = None,
         skills_paths: Optional[List[str]] = None,
         instruction_paths: Optional[List[str]] = None,
+        memory_eval_summary: str | None = None,
     ):
         self.bootstrap_path = bootstrap_path
         self.persona = persona
         self.shared_bootstrap_path = shared_bootstrap_path
         self.skills_paths = skills_paths or []
         self.instruction_paths = instruction_paths or []
+        self.memory_eval_summary = memory_eval_summary
 
     def _load_file(self, path: str) -> str | None:
         expanded = os.path.expanduser(path) if path else None
@@ -53,6 +55,9 @@ class ContextBuilder:
             content = self._load_file(instruction_path)
             if content:
                 parts.append(f"\n--- Project Instructions: {instruction_path} ---\n{content}")
+
+        if self.memory_eval_summary:
+            parts.append(f"\n--- Memory Eval Status ---\n{self.memory_eval_summary}")
 
         # Inject preloaded skills as domain knowledge
         for skill_path in self.skills_paths:

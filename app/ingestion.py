@@ -72,6 +72,41 @@ class IngestionPipeline:
                 excerpt_id=make_hash(content[:200], "excerpt_id_"), sep=KG_SEP,
             )
 
+        doc_metadata = self._extract_frontmatter(content)
+        metadata_excerpt_id = make_hash(self._content_for_indexing(content)[:200], "excerpt_id_")
+        for entity in self._coerce_frontmatter_strings(doc_metadata.get("entities")):
+            await self.stores.graph.async_upsert_entity_node(
+                name=entity,
+                category="frontmatter",
+                description=entity,
+                excerpt_id=metadata_excerpt_id,
+                sep=KG_SEP,
+            )
+        for relationship in self._coerce_frontmatter_relationships(doc_metadata.get("relationships")):
+            await self.stores.graph.async_upsert_entity_node(
+                name=relationship["source"],
+                category="frontmatter",
+                description=relationship["source"],
+                excerpt_id=metadata_excerpt_id,
+                sep=KG_SEP,
+            )
+            await self.stores.graph.async_upsert_entity_node(
+                name=relationship["target"],
+                category="frontmatter",
+                description=relationship["target"],
+                excerpt_id=metadata_excerpt_id,
+                sep=KG_SEP,
+            )
+            await self.stores.graph.async_upsert_relationship_edge(
+                source=relationship["source"],
+                destination=relationship["target"],
+                description=relationship["relation"],
+                keywords=relationship["relation"],
+                weight=1.0,
+                excerpt_id=metadata_excerpt_id,
+                sep=KG_SEP,
+            )
+
         self._current_ingest_source = "extraction"
 
         if save:
@@ -128,7 +163,12 @@ class IngestionPipeline:
                 try:
                     fm = yaml.safe_load(parts[1])
                     if isinstance(fm, dict):
-                        for key in ("memory_type", "tags", "confidence", "importance", "source_id", "tier"):
+                        for key in (
+                            "memory_type", "tags", "confidence", "importance", "source_id", "tier",
+                            "title", "kind", "source_url", "author", "produced_by",
+                            "trust_level", "evidence_type", "captured_at",
+                            "entities", "relationships", "claims", "supersedes",
+                        ):
                             if key in fm:
                                 metadata[key] = fm[key]
                 except Exception:
@@ -153,6 +193,31 @@ class IngestionPipeline:
         while lines and (_is_standalone_tag_line(lines[0]) or not lines[0].strip()):
             lines.pop(0)
         return "\n".join(lines).strip() or body.strip() or content
+
+    @staticmethod
+    def _coerce_frontmatter_strings(value) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    @staticmethod
+    def _coerce_frontmatter_relationships(value) -> list[dict[str, str]]:
+        if not isinstance(value, list):
+            return []
+        relationships = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            source = str(item.get("source") or "").strip()
+            target = str(item.get("target") or "").strip()
+            relation = str(item.get("relation") or "related_to").strip()
+            if source and target:
+                relationships.append({
+                    "source": source,
+                    "target": target,
+                    "relation": relation or "related_to",
+                })
+        return relationships
 
     async def _embed_document(self, content, doc_id):
         start_time = time.time()

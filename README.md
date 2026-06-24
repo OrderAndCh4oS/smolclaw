@@ -176,6 +176,19 @@ python -m pytest -q
 Tests use mocked model paths where possible and should not require live provider keys for normal unit coverage.
 Agent eval tasks can be run with `scripts/run_agent_eval.py` in `mock`, `recorded`, or opt-in `live` mode. Pass multiple task directories to emit a suite report with aggregate check rates, failure classes, recommended actions, and optional score deltas from `--baseline`.
 
+Corpus-memory and knowledge-graph evals can be run with:
+
+```bash
+smolclaw memory-eval tests/fixtures/memory_eval/agentic_coding/memory-eval.yaml
+smolclaw memory-eval docs/smolclaw-memory-eval.yaml
+smolclaw memory-eval tests/fixtures/memory_eval/agentic_coding/memory-eval.yaml --mode rag
+smolclaw memory-eval tests/fixtures/memory_eval/agentic_coding/memory-eval.yaml --mode answer --model gpt-5.4-mini
+smolclaw memory-eval suite-a.yaml suite-b.yaml --baseline baseline.json --max-score-drop 0
+python scripts/ci_memory_eval.py
+```
+
+The default deterministic mode checks corpus structure offline, including stale-source and conflicting-claim hygiene gates; `--mode rag` ingests the same suite into SmolRAG and scores retrieved source IDs, entities, relationships, and evidence terms; `--mode answer` asks a model to cite the retrieved evidence and grades citation/provenance coverage. Baselines can fail on score drops with `--max-score-drop`; `scripts/ci_memory_eval.py` runs the deterministic fixture and docs suites for CI. See [docs/memory-evals.md](docs/memory-evals.md).
+
 ## Current Reliability Work
 
 The next major work is tracked in [docs/reliability-roadmap.md](docs/reliability-roadmap.md) and [docs/next-phase-implementation-design.md](docs/next-phase-implementation-design.md). The highest-priority items are:

@@ -58,6 +58,14 @@ class TestContextBuilder:
         assert messages[4]["content"] == "a2"
         assert messages[5]["content"] == "q3"
 
+    def test_build_system_prompt_includes_memory_eval_summary(self):
+        builder = ContextBuilder(memory_eval_summary="Latest memory eval: docs status=passed.")
+
+        prompt = builder.build_system_prompt()
+
+        assert "Memory Eval Status" in prompt
+        assert "Latest memory eval: docs status=passed." in prompt
+
 
 class TestContextBuilderPersona:
     def test_build_system_prompt_with_persona(self):

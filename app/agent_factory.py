@@ -251,6 +251,8 @@ def build_agent_loop(
 
     if context_builder is None and agent_smol_rag:
         from app.context_assembly import ContextAssembler
+        from app.memory_eval import load_latest_memory_eval_summary
+
         context_builder = ContextAssembler(
             smol_rag=agent_smol_rag,
             token_budget=config.context_budget,
@@ -258,13 +260,17 @@ def build_agent_loop(
             persona=config.persona,
             shared_bootstrap_path=_SHARED_BOOTSTRAP_PATH,
             skills_paths=skills_paths,
+            memory_eval_summary=load_latest_memory_eval_summary(workspace.paths.evals_dir) if workspace else None,
         )
     elif context_builder is None:
+        from app.memory_eval import load_latest_memory_eval_summary
+
         context_builder = ContextBuilder(
             bootstrap_path=config.bootstrap_path,
             persona=config.persona,
             shared_bootstrap_path=_SHARED_BOOTSTRAP_PATH,
             skills_paths=skills_paths,
+            memory_eval_summary=load_latest_memory_eval_summary(workspace.paths.evals_dir) if workspace else None,
         )
 
     session = session_manager.get_or_create(resolved_session_key)

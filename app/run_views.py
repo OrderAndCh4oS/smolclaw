@@ -28,6 +28,9 @@ class RunStatusView:
     ledger_path: str | None = None
     goal_objective: str | None = None
     goal_status: str | None = None
+    goal_loop_status: str | None = None
+    goal_run_id: str | None = None
+    goal_pending_approvals: int = 0
     goal_turns: int = 0
     changed_files: list[str] = field(default_factory=list)
     verification_summaries: list[str] = field(default_factory=list)
@@ -71,6 +74,9 @@ def build_run_status_view(
         ledger_path=ledger_path,
         goal_objective=ledger.objective if ledger else None,
         goal_status=ledger.status if ledger else None,
+        goal_loop_status=getattr(ledger, "loop_status", None) if ledger else None,
+        goal_run_id=getattr(ledger, "run_id", None) if ledger else None,
+        goal_pending_approvals=getattr(ledger, "pending_approvals", 0) if ledger else 0,
         goal_turns=ledger.turn_count if ledger else 0,
         changed_files=[item.path for item in ledger.changed_files if item.path] if ledger else [],
         verification_summaries=[
@@ -107,6 +113,9 @@ def build_run_status_view_from_artifacts(
         ledger_path=ledger_path,
         goal_objective=ledger.objective if ledger else None,
         goal_status=ledger.status if ledger else None,
+        goal_loop_status=getattr(ledger, "loop_status", None) if ledger else None,
+        goal_run_id=getattr(ledger, "run_id", None) if ledger else None,
+        goal_pending_approvals=getattr(ledger, "pending_approvals", 0) if ledger else 0,
         goal_turns=ledger.turn_count if ledger else 0,
         changed_files=[item.path for item in ledger.changed_files if item.path] if ledger else [],
         verification_summaries=[
@@ -118,12 +127,19 @@ def build_run_status_view_from_artifacts(
 
 def format_goal_status(goal: GoalLedger | None) -> str:
     if goal is None:
-        return "No goal is set for this session."
+        return "No goal is set for this session.\nStart one with /goal <objective>."
     lines = [
         f"Goal: {goal.objective}",
         f"Status: {goal.status}",
+        f"Loop: {getattr(goal, 'loop_status', 'idle')}",
         f"Turns: {goal.turn_count}",
     ]
+    if getattr(goal, "run_id", None):
+        lines.append(f"Latest run: {goal.run_id}")
+    if getattr(goal, "stop_reason", None):
+        lines.append(f"Stop reason: {goal.stop_reason}")
+    if getattr(goal, "pending_approvals", 0):
+        lines.append(f"Pending approvals: {goal.pending_approvals}")
     if goal.note:
         lines.append(f"Note: {goal.note}")
     if getattr(goal, "acceptance_criteria", None):

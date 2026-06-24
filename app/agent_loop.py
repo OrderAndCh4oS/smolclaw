@@ -240,6 +240,44 @@ class AgentLoop:
             self._trace_recorder = None
             self.runtime_shared_state.pop(TRACE_RECORDER_STATE_KEY, None)
 
+    def _pending_approval_count(self) -> int:
+        approval_store = self.runtime_shared_state.get("approval_store")
+        if approval_store is None:
+            return 0
+        list_fn = getattr(approval_store, "list", None)
+        if not callable(list_fn):
+            return 0
+        try:
+            return len(list_fn(self.session.key, status="pending"))
+        except Exception:
+            return 0
+
+    def _mark_goal_loop_started(self, run_id: str | None):
+        if self.goal_store is None:
+            return
+        mark = getattr(self.goal_store, "mark_loop_started", None)
+        if not callable(mark):
+            return
+        try:
+            mark(self.session.key, run_id=run_id)
+        except Exception as exc:
+            logger.warning("Failed to mark goal loop started: %s", exc)
+
+    def _mark_goal_loop_finished(self, stop_reason: str):
+        if self.goal_store is None:
+            return
+        mark = getattr(self.goal_store, "mark_loop_finished", None)
+        if not callable(mark):
+            return
+        try:
+            mark(
+                self.session.key,
+                stop_reason=stop_reason,
+                pending_approvals=self._pending_approval_count(),
+            )
+        except Exception as exc:
+            logger.warning("Failed to mark goal loop finished: %s", exc)
+
     async def _invoke_tool(self, name: str, arguments: dict) -> ToolResult:
         invoke = getattr(self.tool_registry, "invoke", None)
         if callable(invoke):
@@ -270,6 +308,7 @@ class AgentLoop:
         )
         self._last_stop_reason = None
         recorder = self._start_trace(user_content)
+        self._mark_goal_loop_started(getattr(recorder, "run_id", None))
         turn_index = len(self.session_usage.turns)
         self._trace_append("turn.started", {
             "message_length": len(user_content or ""),
@@ -293,6 +332,7 @@ class AgentLoop:
                 session_key=self.session.key,
                 incident_id=incident_id,
             )
+            self._mark_goal_loop_finished("error")
             self._finish_trace("error", stop_reason="error")
             raise
         duration_ms = int((time.perf_counter() - started_at) * 1000)
@@ -311,6 +351,7 @@ class AgentLoop:
             "stop_reason": stop_reason,
         }, turn_index=turn_index)
         trace_status = "stopped" if stop_reason in {"max_iterations", "stop_requested"} else "complete"
+        self._mark_goal_loop_finished(stop_reason)
         self._finish_trace(trace_status, stop_reason=stop_reason)
         if recorder is not None:
             diagnostics.record_event(

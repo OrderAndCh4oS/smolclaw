@@ -5,6 +5,10 @@ echo "=== Tier 1: Unit Tests ==="
 pytest
 
 echo ""
+echo "=== Tier 1: Memory Eval Suite ==="
+python scripts/ci_memory_eval.py
+
+echo ""
 echo "=== Tier 2: Smoke Tests ==="
 python scripts/smoke_test.py
 

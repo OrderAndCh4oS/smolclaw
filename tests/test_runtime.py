@@ -1,3 +1,5 @@
+import json
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -94,6 +96,42 @@ class TestRuntimeMemoryCapabilities:
         await loop.process("new input")
 
         mock_smol_rag.ingest_text.assert_called_once()
+
+    def test_build_configured_agent_injects_latest_memory_eval_summary(
+        self, mock_smol_rag, sessions_dir, temp_dir
+    ):
+        llm = _make_loop_llm()
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        report_dir = os.path.join(workspace.paths.evals_dir, "memory")
+        os.makedirs(report_dir, exist_ok=True)
+        with open(os.path.join(report_dir, "docs.memory-eval.json"), "w", encoding="utf-8") as handle:
+            json.dump({
+                "suite_id": "docs",
+                "mode": "deterministic",
+                "status": "passed",
+                "score": 1.0,
+                "questions": [],
+                "hygiene": [],
+            }, handle)
+        env = RuntimeEnvironment(
+            smol_rag=mock_smol_rag,
+            session_manager=SessionManager(sessions_dir),
+            workspace=workspace,
+        )
+        config = AgentConfig(
+            name="reader",
+            model="gpt-test",
+            persona="You are Reader.",
+            tools=["read_file"],
+            capabilities=["filesystem"],
+        )
+
+        with patch("app.agent_factory.create_llm", return_value=llm):
+            loop = build_configured_agent(config, env)
+
+        prompt = loop.context_builder.build_system_prompt()
+        assert "Memory Eval Status" in prompt
+        assert "Latest memory eval: docs" in prompt
 
 
 class TestRuntimeProviders:

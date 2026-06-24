@@ -253,6 +253,20 @@ class TestMemoryStoreToolExecuteTaxonomy:
         mock_smol_rag.ingest_text.assert_called_once_with("raw content", source_id="plain-id")
 
     @pytest.mark.asyncio
+    async def test_store_without_source_uses_generated_id_for_file_return_and_ingest(self, mock_smol_rag, temp_dir):
+        tool = MemoryStoreTool(mock_smol_rag, temp_dir)
+
+        result = await tool.execute(content="generated source content")
+
+        source_id = result.removeprefix("Stored memory: ")
+        assert source_id.startswith("mem-")
+        assert os.path.exists(os.path.join(temp_dir, f"{source_id}.md"))
+        mock_smol_rag.ingest_text.assert_called_once_with(
+            "generated source content",
+            source_id=source_id,
+        )
+
+    @pytest.mark.asyncio
     async def test_store_with_type_writes_frontmatter(self, mock_smol_rag, temp_dir):
         tool = MemoryStoreTool(mock_smol_rag, temp_dir)
         await tool.execute(content="some fact", source_id="typed-id", memory_type="fact")
