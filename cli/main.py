@@ -142,7 +142,7 @@ SLASH_COMMANDS_HELP = "\n".join([
     "  /approval approve <id>   Approve one exact pending tool call",
     "  /approval deny <id>      Deny one pending tool call",
     "  /details                 Toggle recent tool/thinking activity",
-    "  /model [model] [effort]  Show or switch gpt-5.4/gpt-5.5 model",
+    "  /model [model] [effort]  Show/switch gpt-5.4 or gpt-5.5 model",
     "  /undo                    Undo the last SmolClaw file checkpoint",
     "  /goal status             Show the current session goal",
     "  /goal start <objective>  Set the session goal",
@@ -174,6 +174,8 @@ async def _close_async_resource(resource):
 
 
 def _format_action_event(event: dict) -> str | None:
+    from app.pricing import format_costs
+
     event_type = event.get("type")
 
     if event_type == "llm":
@@ -182,7 +184,9 @@ def _format_action_event(event: dict) -> str | None:
         if event.get("phase") == "end":
             duration_s = max(0, event.get("duration_ms", 0)) / 1000
             tokens = event.get("total_tokens", 0)
-            return f"thought: {tokens:,} tokens ({duration_s:.1f}s)"
+            costs = event.get("estimated_cost") or {}
+            suffix = f", {format_costs(costs, compact=True)}" if costs else ""
+            return f"thought: {tokens:,} tokens ({duration_s:.1f}s{suffix})"
         return None
 
     if event_type != "tool":
@@ -206,6 +210,8 @@ def _format_action_event(event: dict) -> str | None:
 
 def _print_usage_summary(console, session_usage):
     from app.usage import SessionUsage
+    from app.pricing import format_costs
+
     if not isinstance(session_usage, SessionUsage) or not session_usage.turns:
         return
     console.print()
@@ -219,13 +225,14 @@ def _print_usage_summary(console, session_usage):
         f"  LLM time: {session_usage.total_duration_ms / 1000:.1f}s "
         f"across {len(session_usage.turns)} turn(s)"
     )
+    console.print(f"  Estimated cost: {format_costs(session_usage.cost_summary())}")
     by_cat = session_usage.by_category()
     if len(by_cat) > 1:
         for cat, data in sorted(by_cat.items(), key=lambda x: x[1]["total_tokens"], reverse=True):
             console.print(
                 f"    {cat}: {data['total_tokens']:,} tokens "
                 f"({data['count']} call{'s' if data['count'] != 1 else ''}, "
-                f"{data['duration_ms'] / 1000:.1f}s)"
+                f"{data['duration_ms'] / 1000:.1f}s, {format_costs(data.get('estimated_cost') or {})})"
             )
 
 
@@ -1243,7 +1250,11 @@ async def _chat_loop(
                 except ValueError as exc:
                     console.print(f"[dim]Error: {exc}[/dim]")
                     continue
-                apply_runtime_model_selection(agent.llm, selection, getattr(agent, "model_settings", None))
+                try:
+                    apply_runtime_model_selection(agent.llm, selection, getattr(agent, "model_settings", None))
+                except ValueError as exc:
+                    console.print(f"[dim]Error: {exc}[/dim]")
+                    continue
                 console.print(f"[dim]Switched {model_status(agent.llm)}[/dim]")
                 continue
             if command == "/goal":

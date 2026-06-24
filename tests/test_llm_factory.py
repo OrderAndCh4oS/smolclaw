@@ -60,15 +60,23 @@ class TestCreateLlm:
         assert result is mock_anthropic
 
     @patch("app.llm.OpenAiLlm")
-    def test_returns_openai_for_none_model(self, MockOpenAi):
+    def test_returns_openai_for_none_model_default(self, MockOpenAi):
         mock_instance = MagicMock()
         MockOpenAi.side_effect = lambda **kwargs: mock_instance
 
         result = create_llm()
         assert result is mock_instance
+        MockOpenAi.assert_called_once_with(
+            completion_model="gpt-5.5",
+            embedding_model=None,
+            query_cache_kv=None,
+            embedding_cache_kv=None,
+            openai_api_key=None,
+            db_path=None,
+        )
 
     @patch("app.llm.OpenAiLlm")
-    def test_passes_db_path_to_provider(self, MockOpenAi):
+    def test_passes_db_path_to_default_provider(self, MockOpenAi):
         mock_instance = MagicMock()
         MockOpenAi.side_effect = lambda **kwargs: mock_instance
 
@@ -76,7 +84,7 @@ class TestCreateLlm:
 
         assert result is mock_instance
         MockOpenAi.assert_called_once_with(
-            completion_model=None,
+            completion_model="gpt-5.5",
             embedding_model=None,
             query_cache_kv=None,
             embedding_cache_kv=None,

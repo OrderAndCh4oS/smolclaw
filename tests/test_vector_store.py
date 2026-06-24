@@ -264,6 +264,83 @@ class TestVectorStorePersistence:
         assert len(results) == 5
         assert len(persisted) == 10
 
+    @pytest.mark.asyncio
+    async def test_load_ignores_vectors_with_incompatible_dimensions(self, temp_vector_db_path):
+        legacy_store = SqliteVectorStore(temp_vector_db_path, dimensions=1536)
+        await legacy_store.upsert([
+            make_vector_dict("legacy-openai", dims=1536, text="old embedding")
+        ])
+        await legacy_store.close()
+
+        large_embedding_store = SqliteVectorStore(
+            temp_vector_db_path,
+            dimensions=4096,
+            embedding_model="large-embedding-model",
+        )
+
+        results = await large_embedding_store.query(np.random.rand(4096).astype(np.float32), top_k=5)
+        persisted = await large_embedding_store.get(["legacy-openai"])
+
+        assert results == []
+        assert persisted == []
+        assert large_embedding_store._ignored_incompatible_rows == 1
+        await large_embedding_store.close()
+
+    @pytest.mark.asyncio
+    async def test_load_ignores_vectors_from_other_embedding_models(self, temp_vector_db_path):
+        first_store = SqliteVectorStore(
+            temp_vector_db_path,
+            dimensions=1536,
+            embedding_model="model-a",
+        )
+        vector = np.random.rand(1536).astype(np.float32)
+        await first_store.upsert([
+            {"__id__": "same-dimension", "__vector__": vector, "text": "model a"}
+        ])
+        await first_store.close()
+
+        second_store = SqliteVectorStore(
+            temp_vector_db_path,
+            dimensions=1536,
+            embedding_model="model-b",
+        )
+
+        results = await second_store.query(vector, top_k=5)
+        persisted = await second_store.get(["same-dimension"])
+
+        assert results == []
+        assert persisted == []
+        assert second_store._ignored_incompatible_rows == 1
+        await second_store.close()
+
+    @pytest.mark.asyncio
+    async def test_load_keeps_vectors_from_matching_embedding_model(self, temp_vector_db_path):
+        first_store = SqliteVectorStore(
+            temp_vector_db_path,
+            dimensions=1536,
+            embedding_model="model-a",
+        )
+        vector = np.random.rand(1536).astype(np.float32)
+        await first_store.upsert([
+            {"__id__": "matching-model", "__vector__": vector, "text": "model a"}
+        ])
+        await first_store.close()
+
+        second_store = SqliteVectorStore(
+            temp_vector_db_path,
+            dimensions=1536,
+            embedding_model="model-a",
+        )
+
+        results = await second_store.query(vector, top_k=5)
+        persisted = await second_store.get(["matching-model"])
+
+        assert len(results) == 1
+        assert results[0]["__id__"] == "matching-model"
+        assert len(persisted) == 1
+        assert persisted[0]["__embedding_model__"] == "model-a"
+        await second_store.close()
+
 
 class TestVectorStoreEdgeCases:
     """Test edge cases and error handling."""

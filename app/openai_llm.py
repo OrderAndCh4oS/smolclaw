@@ -7,13 +7,17 @@ import os
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from app.definitions import SQLITE_DB_PATH, COMPLETION_MODEL, EMBEDDING_MODEL
+from app.definitions import SQLITE_DB_PATH
+from app.model_defaults import DEFAULT_OPENAI_CHAT_MODEL, DEFAULT_OPENAI_EMBEDDING_MODEL
 from app.sqlite_store import SqliteKvStore
 from app.logger import logger
 from app.model_registry import MODEL_REGISTRY
 from app.utilities import make_hash
 
 load_dotenv()
+
+DEFAULT_OPENAI_COMPLETION_MODEL = os.getenv("OPENAI_COMPLETION_MODEL", DEFAULT_OPENAI_CHAT_MODEL)
+DEFAULT_OPENAI_PROVIDER_EMBEDDING_MODEL = os.getenv("OPENAI_EMBEDDING_MODEL", DEFAULT_OPENAI_EMBEDDING_MODEL)
 
 
 def _default_reasoning_effort_for_model(model: str | None) -> str | None:
@@ -43,8 +47,8 @@ class OpenAiLlm:
         cache_db_path = db_path or SQLITE_DB_PATH
         self.query_cache_kv = query_cache_kv or SqliteKvStore(cache_db_path, "query_cache")
         self.embedding_cache_kv = embedding_cache_kv or SqliteKvStore(cache_db_path, "embedding_cache")
-        self.completion_model = completion_model or COMPLETION_MODEL
-        self.embedding_model = embedding_model or EMBEDDING_MODEL
+        self.completion_model = completion_model or DEFAULT_OPENAI_COMPLETION_MODEL
+        self.embedding_model = embedding_model or DEFAULT_OPENAI_PROVIDER_EMBEDDING_MODEL
         self.reasoning_effort = _default_reasoning_effort_for_model(self.completion_model)
         self.usage_collector = None
 

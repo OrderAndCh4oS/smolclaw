@@ -19,6 +19,7 @@ from app.tools.base import (
     normalize_tool_result,
 )
 from app.tools.registry import ToolRegistry
+from app.pricing import aggregate_cost
 from app.usage import UsageCollector, SessionUsage, TurnUsage
 
 
@@ -82,6 +83,36 @@ class AgentLoop:
         if len(text) <= limit:
             return text
         return text[: limit - 3] + "..."
+
+    def _record_llm_records(self, records: list) -> None:
+        for record in records:
+            diagnostics.record_event(
+                "llm.call",
+                session_key=self.session.key,
+                category=record.category,
+                operation=record.operation,
+                model=record.model,
+                prompt_tokens=record.prompt_tokens,
+                completion_tokens=record.completion_tokens,
+                total_tokens=record.total_tokens,
+                duration_ms=record.duration_ms,
+                cached=record.cached,
+                estimated_cost=aggregate_cost([record]),
+            )
+
+    def _llm_usage_payload(self, records: list, *, current_turn: TurnUsage | None = None) -> dict:
+        session_records = self.session_usage.all_records()
+        if current_turn is not None:
+            session_records = [*session_records, *current_turn.llm_calls]
+        else:
+            session_records = [*session_records, *records]
+        return {
+            "prompt_tokens": sum(r.prompt_tokens for r in records),
+            "completion_tokens": sum(r.completion_tokens for r in records),
+            "total_tokens": sum(r.total_tokens for r in records),
+            "estimated_cost": aggregate_cost(records),
+            "session_estimated_cost": aggregate_cost(session_records),
+        }
 
     @staticmethod
     def _content_fingerprint(value: str) -> str:
@@ -391,36 +422,21 @@ class AgentLoop:
 
             llm_records = self._usage_collector.drain()
             turn.llm_calls.extend(llm_records)
-            for record in llm_records:
-                diagnostics.record_event(
-                    "llm.call",
-                    session_key=self.session.key,
-                    category=record.category,
-                    operation=record.operation,
-                    model=record.model,
-                    prompt_tokens=record.prompt_tokens,
-                    completion_tokens=record.completion_tokens,
-                    total_tokens=record.total_tokens,
-                    duration_ms=record.duration_ms,
-                    cached=record.cached,
-                )
+            self._record_llm_records(llm_records)
+            usage_payload = self._llm_usage_payload(llm_records, current_turn=turn)
 
             await self._emit_event(on_event, {
                 "type": "llm", "phase": "end", "iteration": iteration,
                 "duration_ms": llm_duration_ms,
                 "has_tool_calls": bool(result["has_tool_calls"]),
-                "prompt_tokens": sum(r.prompt_tokens for r in llm_records),
-                "completion_tokens": sum(r.completion_tokens for r in llm_records),
-                "total_tokens": sum(r.total_tokens for r in llm_records),
                 "model": getattr(self.llm, "completion_model", "unknown"),
+                **usage_payload,
             })
             self._trace_append("llm.ended", {
                 "duration_ms": llm_duration_ms,
                 "has_tool_calls": bool(result["has_tool_calls"]),
-                "prompt_tokens": sum(r.prompt_tokens for r in llm_records),
-                "completion_tokens": sum(r.completion_tokens for r in llm_records),
-                "total_tokens": sum(r.total_tokens for r in llm_records),
                 "model": getattr(self.llm, "completion_model", "unknown"),
+                **usage_payload,
             }, turn_index=current_turn_index, iteration=iteration)
 
             if not result["has_tool_calls"]:
@@ -559,19 +575,18 @@ class AgentLoop:
             # Drain any usage from tool-initiated LLM calls (e.g. memory search context retrieval)
             tool_llm_records = self._usage_collector.drain()
             turn.llm_calls.extend(tool_llm_records)
-            for record in tool_llm_records:
-                diagnostics.record_event(
-                    "llm.call",
-                    session_key=self.session.key,
-                    category=record.category,
-                    operation=record.operation,
-                    model=record.model,
-                    prompt_tokens=record.prompt_tokens,
-                    completion_tokens=record.completion_tokens,
-                    total_tokens=record.total_tokens,
-                    duration_ms=record.duration_ms,
-                    cached=record.cached,
-                )
+            self._record_llm_records(tool_llm_records)
+            if tool_llm_records:
+                await self._emit_event(on_event, {
+                    "type": "llm",
+                    "phase": "end",
+                    "iteration": iteration,
+                    "duration_ms": sum(r.duration_ms for r in tool_llm_records),
+                    "has_tool_calls": True,
+                    "model": ",".join(sorted({r.model for r in tool_llm_records})),
+                    "background": True,
+                    **self._llm_usage_payload(tool_llm_records, current_turn=turn),
+                })
 
             for behavior in self.behaviors:
                 if behavior.after_tools_prompt:
@@ -659,19 +674,8 @@ class AgentLoop:
 
         llm_records = self._usage_collector.drain()
         turn.llm_calls.extend(llm_records)
-        for record in llm_records:
-            diagnostics.record_event(
-                "llm.call",
-                session_key=self.session.key,
-                category=record.category,
-                operation=record.operation,
-                model=record.model,
-                prompt_tokens=record.prompt_tokens,
-                completion_tokens=record.completion_tokens,
-                total_tokens=record.total_tokens,
-                duration_ms=record.duration_ms,
-                cached=record.cached,
-            )
+        self._record_llm_records(llm_records)
+        usage_payload = self._llm_usage_payload(llm_records, current_turn=turn)
 
         await self._emit_event(on_event, {
             "type": "llm",
@@ -679,20 +683,16 @@ class AgentLoop:
             "iteration": iteration,
             "duration_ms": llm_duration_ms,
             "has_tool_calls": bool(result["has_tool_calls"]),
-            "prompt_tokens": sum(r.prompt_tokens for r in llm_records),
-            "completion_tokens": sum(r.completion_tokens for r in llm_records),
-            "total_tokens": sum(r.total_tokens for r in llm_records),
             "model": getattr(self.llm, "completion_model", "unknown"),
             "finalization": True,
+            **usage_payload,
         })
         self._trace_append("llm.ended", {
             "duration_ms": llm_duration_ms,
             "has_tool_calls": bool(result["has_tool_calls"]),
-            "prompt_tokens": sum(r.prompt_tokens for r in llm_records),
-            "completion_tokens": sum(r.completion_tokens for r in llm_records),
-            "total_tokens": sum(r.total_tokens for r in llm_records),
             "model": getattr(self.llm, "completion_model", "unknown"),
             "finalization": True,
+            **usage_payload,
         }, turn_index=current_turn_index, iteration=iteration)
 
         if result["has_tool_calls"]:

@@ -1,6 +1,6 @@
 agents:
   - name: default
-    model: gpt-5.5
+    model: default
     persona: >
       You are SmolClaw. Be direct, be useful, skip the filler.
       Concise when simple, thorough when it matters.
@@ -42,7 +42,7 @@ agents:
     timeout: 600
 
   - name: researcher
-    model: gpt-5.5
+    model: default
     persona: >
       You are a research analyst. Be thorough, cite sources, flag uncertainty.
       Decompose complex questions. Search memory first, then the web.
@@ -84,7 +84,7 @@ agents:
     timeout: 900
 
   - name: coder
-    model: gpt-5.5
+    model: default
     persona: >
       You are a software engineer. Read before modifying. Make minimal changes.
       Test after edits. Don't add comments or refactor unless asked.
@@ -132,7 +132,7 @@ agents:
     timeout: 600
 
   - name: orchestrator
-    model: gpt-5.5
+    model: default
     persona: >
       You are an orchestration coordinator. Delegate work to specialized agents.
       Use sequential_pipeline for multi-step workflows, fanout_pipeline for parallel tasks,

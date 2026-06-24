@@ -3,6 +3,7 @@ import os
 import pytest
 
 from app.agent_config import AgentConfig, AgentConfigLoader
+from app.model_defaults import DEFAULT_AGENT_MODEL
 
 
 class TestAgentConfig:
@@ -91,6 +92,29 @@ class TestAgentConfigLoader:
         assert config.max_iterations == 15
         assert config.memory_window == 20
         assert config.bootstrap_path is None
+
+    def test_load_default_model_alias(self, temp_dir):
+        yaml_path = os.path.join(temp_dir, "agents.yaml")
+        with open(yaml_path, "w") as f:
+            f.write(
+                "agents:\n"
+                "  - name: minimal\n"
+                "    model: default\n"
+                "    persona: Minimal agent.\n"
+            )
+        configs = AgentConfigLoader.load(yaml_path)
+        assert configs["minimal"].model == DEFAULT_AGENT_MODEL
+
+    def test_load_missing_model_uses_default_agent_model(self, temp_dir):
+        yaml_path = os.path.join(temp_dir, "agents.yaml")
+        with open(yaml_path, "w") as f:
+            f.write(
+                "agents:\n"
+                "  - name: minimal\n"
+                "    persona: Minimal agent.\n"
+            )
+        configs = AgentConfigLoader.load(yaml_path)
+        assert configs["minimal"].model == DEFAULT_AGENT_MODEL
 
     def test_load_with_all_fields(self, temp_dir):
         yaml_path = os.path.join(temp_dir, "agents.yaml")
@@ -203,6 +227,7 @@ class TestRepoAgentsConfig:
         yaml_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "agents.yaml")
         configs = AgentConfigLoader.load(yaml_path)
 
+        assert configs["default"].model == DEFAULT_AGENT_MODEL
         assert configs["default"].capabilities == ["filesystem", "command", "goal", "web", "memory"]
         assert configs["default"].permission_mode == "plan"
         assert "contradiction_review" in configs["default"].tools
@@ -218,6 +243,7 @@ class TestRepoAgentsConfig:
         assert "goal_status" in configs["default"].tools
         assert "run_command" not in configs["default"].tools
 
+        assert configs["researcher"].model == DEFAULT_AGENT_MODEL
         assert configs["researcher"].capabilities == ["filesystem", "command", "goal", "web", "memory"]
         assert configs["researcher"].permission_mode == "research"
         assert "contradiction_review" in configs["researcher"].tools
@@ -231,6 +257,7 @@ class TestRepoAgentsConfig:
         assert "goal_start" in configs["researcher"].tools
         assert "goal_update" in configs["researcher"].tools
 
+        assert configs["coder"].model == DEFAULT_AGENT_MODEL
         assert configs["coder"].capabilities == ["filesystem", "command", "goal", "web", "memory"]
         assert configs["coder"].permission_mode == "execute"
         assert configs["coder"].behaviors == ["plan", "reflect"]
@@ -250,6 +277,7 @@ class TestRepoAgentsConfig:
         assert "goal_start" in configs["coder"].tools
         assert "goal_update" in configs["coder"].tools
 
+        assert configs["orchestrator"].model == DEFAULT_AGENT_MODEL
         assert configs["orchestrator"].capabilities == ["memory", "orchestration", "subagents"]
         assert configs["orchestrator"].permission_mode == "delegate_only"
         assert "write_file" not in configs["orchestrator"].tools

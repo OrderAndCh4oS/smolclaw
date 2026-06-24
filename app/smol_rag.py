@@ -19,6 +19,10 @@ from app.store_bundle import StoreBundle
 from app.vector_store import SqliteVectorStore
 
 
+def default_embedding_dimensions(model: str | None) -> int:
+    return 1536
+
+
 class SmolRag:
     def __init__(
             self,
@@ -68,16 +72,16 @@ class SmolRag:
             db_path=_db,
         )
 
-        _dimensions = dimensions or 1536
+        _dimensions = dimensions or default_embedding_dimensions(EMBEDDING_MODEL)
         self.stores = StoreBundle(
             embeddings_db=embeddings_db or SqliteVectorStore(
-                _db, dimensions=_dimensions, table=EMBEDDINGS_TABLE
+                _db, dimensions=_dimensions, table=EMBEDDINGS_TABLE, embedding_model=EMBEDDING_MODEL
             ),
             entities_db=entities_db or SqliteVectorStore(
-                _db, dimensions=_dimensions, table=ENTITIES_TABLE
+                _db, dimensions=_dimensions, table=ENTITIES_TABLE, embedding_model=EMBEDDING_MODEL
             ),
             relationships_db=relationships_db or SqliteVectorStore(
-                _db, dimensions=_dimensions, table=RELATIONSHIPS_TABLE
+                _db, dimensions=_dimensions, table=RELATIONSHIPS_TABLE, embedding_model=EMBEDDING_MODEL
             ),
             source_doc_map=source_doc_map or SqliteMappingStore(_db, "source_doc_map", "source", "doc_id"),
             doc_excerpt_map=doc_excerpt_map or SqliteMappingStore(_db, "doc_excerpt_map", "doc_id", "excerpt_id"),
@@ -258,11 +262,27 @@ class SmolRag:
     async def vector_search(self, embedding, top_k=5, better_than_threshold=0.02):
         return await self.stores.embeddings_db.query(query=embedding, top_k=top_k, better_than_threshold=better_than_threshold)
 
+    def _current_excerpt(self, excerpt_data):
+        attached = QueryEngine._attach_excerpt_id("", excerpt_data)
+        if attached is None:
+            return None
+        embedding_model = getattr(self.stores.embeddings_db, "embedding_model", None)
+        embedding_dimensions = getattr(self.stores.embeddings_db, "dimensions", None)
+        if not QueryEngine._excerpt_matches_embedding_model(attached, embedding_model, embedding_dimensions):
+            return None
+        attached.pop("excerpt_id", None)
+        return attached
+
     async def get_excerpt(self, excerpt_id):
-        return await self.stores.excerpt_kv.get_by_key(excerpt_id)
+        return self._current_excerpt(await self.stores.excerpt_kv.get_by_key(excerpt_id))
 
     async def get_all_excerpts(self):
-        return await self.stores.excerpt_kv.get_all()
+        excerpts = await self.stores.excerpt_kv.get_all()
+        return {
+            excerpt_id: current
+            for excerpt_id, data in excerpts.items()
+            if (current := self._current_excerpt(data)) is not None
+        }
 
     async def update_excerpt(self, excerpt_id, data):
         return await self.stores.excerpt_kv.add(excerpt_id, data)

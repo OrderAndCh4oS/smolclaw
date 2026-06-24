@@ -80,7 +80,7 @@ OPENAI_API_KEY=...
 ANTHROPIC_API_KEY=...
 ```
 
-Optional SmolRAG memory model defaults:
+SmolRAG memory model defaults:
 
 ```bash
 MEMORY_EXTRACT_MODEL=gpt-5.4-mini
@@ -120,7 +120,7 @@ Sessions are not exported to memory on shutdown by default. Use `/remember-threa
 Model compatibility:
 
 - `/model` reports the active model, effort, provider, and endpoint behavior.
-- `gpt-5.4*` and `gpt-5.5*` are validated through `ModelRegistry`.
+- `gpt-5.4*` and `gpt-5.5*` models are validated through `ModelRegistry`.
 - Reasoning tool turns use the OpenAI Responses API; compatible legacy text/tool turns keep using Chat Completions.
 
 Useful examples:

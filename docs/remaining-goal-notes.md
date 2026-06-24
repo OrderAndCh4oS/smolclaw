@@ -24,7 +24,7 @@ Status: paused. The foundation for trace export, goal ledgers, approvals, evals,
 - SmolRAG now has a two-model memory split:
   - extraction/indexing/keyword work defaults to `gpt-5.4-mini`;
   - final memory query synthesis defaults to `gpt-5.4`;
-  - embeddings remain `text-embedding-3-small`.
+  - embeddings default to `text-embedding-3-small`.
 
 ## Important Current Behaviour
 

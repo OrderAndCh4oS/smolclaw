@@ -1,6 +1,11 @@
 import os
 from dataclasses import dataclass
 
+from app.model_defaults import (
+    MODEL_PREFIX_OPENAI_GPT54,
+    MODEL_PREFIX_OPENAI_GPT55,
+)
+
 
 REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 DEFAULT_REASONING_EFFORT = os.getenv("REASONING_EFFORT", "medium") or None
@@ -27,7 +32,7 @@ class ModelRegistry:
         self._capabilities = capabilities or [
             ModelCapabilities(
                 provider="openai",
-                model_prefix="gpt-5.5",
+                model_prefix=MODEL_PREFIX_OPENAI_GPT55,
                 endpoint_family="responses",
                 supports_tools=True,
                 supports_reasoning_effort=True,
@@ -41,7 +46,7 @@ class ModelRegistry:
             ),
             ModelCapabilities(
                 provider="openai",
-                model_prefix="gpt-5.4",
+                model_prefix=MODEL_PREFIX_OPENAI_GPT54,
                 endpoint_family="responses",
                 supports_tools=True,
                 supports_reasoning_effort=True,
@@ -96,7 +101,10 @@ class ModelRegistry:
     def validate(self, model: str, reasoning_effort: str | None = None):
         caps = self.resolve(model)
         if caps is None:
-            raise ValueError("Model must start with gpt-5.4 or gpt-5.5.")
+            raise ValueError(
+                "Model must start with "
+                f"{MODEL_PREFIX_OPENAI_GPT54} or {MODEL_PREFIX_OPENAI_GPT55}."
+            )
         if reasoning_effort is not None and reasoning_effort not in REASONING_EFFORTS:
             valid = ", ".join(sorted(REASONING_EFFORTS))
             raise ValueError(f"Reasoning effort must be one of: {valid}.")

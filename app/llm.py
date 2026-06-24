@@ -2,6 +2,7 @@ from typing import Any, Dict, List, Optional
 import inspect
 
 from app.anthropic_llm import AnthropicLlm
+from app.definitions import COMPLETION_MODEL
 from app.openai_llm import OpenAiLlm
 
 class CompositeLlm:
@@ -66,7 +67,9 @@ def detect_provider(model: str) -> str:
 
 
 def create_llm(completion_model=None, embedding_model=None, **kwargs):
-    provider = detect_provider(completion_model or "")
+    completion_model = completion_model or COMPLETION_MODEL
+    provider = detect_provider(completion_model)
+    embedding_provider = detect_provider(embedding_model or "") if embedding_model else provider
 
     if provider == "anthropic":
         anthropic_llm = AnthropicLlm(
@@ -76,8 +79,9 @@ def create_llm(completion_model=None, embedding_model=None, **kwargs):
         )
 
         if embedding_model:
-            openai_llm = OpenAiLlm(
-                embedding_model=embedding_model,
+            embed_llm = _provider_for_embedding(
+                embedding_provider,
+                embedding_model,
                 query_cache_kv=kwargs.get("query_cache_kv"),
                 embedding_cache_kv=kwargs.get("embedding_cache_kv"),
                 openai_api_key=kwargs.get("openai_api_key"),
@@ -85,13 +89,36 @@ def create_llm(completion_model=None, embedding_model=None, **kwargs):
             )
             return CompositeLlm(
                 completion_provider=anthropic_llm,
-                embedding_provider=openai_llm,
+                embedding_provider=embed_llm,
             )
 
         return anthropic_llm
 
-    return OpenAiLlm(
+    openai_llm = OpenAiLlm(
         completion_model=completion_model,
+        embedding_model=embedding_model if embedding_provider == "openai" else None,
+        query_cache_kv=kwargs.get("query_cache_kv"),
+        embedding_cache_kv=kwargs.get("embedding_cache_kv"),
+        openai_api_key=kwargs.get("openai_api_key"),
+        db_path=kwargs.get("db_path"),
+    )
+    if embedding_model and embedding_provider != "openai":
+        return CompositeLlm(
+            completion_provider=openai_llm,
+            embedding_provider=_provider_for_embedding(
+                embedding_provider,
+                embedding_model,
+                query_cache_kv=kwargs.get("query_cache_kv"),
+                embedding_cache_kv=kwargs.get("embedding_cache_kv"),
+                openai_api_key=kwargs.get("openai_api_key"),
+                db_path=kwargs.get("db_path"),
+            ),
+        )
+    return openai_llm
+
+
+def _provider_for_embedding(provider: str, embedding_model: str, **kwargs):
+    return OpenAiLlm(
         embedding_model=embedding_model,
         query_cache_kv=kwargs.get("query_cache_kv"),
         embedding_cache_kv=kwargs.get("embedding_cache_kv"),

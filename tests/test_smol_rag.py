@@ -11,7 +11,7 @@ import numpy as np
 
 pytest.importorskip("nltk")
 
-from app.smol_rag import SmolRag, create_smol_rag
+from app.smol_rag import SmolRag, create_smol_rag, default_embedding_dimensions
 
 
 class RecordingLlm:
@@ -64,6 +64,9 @@ class TestSmolRagBaseline:
 
 
 class TestSmolRagModelRouting:
+    def test_default_embedding_dimensions_for_openai_embedding_models(self):
+        assert default_embedding_dimensions("text-embedding-3-small") == 1536
+
     @pytest.mark.asyncio
     async def test_default_memory_models_are_used_to_create_llm(self, temp_dir):
         created = {}
@@ -85,6 +88,52 @@ class TestSmolRagModelRouting:
         assert created["embedding_model"] == "text-embedding-3-small"
         assert rag.memory_extract_model == "gpt-5.4-mini"
         assert rag.memory_query_model == "gpt-5.4"
+        await rag.close()
+
+    @pytest.mark.asyncio
+    async def test_bm25_query_ignores_legacy_excerpts_without_current_embedding_model(self, temp_dir):
+        rag = SmolRag(
+            db_path=os.path.join(temp_dir, "test.db"),
+            graph_path=os.path.join(temp_dir, "graph.graphml"),
+        )
+        await rag.stores.excerpt_kv.add("legacy", {
+            "excerpt": "legacy python memory",
+            "summary": "old openai indexed memory",
+        })
+        await rag.stores.bm25_store.add("legacy", "legacy python memory")
+
+        results = await rag.bm25_query("python")
+
+        assert results == []
+        await rag.close()
+
+    @pytest.mark.asyncio
+    async def test_get_all_excerpts_keeps_only_current_embedding_model(self, temp_dir):
+        rag = SmolRag(
+            db_path=os.path.join(temp_dir, "test.db"),
+            graph_path=os.path.join(temp_dir, "graph.graphml"),
+        )
+        current_model = rag.stores.embeddings_db.embedding_model
+        await rag.stores.excerpt_kv.add("current", {
+            "excerpt": "current openai memory",
+            "summary": "new memory",
+            "__embedding_model__": current_model,
+            "__embedding_dimensions__": rag.stores.embeddings_db.dimensions,
+        })
+        await rag.stores.excerpt_kv.add("legacy", {
+            "excerpt": "legacy openai memory",
+            "summary": "old memory",
+        })
+        await rag.stores.excerpt_kv.add("other", {
+            "excerpt": "other local memory",
+            "summary": "other memory",
+            "__embedding_model__": "other-embedding-model",
+            "__embedding_dimensions__": rag.stores.embeddings_db.dimensions,
+        })
+
+        excerpts = await rag.get_all_excerpts()
+
+        assert list(excerpts) == ["current"]
         await rag.close()
 
     @pytest.mark.asyncio

@@ -64,6 +64,7 @@ def test_tui_status_bars_include_satellite_info():
         git_state="git:main*",
         goal_state="goal:2",
         token_total=12400,
+        session_cost={"totals": {"credits": 1.25}, "unknown_calls": 0, "unknown_models": []},
         active_tool="grep_search",
         activity="searching",
         safety_state="safety:gated",
@@ -80,6 +81,7 @@ def test_tui_status_bars_include_satellite_info():
     assert "git:main*" in top
     assert "goal:2" in top
     assert "tok:12,400" in bottom
+    assert "cost:1.25cr" in bottom
     assert "tools:grep_search" in bottom
     assert "safety:gated" in bottom
     assert "spin:|" in bottom
@@ -129,6 +131,29 @@ def test_tui_spinner_runs_while_shutting_down():
 
     assert "spin:/" in bottom
     assert "status:shutting down" in bottom
+
+
+@pytest.mark.asyncio
+async def test_tui_llm_event_updates_tokens_and_session_cost():
+    tui = _fake_tui()
+
+    await tui._handle_agent_event({
+        "type": "llm",
+        "phase": "end",
+        "total_tokens": 250,
+        "model": "gpt-5.4",
+        "has_tool_calls": False,
+        "session_estimated_cost": {
+            "totals": {"credits": 0.25},
+            "unknown_calls": 0,
+            "unknown_models": [],
+        },
+    })
+
+    bottom = "".join(text for _, text in tui._render_bottom_bar())
+    assert tui.state.token_total == 250
+    assert tui.state.model == "gpt-5.4"
+    assert "cost:0.25cr" in bottom
 
 
 @pytest.mark.asyncio
@@ -484,10 +509,21 @@ async def test_tui_model_subagents_command_switches_subagent_default_only():
 
 
 @pytest.mark.asyncio
-async def test_tui_model_command_rejects_non_gpt_54_or_55_model():
+async def test_tui_model_command_rejects_unsupported_model():
     tui = _fake_tui()
 
     await tui.submit("/model gpt-4.1 high")
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Error: Model must start with gpt-5.4 or gpt-5.5." in rendered
+    assert tui.agent.llm.completion_model == "gpt-test"
+
+
+@pytest.mark.asyncio
+async def test_tui_model_command_rejects_unsupported_local_model():
+    tui = _fake_tui()
+
+    await tui.submit("/model local-model:8b")
 
     rendered = "".join(text for _, text in tui._render_transcript())
     assert "Error: Model must start with gpt-5.4 or gpt-5.5." in rendered

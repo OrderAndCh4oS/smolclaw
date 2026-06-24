@@ -26,7 +26,7 @@ def _make_record(category="agent_turn", prompt=100, completion=50, total=150, du
         timestamp=time.time(),
         category=category,
         operation="tool_completion",
-        model="gpt-4.1-mini",
+        model="gpt-5.4-mini",
         prompt_tokens=prompt,
         completion_tokens=completion,
         total_tokens=total,
@@ -107,6 +107,7 @@ class TestSessionUsage:
         assert "consolidation" in cats
         assert cats["agent_turn"]["total_tokens"] == 300
         assert cats["agent_turn"]["count"] == 2
+        assert cats["agent_turn"]["estimated_cost"]["totals"]["credits"] > 0
         assert cats["consolidation"]["total_tokens"] == 50
         assert cats["consolidation"]["count"] == 1
 
@@ -122,7 +123,9 @@ class TestSessionUsage:
         assert d["ended_at"] == d["started_at"] + 5.0
         assert d["totals"]["total_tokens"] == 100
         assert d["totals"]["llm_calls"] == 1
+        assert d["totals"]["estimated_cost"]["totals"]["credits"] > 0
         assert len(d["turns"]) == 1
+        assert d["turns"][0]["estimated_cost"]["totals"]["credits"] > 0
         assert "by_category" in d
 
 

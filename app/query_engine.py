@@ -64,6 +64,29 @@ class QueryEngine:
             return None
         return {**excerpt_data, "excerpt_id": excerpt_id}
 
+    @staticmethod
+    def _excerpt_matches_embedding_model(
+        excerpt_data: dict,
+        embedding_model: str | None,
+        embedding_dimensions: int | None = None,
+    ) -> bool:
+        if embedding_model is None:
+            return True
+        return (
+            excerpt_data.get("__embedding_model__") == embedding_model
+            and excerpt_data.get("__embedding_dimensions__") == embedding_dimensions
+        )
+
+    def _attach_current_excerpt_id(self, excerpt_id: str, excerpt_data: dict | None) -> dict | None:
+        attached = self._attach_excerpt_id(excerpt_id, excerpt_data)
+        if attached is None:
+            return None
+        embedding_model = getattr(self.stores.embeddings_db, "embedding_model", None)
+        embedding_dimensions = getattr(self.stores.embeddings_db, "dimensions", None)
+        if not self._excerpt_matches_embedding_model(attached, embedding_model, embedding_dimensions):
+            return None
+        return attached
+
     async def _get_query_excerpts(self, text):
         embedding = await self._get_embedding(text)
         embedding_array = np.array(embedding)
@@ -71,7 +94,7 @@ class QueryEngine:
         excerpt_ids = [result["__id__"] for result in results]
         excerpts = await asyncio.gather(*[self.stores.excerpt_kv.get_by_key(excerpt_id) for excerpt_id in excerpt_ids])
         excerpts = [
-            self._attach_excerpt_id(excerpt_id, excerpt)
+            self._attach_current_excerpt_id(excerpt_id, excerpt)
             for excerpt_id, excerpt in zip(excerpt_ids, excerpts)
         ]
         excerpts = [excerpt for excerpt in excerpts if excerpt is not None]
@@ -134,7 +157,7 @@ class QueryEngine:
         return [
             excerpt
             for excerpt in (
-                self._attach_excerpt_id(excerpt_id, data)
+                self._attach_current_excerpt_id(excerpt_id, data)
                 for excerpt_id, data in zip(excerpt_ids, fetched)
             )
             if excerpt is not None
@@ -355,7 +378,7 @@ class QueryEngine:
                             sibling_name]:
                             relation_counts += 1
                 excerpt_data = await self.stores.excerpt_kv.get_by_key(excerpt_id)
-                excerpt_data = self._attach_excerpt_id(excerpt_id, excerpt_data)
+                excerpt_data = self._attach_current_excerpt_id(excerpt_id, excerpt_data)
                 if excerpt_data is not None:
                     all_excerpt_data_lookup[excerpt_id] = {
                         "data": excerpt_data,
@@ -426,7 +449,7 @@ class QueryEngine:
             for excerpt_id in excerpt_ids:
                 if excerpt_id not in all_excerpts_lookup:
                     excerpt_data = await self.stores.excerpt_kv.get_by_key(excerpt_id)
-                    attached = self._attach_excerpt_id(excerpt_id, excerpt_data)
+                    attached = self._attach_current_excerpt_id(excerpt_id, excerpt_data)
                     if attached is None:
                         logger.debug("Skipping excerpt %s: data is None (stale reference)", excerpt_id)
                     all_excerpts_lookup[excerpt_id] = {

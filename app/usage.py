@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Optional
 
+from app.pricing import aggregate_cost, estimate_record_cost
 from app.storage_paths import atomic_write_json, contained_storage_path
 
 
@@ -42,6 +43,9 @@ class TurnUsage:
     def llm_duration_ms(self) -> int:
         return sum(r.duration_ms for r in self.llm_calls)
 
+    def cost_summary(self) -> dict:
+        return aggregate_cost(self.llm_calls)
+
     def to_dict(self) -> dict:
         return {
             "iteration": self.iteration,
@@ -51,6 +55,7 @@ class TurnUsage:
             "llm_duration_ms": self.llm_duration_ms,
             "tool_duration_ms": self.tool_duration_ms,
             "llm_calls": len(self.llm_calls),
+            "estimated_cost": self.cost_summary(),
         }
 
 
@@ -84,21 +89,43 @@ class SessionUsage:
         bg_sum = sum(r.duration_ms for r in self.background_calls)
         return turn_sum + bg_sum
 
+    def all_records(self) -> list:
+        records = []
+        for turn in self.turns:
+            records.extend(turn.llm_calls)
+        records.extend(self.background_calls)
+        return records
+
+    def cost_summary(self) -> dict:
+        return aggregate_cost(self.all_records())
+
     def by_category(self) -> dict:
         cats = {}
-        all_records = []
-        for t in self.turns:
-            all_records.extend(t.llm_calls)
-        all_records.extend(self.background_calls)
-        for r in all_records:
+        for r in self.all_records():
             if r.category not in cats:
-                cats[r.category] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "count": 0, "duration_ms": 0}
+                cats[r.category] = {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "count": 0,
+                    "duration_ms": 0,
+                    "estimated_cost": {"totals": {}, "unknown_calls": 0, "unknown_models": []},
+                }
             c = cats[r.category]
             c["prompt_tokens"] += r.prompt_tokens
             c["completion_tokens"] += r.completion_tokens
             c["total_tokens"] += r.total_tokens
             c["count"] += 1
             c["duration_ms"] += r.duration_ms
+            estimate = estimate_record_cost(r)
+            if estimate.known:
+                totals = c["estimated_cost"]["totals"]
+                totals[estimate.unit] = totals.get(estimate.unit, 0.0) + float(estimate.amount)
+            else:
+                c["estimated_cost"]["unknown_calls"] += 1
+                model = str(getattr(r, "model", "") or "unknown")
+                if model not in c["estimated_cost"]["unknown_models"]:
+                    c["estimated_cost"]["unknown_models"].append(model)
         return cats
 
     def summary_dict(self) -> dict:
@@ -112,6 +139,7 @@ class SessionUsage:
                 "total_tokens": self.total_tokens,
                 "duration_ms": self.total_duration_ms,
                 "llm_calls": sum(len(t.llm_calls) for t in self.turns) + len(self.background_calls),
+                "estimated_cost": self.cost_summary(),
             },
             "by_category": self.by_category(),
             "turns": [t.to_dict() for t in self.turns],

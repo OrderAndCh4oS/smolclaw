@@ -1,15 +1,16 @@
 from dataclasses import dataclass
 from unittest.mock import Mock
 
+from app.llm import detect_provider
+from app.model_defaults import (
+    DEFAULT_OPENAI_CHAT_MODEL,
+    DEFAULT_OPENAI_MEMORY_QUERY_MODEL,
+    DEFAULT_SUBAGENT_MODEL,
+    MODEL_EXAMPLES,
+    MODEL_SELECTION_PATTERN,
+    MODEL_SWITCHABLE_PREFIXES,
+)
 from app.model_registry import MODEL_REGISTRY, REASONING_EFFORTS
-
-MODEL_EXAMPLES = [
-    "gpt-5.5",
-    "gpt-5.5-pro",
-    "gpt-5.5-mini",
-    "gpt-5.4",
-    "gpt-5.4-mini",
-]
 
 
 @dataclass(frozen=True)
@@ -21,7 +22,10 @@ class ModelSelection:
 class RuntimeModelSettings:
     def __init__(self):
         self.default_selection: ModelSelection | None = None
-        self.subagent_selection = ModelSelection(model="gpt-5.5", reasoning_effort="medium")
+        self.subagent_selection = ModelSelection(
+            model=DEFAULT_SUBAGENT_MODEL,
+            reasoning_effort=MODEL_REGISTRY.default_effort(DEFAULT_SUBAGENT_MODEL),
+        )
 
     def set_default(self, selection: ModelSelection):
         self.default_selection = selection
@@ -44,10 +48,10 @@ def is_switchable_model(model: str) -> bool:
 def parse_model_selection(value: str) -> ModelSelection:
     parts = value.split()
     if not parts:
-        raise ValueError("Usage: /model <gpt-5.4*|gpt-5.5*> [none|minimal|low|medium|high|xhigh]")
+        raise ValueError(f"Usage: /model <{MODEL_SELECTION_PATTERN}> [none|minimal|low|medium|high|xhigh]")
     model = parts[0]
     if len(parts) > 2:
-        raise ValueError("Usage: /model <gpt-5.4*|gpt-5.5*> [none|minimal|low|medium|high|xhigh]")
+        raise ValueError(f"Usage: /model <{MODEL_SELECTION_PATTERN}> [none|minimal|low|medium|high|xhigh]")
     reasoning_effort = parts[1] if len(parts) == 2 else None
     MODEL_REGISTRY.validate(model, reasoning_effort)
     return ModelSelection(model=model, reasoning_effort=reasoning_effort)
@@ -73,6 +77,13 @@ def get_reasoning_effort(llm) -> str | None:
 
 def apply_model_selection(llm, selection: ModelSelection):
     provider = completion_provider(llm)
+    current_provider = detect_provider(str(getattr(provider, "completion_model", "") or ""))
+    next_provider = detect_provider(selection.model)
+    if current_provider != next_provider:
+        raise ValueError(
+            f"Cannot switch provider from {current_provider} to {next_provider} at runtime. "
+            f"Restart with --model {selection.model}."
+        )
     provider.completion_model = selection.model
     effort = selection.reasoning_effort
     if effort is None:
@@ -114,29 +125,32 @@ def subagent_model_status(model_settings=None) -> str:
 
 
 def model_help(llm, model_settings=None) -> str:
-    examples = "\n".join(f"  /model {model} high" for model in MODEL_EXAMPLES)
+    examples = "\n".join(
+        f"  /model {model} high" if model.startswith("gpt-") else f"  /model {model}"
+        for model in MODEL_EXAMPLES
+    )
     return "\n".join([
         f"Current {model_status(llm)}",
         f"Current {subagent_model_status(model_settings)}",
         "Usage:",
         "  /model                         Show current model",
         "  /model list                    Show switchable model examples",
-        "  /model <gpt-5.4*|gpt-5.5*> [effort]",
-        "  /model subagents <gpt-5.4*|gpt-5.5*> [effort]",
-        "Effort: none, minimal, low, medium, high, xhigh",
-        "Endpoint behavior: reasoning tool turns use Responses; compatible legacy turns use Chat Completions.",
+        f"  /model <{MODEL_SELECTION_PATTERN}> [effort]",
+        f"  /model subagents <{MODEL_SELECTION_PATTERN}> [effort]",
+        "Effort: none, minimal, low, medium, high, xhigh.",
+        "Endpoint behavior: OpenAI reasoning tool turns use Responses.",
         "Examples:",
         examples,
-        "  /model subagents gpt-5.5 medium",
+        f"  /model subagents {DEFAULT_SUBAGENT_MODEL} medium",
     ])
 
 
 def model_list() -> str:
     return "\n".join([
-        "Switchable model prefixes: gpt-5.4*, gpt-5.5*",
+        f"Switchable model prefixes: {MODEL_SWITCHABLE_PREFIXES}",
         "Compatibility:",
-        f"  gpt-5.5*: {MODEL_REGISTRY.describe('gpt-5.5', 'medium')}",
-        f"  gpt-5.4*: {MODEL_REGISTRY.describe('gpt-5.4', 'medium')}",
+        f"  {DEFAULT_OPENAI_CHAT_MODEL}*: {MODEL_REGISTRY.describe(DEFAULT_OPENAI_CHAT_MODEL, 'medium')}",
+        f"  gpt-5.4*: {MODEL_REGISTRY.describe(DEFAULT_OPENAI_MEMORY_QUERY_MODEL, 'medium')}",
         "Examples:",
         *[f"  {model}" for model in MODEL_EXAMPLES],
     ])

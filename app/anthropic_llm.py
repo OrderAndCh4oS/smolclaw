@@ -6,12 +6,18 @@ from typing import Any, Callable, Dict, List, Optional
 import anthropic
 from dotenv import load_dotenv
 
-from app.definitions import SQLITE_DB_PATH, COMPLETION_MODEL
+from app.definitions import SQLITE_DB_PATH
+from app.model_defaults import DEFAULT_ANTHROPIC_CHAT_MODEL
 from app.sqlite_store import SqliteKvStore
 from app.logger import logger
 from app.utilities import make_hash
 
 load_dotenv()
+
+DEFAULT_ANTHROPIC_COMPLETION_MODEL = os.getenv(
+    "ANTHROPIC_COMPLETION_MODEL",
+    DEFAULT_ANTHROPIC_CHAT_MODEL,
+)
 
 
 class AnthropicLlm:
@@ -20,7 +26,7 @@ class AnthropicLlm:
         self.client = anthropic.Anthropic(api_key=api_key)
         cache_db_path = db_path or SQLITE_DB_PATH
         self.query_cache_kv = query_cache_kv or SqliteKvStore(cache_db_path, "query_cache")
-        self.completion_model = completion_model or COMPLETION_MODEL
+        self.completion_model = completion_model or DEFAULT_ANTHROPIC_COMPLETION_MODEL
         self.usage_collector = None
 
     def _record_usage(self, operation: str, model: str, prompt_tokens: int,

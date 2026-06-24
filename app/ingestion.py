@@ -186,6 +186,8 @@ class IngestionPipeline:
                 "excerpt": excerpt,
                 "summary": summary,
                 "indexed_at": time.time(),
+                "__embedding_model__": getattr(self.stores.embeddings_db, "embedding_model", None),
+                "__embedding_dimensions__": getattr(self.stores.embeddings_db, "dimensions", None),
             }
             # Propagate taxonomy metadata from frontmatter
             for key in ("memory_type", "tags", "confidence", "importance", "tier"):

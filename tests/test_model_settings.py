@@ -5,6 +5,7 @@ from app.model_settings import (
     apply_subagent_model_selection,
     model_list,
     model_status,
+    ModelSelection,
     parse_model_selection,
     RuntimeModelSettings,
     subagent_model_status,
@@ -59,13 +60,20 @@ def test_apply_model_selection_defaults_reasoning_effort_from_registry():
     assert llm.reasoning_effort == MODEL_REGISTRY.default_effort("gpt-5.5")
 
 
-def test_runtime_model_settings_use_gpt_55_medium_for_subagents():
+def test_apply_model_selection_rejects_runtime_provider_swap():
+    llm = FakeLlm()
+
+    with pytest.raises(ValueError, match="Cannot switch provider"):
+        apply_model_selection(llm, ModelSelection("claude-sonnet-4-20250514"))
+
+
+def test_runtime_model_settings_use_openai_default_for_subagents():
     settings = RuntimeModelSettings()
 
     selection = settings.resolve("gpt-5.4-mini", subagent=True)
 
     assert selection.model == "gpt-5.5"
-    assert selection.reasoning_effort == "medium"
+    assert selection.reasoning_effort == MODEL_REGISTRY.default_effort("gpt-5.5")
 
 
 def test_apply_subagent_model_selection_updates_subagent_default_only():

@@ -35,6 +35,7 @@ from app.model_settings import (
     parse_model_selection,
     subagent_model_status,
 )
+from app.pricing import format_costs
 
 SPINNER_FRAMES = ("|", "/", "-", "\\")
 DETAILS_HEIGHT = 4
@@ -122,6 +123,7 @@ class UiState:
     git_state: str = "git:unknown"
     goal_state: str = ""
     token_total: int = 0
+    session_cost: dict = field(default_factory=lambda: {"totals": {}, "unknown_calls": 0, "unknown_models": []})
     active_tool: str = "idle"
     activity: str = "idle"
     spinner_index: int = 0
@@ -899,6 +901,9 @@ class CoderTui:
                 self.state.run_state = "running"
                 self.state.activity = "running"
                 self.state.token_total += int(event.get("total_tokens") or 0)
+                session_cost = event.get("session_estimated_cost")
+                if isinstance(session_cost, dict):
+                    self.state.session_cost = session_cost
                 model = event.get("model")
                 if model:
                     self.state.model = str(model)
@@ -1113,7 +1118,11 @@ class CoderTui:
         except ValueError as exc:
             self._append("error", f"Error: {exc}")
             return
-        apply_runtime_model_selection(self.agent.llm, selection, getattr(self.agent, "model_settings", None))
+        try:
+            apply_runtime_model_selection(self.agent.llm, selection, getattr(self.agent, "model_settings", None))
+        except ValueError as exc:
+            self._append("error", f"Error: {exc}")
+            return
         self.state.model = selection.model
         self.state.reasoning_effort = get_reasoning_effort(self.agent.llm) or ""
         self._append("system", f"Switched {model_status(self.agent.llm)}")
@@ -1173,6 +1182,7 @@ class CoderTui:
     def _render_bottom_bar(self) -> StyleAndTextTuples:
         width = self._terminal_width()
         tokens = f"tok:{self.state.token_total:,}" if self.state.token_total else "tok:0"
+        cost_text = format_costs(self.state.session_cost, compact=True)
         parts = [
             self.state.input_mode,
             tokens,
@@ -1182,6 +1192,8 @@ class CoderTui:
             f"details:{'on' if self.state.details_visible else 'off'}",
             f"status:{self.state.activity}",
         ]
+        if cost_text != "cost:0":
+            parts.insert(2, cost_text)
         return [("", _fit_line("  " + "  ".join(parts), width))]
 
     def _render_details(self) -> StyleAndTextTuples:
@@ -1318,7 +1330,7 @@ class CoderTui:
         if self._app is not None:
             with contextlib.suppress(Exception):
                 return max(1, int(self._app.output.get_size().columns))
-        return max(1, int(shutil.get_terminal_size((100, 24)).columns))
+        return max(1, int(shutil.get_terminal_size((120, 24)).columns))
 
     def _terminal_height(self) -> int:
         if self._app is not None:

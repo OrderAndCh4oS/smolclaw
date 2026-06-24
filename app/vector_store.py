@@ -9,10 +9,11 @@ import numpy as np
 class SqliteVectorStore:
     """Vector store backed by SQLite with an in-memory matrix for fast queries."""
 
-    def __init__(self, db_path: str, dimensions: int, table: str = "vectors"):
+    def __init__(self, db_path: str, dimensions: int, table: str = "vectors", embedding_model: str | None = None):
         self.db_path = db_path
         self.dimensions = dimensions
         self.table = table
+        self.embedding_model = embedding_model
         self._db = None
         self._loaded = False
         self._lock = asyncio.Lock()
@@ -21,6 +22,7 @@ class SqliteVectorStore:
         self._rows: list[dict] = []
         self._matrix = np.empty((0, self.dimensions), dtype=np.float32)
         self._index: dict[str, int] = {}
+        self._ignored_incompatible_rows = 0
 
     async def _get_db(self):
         if self._db is None:
@@ -59,23 +61,33 @@ class SqliteVectorStore:
         rows = await cursor.fetchall()
         keys: list[str] = []
         data_rows: list[dict] = []
-        matrix = np.empty((len(rows), self.dimensions), dtype=np.float32)
-        for idx, (key, payload_json, vector_blob) in enumerate(rows):
+        vectors: list[np.ndarray] = []
+        ignored = 0
+        for key, payload_json, vector_blob in rows:
             payload = json.loads(payload_json)
             vector = np.frombuffer(vector_blob, dtype=np.float32)
-            if vector.size != self.dimensions:
-                raise ValueError(
-                    f"Stored vector in table {self.table} has {vector.size} dimensions, "
-                    f"expected {self.dimensions}"
-                )
+            if not self._is_compatible_payload(payload, vector):
+                ignored += 1
+                continue
             keys.append(key)
             data_rows.append(payload)
-            matrix[idx] = vector
+            vectors.append(vector)
         self._keys = keys
         self._rows = data_rows
-        self._matrix = matrix
+        self._matrix = np.array(vectors, dtype=np.float32) if vectors else np.empty((0, self.dimensions), dtype=np.float32)
         self._index = {key: idx for idx, key in enumerate(self._keys)}
+        self._ignored_incompatible_rows = ignored
         self._loaded = True
+
+    def _is_compatible_payload(self, payload: dict, vector: np.ndarray) -> bool:
+        if vector.size != self.dimensions:
+            return False
+        if self.embedding_model is None:
+            return True
+        return (
+            payload.get("__embedding_model__") == self.embedding_model
+            and payload.get("__embedding_dimensions__") == self.dimensions
+        )
 
     async def upsert(self, rows):
         async with self._lock:
@@ -92,6 +104,9 @@ class SqliteVectorStore:
                     raise KeyError("Vector rows must include __id__ and __vector__")
                 key = self._serialize_id(row["__id__"])
                 payload = {k: v for k, v in row.items() if k != "__vector__"}
+                if self.embedding_model is not None:
+                    payload["__embedding_model__"] = self.embedding_model
+                    payload["__embedding_dimensions__"] = self.dimensions
                 vector = self._normalize_vector(row["__vector__"])
                 serialized_rows.append((
                     key,

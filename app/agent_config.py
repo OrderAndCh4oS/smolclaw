@@ -3,6 +3,7 @@ from typing import Dict, List, Optional
 
 import yaml
 
+from app.model_defaults import DEFAULT_AGENT_MODEL
 from app.runtime_capabilities import validate_capabilities
 
 
@@ -27,6 +28,13 @@ class AgentConfig:
 
 class AgentConfigLoader:
     @staticmethod
+    def _resolve_model(entry: dict) -> str:
+        model = entry.get("model")
+        if model is None or str(model).strip().lower() in {"", "default"}:
+            return DEFAULT_AGENT_MODEL
+        return str(model)
+
+    @staticmethod
     def load(path: str) -> Dict[str, AgentConfig]:
         with open(path) as f:
             raw = yaml.safe_load(f)
@@ -41,7 +49,7 @@ class AgentConfigLoader:
             validate_capabilities(capabilities)
             config = AgentConfig(
                 name=entry["name"],
-                model=entry["model"],
+                model=AgentConfigLoader._resolve_model(entry),
                 persona=entry["persona"],
                 tools=entry.get("tools", []),
                 capabilities=capabilities,
