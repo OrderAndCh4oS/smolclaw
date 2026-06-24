@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 from app.hooks import HookRunner, ON_BEFORE_TURN, ON_AFTER_TURN, ON_SESSION_START
 

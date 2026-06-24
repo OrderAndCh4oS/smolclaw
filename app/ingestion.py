@@ -60,7 +60,7 @@ class IngestionPipeline:
         links = parse_wiki_links(content)
         for target, _alias in links:
             await self.stores.graph.async_upsert_entity_node(
-                name=target, category="wiki_link", description=f"Linked from content",
+                name=target, category="wiki_link", description="Linked from content",
                 excerpt_id=make_hash(content[:200], "excerpt_id_"), sep=KG_SEP,
             )
 

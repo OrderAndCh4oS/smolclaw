@@ -1,9 +1,8 @@
-import os
 import time
 from datetime import datetime, timezone
 
+from app.memory_documents import MemoryDocumentService
 from app.tools.base import Tool, ToolCallPolicy, ToolResult, ToolRuntimeContext
-from app.utilities import make_hash
 
 from app.lifecycle import MemoryLifecycleManager
 
@@ -87,7 +86,11 @@ def format_memory_content(
 class MemoryRelateTool(Tool):
     @property
     def default_call_policy(self) -> ToolCallPolicy:
-        return ToolCallPolicy(mutates_state=True, tags=frozenset({"memory"}))
+        return ToolCallPolicy(
+            effects=frozenset({"memory_write"}),
+            mutates_state=True,
+            tags=frozenset({"memory"}),
+        )
 
     @property
     def name(self) -> str:
@@ -247,7 +250,11 @@ class MemoryGraphQueryTool(Tool):
 class MemoryStoreTool(Tool):
     @property
     def default_call_policy(self) -> ToolCallPolicy:
-        return ToolCallPolicy(mutates_state=True, tags=frozenset({"memory"}))
+        return ToolCallPolicy(
+            effects=frozenset({"memory_write"}),
+            mutates_state=True,
+            tags=frozenset({"memory"}),
+        )
 
     @property
     def name(self) -> str:
@@ -333,16 +340,18 @@ class MemoryStoreTool(Tool):
             classified_type, confidence = await classify_chunk(content, self.llm)
             memory_type = classified_type.value
 
-        formatted = format_memory_content(content, memory_type, tags, source_id, tier=tier)
-
-        os.makedirs(self.memory_docs_dir, exist_ok=True)
-        file_id = source_id or make_hash(content, "mem-")
-        file_path = os.path.join(self.memory_docs_dir, f"{file_id}.md")
-        with open(file_path, "w") as f:
-            f.write(formatted)
-
-        await self.smol_rag.ingest_text(formatted, source_id=source_id)
-        return f"Stored memory: {file_id}"
+        service = MemoryDocumentService(
+            self.smol_rag,
+            memory_dir=self.memory_docs_dir,
+        )
+        final_source_id = service.memory_source_id(content, source_id)
+        formatted = format_memory_content(content, memory_type, tags, final_source_id, tier=tier)
+        stored = await service.store_document(
+            formatted,
+            kind="memory",
+            source_id=final_source_id,
+        )
+        return f"Stored memory: {stored.source_id}"
 
 
 class MemoryGetTool(Tool):
@@ -397,7 +406,11 @@ class ContradictionReviewTool(Tool):
     def get_call_policy(self, arguments: dict | None = None) -> ToolCallPolicy:
         action = (arguments or {}).get("action")
         if action == "resolve":
-            return ToolCallPolicy(mutates_state=True, tags=frozenset({"memory", "contradiction"}))
+            return ToolCallPolicy(
+                effects=frozenset({"memory_write"}),
+                mutates_state=True,
+                tags=frozenset({"memory", "contradiction"}),
+            )
         return ToolCallPolicy(tags=frozenset({"memory", "contradiction"}))
 
     @property

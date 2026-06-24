@@ -306,18 +306,6 @@ class TestSmolRagEmbeddingBottlenecks:
         mock_llm.get_embeddings = AsyncMock(side_effect=mock_get_embeddings)
         mock_llm.get_completion = AsyncMock(return_value="Summary")
 
-        from app.vector_store import SqliteVectorStore
-        from app.graph_store import NetworkXGraphStore
-
-        rag = SmolRag(
-            llm=mock_llm,
-            embeddings_db=SqliteVectorStore(os.path.join(temp_dir, "embeddings"), dimensions=1536),
-            entities_db=SqliteVectorStore(os.path.join(temp_dir, "entities"), dimensions=1536),
-            relationships_db=SqliteVectorStore(os.path.join(temp_dir, "relationships"), dimensions=1536),
-            graph_db=NetworkXGraphStore(os.path.join(temp_dir, "graph.graphml")),
-            db_path=os.path.join(temp_dir, "test.db"),
-        )
-
         # Process excerpts (simulate document import flow)
         # This would require calling internal methods or full document import
         # For now, we test the embedding pattern
@@ -415,7 +403,7 @@ class TestSmolRagStringConcatenationBottleneck:
             desc_length = len(node["description"])
             description_lengths.append(desc_length)
 
-        print(f"\nDescription lengths after each addition:")
+        print("\nDescription lengths after each addition:")
         for i, length in enumerate(description_lengths):
             print(f"  After {i+1} additions: {length} chars")
 

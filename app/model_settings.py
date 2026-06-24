@@ -10,7 +10,7 @@ from app.model_defaults import (
     MODEL_SELECTION_PATTERN,
     MODEL_SWITCHABLE_PREFIXES,
 )
-from app.model_registry import MODEL_REGISTRY, REASONING_EFFORTS
+from app.model_registry import MODEL_REGISTRY
 
 
 @dataclass(frozen=True)

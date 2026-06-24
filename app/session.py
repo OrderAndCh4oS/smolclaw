@@ -3,13 +3,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from app.storage_paths import (
-    atomic_write_json,
-    atomic_write_text,
-    contained_storage_path,
-    load_json_with_backup,
-    load_with_backup,
-)
+from app.storage_paths import atomic_write_text, contained_storage_path, load_with_backup
 
 
 @dataclass
@@ -70,11 +64,3 @@ class SessionManager:
         for line in lines[1:]:
             session.messages.append(json.loads(line))
         return session
-
-    def save_usage(self, session_key: str, usage_data: dict):
-        path = contained_storage_path(self.sessions_dir, session_key, ".usage.json")
-        atomic_write_json(path, usage_data)
-
-    def load_usage(self, session_key: str) -> Optional[dict]:
-        path = contained_storage_path(self.sessions_dir, session_key, ".usage.json")
-        return load_json_with_backup(path)

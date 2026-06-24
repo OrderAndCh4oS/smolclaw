@@ -1,16 +1,14 @@
 import asyncio
+import json
 import os
-import tempfile
 import shutil
-from pathlib import Path
+import tempfile
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import numpy as np
 
 from app.graph_store import NetworkXGraphStore
-from app.sqlite_store import SqliteKvStore
-from app.sqlite_mapping_store import SqliteMappingStore
 from app.vector_store import SqliteVectorStore
 
 
@@ -198,10 +196,6 @@ def sessions_dir(temp_dir):
     d = os.path.join(temp_dir, "sessions")
     os.makedirs(d)
     return d
-
-
-import json
-
 
 class FakeWebSocket:
     """Queue-based fake WebSocket for testing the gateway protocol."""

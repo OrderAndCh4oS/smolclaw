@@ -161,7 +161,7 @@ class TestVectorStoreMemoryUsage:
 
         print(f"\nUpsert 1738 vectors: {upsert_time:.4f}s")
         print(f"Query (top_k=25): {query_time:.4f}s")
-        print(f"Estimated memory: ~13.8 MB")
+        print("Estimated memory: ~13.8 MB")
 
         assert len(results) == 25
 
@@ -189,7 +189,7 @@ class TestVectorStoreMemoryUsage:
             # Now measure
             start_time = time.perf_counter()
             for _ in range(20):  # More iterations for better averaging
-                results = await store.query(query_vector, top_k=10)
+                await store.query(query_vector, top_k=10)
             avg_query_time = (time.perf_counter() - start_time) / 20
             query_times.append(avg_query_time)
 
@@ -203,10 +203,10 @@ class TestVectorStoreMemoryUsage:
         # Very lenient check: largest DB shouldn't be faster than smallest by >20%
         # (accounting for measurement noise and caching effects)
         if query_times[-1] < query_times[0] * 0.8:
-            print(f"Warning: Large DB significantly faster than small DB - unexpected!")
+            print("Warning: Large DB significantly faster than small DB - unexpected!")
             print(f"  100 vectors: {query_times[0]:.6f}s")
             print(f"  2000 vectors: {query_times[-1]:.6f}s")
-            print(f"  This suggests measurement variance or caching effects.")
+            print("  This suggests measurement variance or caching effects.")
 
         # Relaxed assertion: just verify search completes and times are reasonable
         # O(n) growth is expected but hard to measure reliably at microsecond scale
@@ -228,7 +228,7 @@ class TestVectorStoreMemoryUsage:
 
         for _ in range(5):
             start_time = time.perf_counter()
-            results = await vector_store.query(query_vector, top_k=10)
+            await vector_store.query(query_vector, top_k=10)
             query_times.append(time.perf_counter() - start_time)
 
         # All queries should have similar time (all in memory)
@@ -390,6 +390,6 @@ class TestVectorStoreEdgeCases:
         try:
             await vector_store.upsert([{"__id__": 1, "__vector__": wrong_vector, "test": "data"}])
             # May raise error or handle gracefully
-        except Exception as e:
+        except Exception:
             # Expected for dimension mismatch
             assert True

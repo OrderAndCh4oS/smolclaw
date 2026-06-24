@@ -1,6 +1,5 @@
 import os
 
-import pytest
 
 from app.context_builder import ContextBuilder
 

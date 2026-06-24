@@ -165,7 +165,7 @@ class AgentEvalRunner:
         report_dir = self.output_dir or os.path.join(state_paths.evals_dir, "reports")
         os.makedirs(report_dir, exist_ok=True)
         trace_store = RunTraceStore(paths.traces_dir)
-        goal_store = GoalLedgerStore(paths.ledgers_dir, legacy_sessions_dir=paths.sessions_dir)
+        goal_store = GoalLedgerStore(paths.ledgers_dir)
         session_key = f"eval-{task.id}"
         ledger = goal_store.start(
             session_key,
@@ -277,7 +277,7 @@ class AgentEvalRunner:
             payload = self._parse_live_payload(result.stdout)
             if result.returncode not in {0, 2}:
                 raise ValueError(f"Live eval command failed with exit code {result.returncode}: {result.stderr}")
-            goal_store = GoalLedgerStore(paths.ledgers_dir, legacy_sessions_dir=paths.sessions_dir)
+            goal_store = GoalLedgerStore(paths.ledgers_dir)
             ledger = goal_store.load(session_key)
             trace_store = RunTraceStore(paths.traces_dir)
             summary = trace_store.latest_summary(session_key)

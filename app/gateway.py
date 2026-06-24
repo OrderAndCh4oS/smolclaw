@@ -4,7 +4,7 @@ import logging
 import os
 import secrets
 import uuid
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 import websockets
 
@@ -18,6 +18,9 @@ from app.runtime_builder import build_runtime_services
 from app.smol_rag import SmolRag
 from app.workspace import WorkspaceContext
 
+if TYPE_CHECKING:
+    from app.agent_loop import AgentLoop
+
 logger = logging.getLogger("smolclaw.gateway")
 
 DEFAULT_AGENTS_CONFIG = os.path.join(PROJECT_ROOT, "agents.yaml")
@@ -27,15 +30,22 @@ class Gateway:
     def __init__(
         self,
         port: int = 18789,
+        host: str = "127.0.0.1",
         token_issuer_url: str = "http://client:3000/mcp-tokens",
         gateway_url: str = "http://mcp-gateway:3200/mcp",
         validate_token: Optional[callable] = None,
+        auth_token: str | None = None,
+        allow_remote: bool = False,
         agents_config: str = DEFAULT_AGENTS_CONFIG,
         workspace: str = WORKSPACE_DIR,
     ):
         self.port = port
+        self.host = host
         self.token_issuer_url = token_issuer_url
         self.gateway_url = gateway_url
+        self.auth_token = auth_token or os.getenv("SMOLCLAW_GATEWAY_TOKEN") or ""
+        self.allow_remote = allow_remote
+        self._has_custom_validate_token = validate_token is not None
         self._validate_token = validate_token or self._default_validate_token
         self.agents_config = agents_config
         self.workspace = workspace
@@ -47,7 +57,17 @@ class Gateway:
         diagnostics.configure(self._workspace_ctx.paths.log_dir)
 
     def _default_validate_token(self, token: str) -> bool:
-        return bool(token)
+        return bool(self.auth_token) and secrets.compare_digest(token or "", self.auth_token)
+
+    def _validate_startup_security(self):
+        if not self._has_custom_validate_token and not self.auth_token:
+            raise RuntimeError(
+                "Gateway token is required. Set SMOLCLAW_GATEWAY_TOKEN or pass --token."
+            )
+        if self.host not in {"127.0.0.1", "localhost", "::1"} and not self.allow_remote:
+            raise RuntimeError(
+                "Gateway remote bind requires --allow-remote."
+            )
 
     async def _handle_connection(self, websocket):
         # Step 1: Send challenge
@@ -292,6 +312,7 @@ class Gateway:
 
     async def start(self):
         from app.tracing import init_tracing
+        self._validate_startup_security()
         init_tracing()
         runtime = build_runtime_services(
             self._workspace_ctx,
@@ -301,6 +322,6 @@ class Gateway:
         )
         self._smol_rag = runtime.smol_rag
         self._session_manager = runtime.session_manager
-        logger.info(f"SmolClaw gateway starting on port {self.port}")
-        async with websockets.serve(self._handle_connection, "0.0.0.0", self.port):
+        logger.info(f"SmolClaw gateway starting on {self.host}:{self.port}")
+        async with websockets.serve(self._handle_connection, self.host, self.port):
             await asyncio.Future()  # Run forever

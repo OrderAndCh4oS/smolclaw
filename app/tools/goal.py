@@ -51,14 +51,11 @@ class GoalStartTool(Tool):
         if self.goal_store is None or not self.session_key:
             return "Error: goal_start is not bound to a session."
         try:
-            try:
-                goal = self.goal_store.start(
-                    self.session_key,
-                    objective,
-                    acceptance_criteria=acceptance_criteria,
-                )
-            except TypeError:
-                goal = self.goal_store.start(self.session_key, objective)
+            goal = self.goal_store.start(
+                self.session_key,
+                objective,
+                acceptance_criteria=acceptance_criteria,
+            )
         except ValueError as exc:
             return f"Error: {exc}"
         return f"Goal set: {goal.objective}"
@@ -209,20 +206,15 @@ class GoalUpdateTool(Tool):
         if self.goal_store is None or not self.session_key:
             return "Error: goal_update is not bound to a session."
         try:
-            try:
-                goal = self.goal_store.update(
-                    self.session_key,
-                    status=status,
-                    note=note,
-                    plan=plan,
-                    current_step=current_step,
-                    acceptance_updates=acceptance_updates,
-                    no_verification_reason=no_verification_reason,
-                )
-            except TypeError:
-                if status is None:
-                    return "Error: legacy goal store requires status."
-                goal = self.goal_store.update(self.session_key, status=status, note=note)
+            goal = self.goal_store.update(
+                self.session_key,
+                status=status,
+                note=note,
+                plan=plan,
+                current_step=current_step,
+                acceptance_updates=acceptance_updates,
+                no_verification_reason=no_verification_reason,
+            )
         except ValueError as exc:
             return f"Error: {exc}"
         if status is None:

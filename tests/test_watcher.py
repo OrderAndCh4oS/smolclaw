@@ -4,6 +4,7 @@ import tempfile
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+from app.memory_documents import MemoryDocumentService
 from app.watcher import MemoryFileWatcher
 
 
@@ -70,7 +71,8 @@ class TestMemoryFileWatcher:
         changes = await watcher.check_once()
         assert path in changes
         assert changes[path] == "deleted"
-        mock_watcher_rag.remove_document_by_source.assert_awaited_once_with(path)
+        expected_source_id = MemoryDocumentService(mock_watcher_rag).external_source_id(path)
+        mock_watcher_rag.remove_document_by_source.assert_awaited_once_with(expected_source_id)
 
     @pytest.mark.asyncio
     async def test_no_changes_returns_empty(self, watcher_dir, mock_watcher_rag):

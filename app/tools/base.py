@@ -8,6 +8,16 @@ if TYPE_CHECKING:
 
 ToolExposure = Literal["immediate", "deferred"]
 ToolStatus = Literal["ok", "error", "denied"]
+ToolEffect = Literal[
+    "read",
+    "workspace_write",
+    "memory_write",
+    "runtime_state_write",
+    "command_read",
+    "command_write",
+    "network",
+    "delegation",
+]
 
 TRACE_RECORDER_STATE_KEY = "trace_recorder"
 ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY = "active_tool_trace_event_id"
@@ -42,6 +52,11 @@ class ToolRuntimeContext:
 class ToolCallPolicy:
     """Execution-time policy for a single tool invocation."""
 
+    effects: frozenset[ToolEffect] = frozenset()
+    requires_exploration: bool = False
+    requires_approval: bool = False
+    reversible: bool = False
+    records_evidence: bool = True
     mutates_state: bool = False
     delegates: bool = False
     tags: frozenset[str] = frozenset()
@@ -101,6 +116,29 @@ def normalize_tool_result(value: ToolOutcome | None) -> ToolResult:
 
 def render_tool_result(value: ToolOutcome | None) -> str:
     return normalize_tool_result(value).to_legacy_text()
+
+
+def tool_policy_effects(policy: ToolCallPolicy) -> frozenset[str]:
+    """Return explicit effects plus legacy tag-derived effects during migration."""
+    effects = set(policy.effects)
+    tags = set(policy.tags)
+    if "filesystem_read" in tags:
+        effects.add("read")
+    if "filesystem_write" in tags:
+        effects.add("workspace_write")
+    if "shell_read" in tags:
+        effects.add("command_read")
+    if "shell_write" in tags:
+        effects.add("command_write")
+    if "command_execution" in tags and not {"command_read", "command_write"} & effects:
+        effects.add("command_read")
+    if policy.delegates:
+        effects.add("delegation")
+    if policy.mutates_state and "memory" in tags:
+        effects.add("memory_write")
+    if policy.mutates_state and not effects:
+        effects.add("runtime_state_write")
+    return frozenset(effects)
 
 
 class Tool(ABC):

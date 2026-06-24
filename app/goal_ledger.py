@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Literal
 
-from app.goal import GoalState, VALID_GOAL_STATUSES
+from app.goal import VALID_GOAL_STATUSES
 from app.storage_paths import atomic_write_json, contained_storage_path, load_json_with_backup
 
 
@@ -314,19 +314,6 @@ class GoalLedger:
             notes=[LedgerNote.from_dict(item) for item in data.get("notes") or []],
         )
 
-    @classmethod
-    def from_goal_state(cls, session_key: str, goal: GoalState) -> "GoalLedger":
-        return cls(
-            session_key=session_key,
-            objective=goal.objective,
-            status=goal.status,  # type: ignore[arg-type]
-            created_at=goal.created_at,
-            updated_at=goal.updated_at,
-            note=goal.note,
-            turn_count=goal.turn_count,
-            notes=[LedgerNote(goal.note)] if goal.note else [],
-        )
-
     def render_for_prompt(self) -> str:
         lines = [
             "Current session goal:",
@@ -374,29 +361,19 @@ class GoalLedger:
 class GoalLedgerStore:
     """Stores one structured goal ledger sidecar per chat session."""
 
-    def __init__(self, ledgers_dir: str, *, legacy_sessions_dir: str | None = None):
+    def __init__(self, ledgers_dir: str):
         self.ledgers_dir = ledgers_dir
-        self.legacy_sessions_dir = legacy_sessions_dir
         os.makedirs(ledgers_dir, exist_ok=True)
 
     def _file_path(self, session_key: str) -> str:
         return contained_storage_path(self.ledgers_dir, session_key, ".ledger.json")
-
-    def _legacy_file_path(self, session_key: str) -> str | None:
-        if not self.legacy_sessions_dir:
-            return None
-        return contained_storage_path(self.legacy_sessions_dir, session_key, ".goal.json")
 
     def load(self, session_key: str) -> GoalLedger | None:
         path = self._file_path(session_key)
         data = load_json_with_backup(path)
         if data is not None:
             return GoalLedger.from_dict(data)
-        legacy_path = self._legacy_file_path(session_key)
-        legacy_data = load_json_with_backup(legacy_path) if legacy_path else None
-        if legacy_data is None:
-            return None
-        return GoalLedger.from_goal_state(session_key, GoalState.from_dict(legacy_data))
+        return None
 
     def save(self, session_key: str, ledger: GoalLedger) -> GoalLedger:
         ledger.updated_at = time.time()
@@ -472,12 +449,11 @@ class GoalLedgerStore:
         return self.save(session_key, ledger)
 
     def clear(self, session_key: str) -> bool:
-        removed = False
-        for path in (self._file_path(session_key), self._legacy_file_path(session_key)):
-            if path and os.path.exists(path):
-                os.remove(path)
-                removed = True
-        return removed
+        path = self._file_path(session_key)
+        if not os.path.exists(path):
+            return False
+        os.remove(path)
+        return True
 
     def increment_turn_count(self, session_key: str) -> GoalLedger | None:
         ledger = self.load(session_key)

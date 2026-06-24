@@ -256,10 +256,7 @@ expected_status: complete
         workspace = command[command.index("--workspace") + 1]
         paths = build_workspace_paths(workspace)
         session_key = command[command.index("--session") + 1]
-        goal_store = GoalLedgerStore(
-            paths.ledgers_dir,
-            legacy_sessions_dir=paths.sessions_dir,
-        )
+        goal_store = GoalLedgerStore(paths.ledgers_dir)
         ledger = goal_store.start(
             session_key,
             "Fix the parser.",

@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Dict, Final, Mapping, Set
 
-from app.tools.base import Tool
+from app.tools.base import Tool, tool_policy_effects
 from app.tools.middleware import NextFn
 
 MUTATES_STATE: Final[str] = "mutates_state"
@@ -14,9 +14,11 @@ FILESYSTEM_READ: Final[str] = "filesystem_read"
 FILESYSTEM_WRITE: Final[str] = "filesystem_write"
 SHELL_READ: Final[str] = "shell_read"
 SHELL_WRITE: Final[str] = "shell_write"
-EXTERNAL_PATH: Final[str] = "external_path"
-DELETE: Final[str] = "delete"
-SECRET_PATH: Final[str] = "secret_path"
+WORKSPACE_WRITE: Final[str] = "workspace_write"
+MEMORY_WRITE: Final[str] = "memory_write"
+RUNTIME_STATE_WRITE: Final[str] = "runtime_state_write"
+COMMAND_WRITE: Final[str] = "command_write"
+DELEGATION: Final[str] = "delegation"
 
 SECRET_FILENAMES: Final[frozenset[str]] = frozenset({".env"})
 SECRET_PREFIXES: Final[tuple[str, ...]] = (".env.",)
@@ -30,7 +32,6 @@ DIRECT_MUTATION_TOOLS: Final[Set[str]] = {
     "write_file",
     "edit_file",
     "apply_patch",
-    "exec",
     "memory_store",
     "research_source_store",
     "memory_relate",
@@ -57,7 +58,16 @@ PERMISSION_MODES: Final[Dict[str, PermissionModeConfig]] = {
     ),
     "plan": PermissionModeConfig(
         blocked_tools=frozenset(DIRECT_MUTATION_TOOLS | DELEGATION_TOOLS),
-        blocked_capabilities=frozenset({MUTATES_STATE, DELEGATES, COMMAND_EXECUTION}),
+        blocked_capabilities=frozenset({
+            MUTATES_STATE,
+            DELEGATES,
+            COMMAND_EXECUTION,
+            WORKSPACE_WRITE,
+            MEMORY_WRITE,
+            RUNTIME_STATE_WRITE,
+            COMMAND_WRITE,
+            DELEGATION,
+        }),
         capability_exempt_tools=frozenset({"contradiction_review"}),
     ),
     "execute": PermissionModeConfig(
@@ -69,28 +79,33 @@ PERMISSION_MODES: Final[Dict[str, PermissionModeConfig]] = {
             "apply_patch",
             "write_file",
             "edit_file",
-            "exec",
             "memory_relate",
             "sequential_pipeline",
             "fanout_pipeline",
             "route",
             "spawn_agent",
         }),
-        blocked_capabilities=frozenset({MUTATES_STATE, DELEGATES, COMMAND_EXECUTION}),
+        blocked_capabilities=frozenset({
+            MUTATES_STATE,
+            DELEGATES,
+            COMMAND_EXECUTION,
+            WORKSPACE_WRITE,
+            RUNTIME_STATE_WRITE,
+            COMMAND_WRITE,
+            DELEGATION,
+        }),
         capability_exempt_tools=frozenset({"memory_store", "research_source_store", "contradiction_review"}),
     ),
     "delegate_only": PermissionModeConfig(
         blocked_tools=frozenset(DIRECT_MUTATION_TOOLS),
-        blocked_capabilities=frozenset({MUTATES_STATE}),
+        blocked_capabilities=frozenset({
+            MUTATES_STATE,
+            WORKSPACE_WRITE,
+            MEMORY_WRITE,
+            RUNTIME_STATE_WRITE,
+            COMMAND_WRITE,
+        }),
     ),
-}
-
-PERMISSION_BLOCKED: Dict[str, Set[str]] = {
-    name: set(config.blocked_tools) for name, config in PERMISSION_MODES.items()
-}
-
-PERMISSION_BLOCKED_CAPABILITIES: Dict[str, Set[str]] = {
-    name: set(config.blocked_capabilities) for name, config in PERMISSION_MODES.items()
 }
 VALID_PERMISSION_MODES: Final[frozenset[str]] = frozenset(PERMISSION_MODES)
 
@@ -106,6 +121,7 @@ class PermissionDecision:
 def _policy_capabilities(tool: Tool, kwargs: Mapping[str, Any]) -> set[str]:
     policy = tool.get_call_policy(dict(kwargs))
     capabilities = set(policy.tags)
+    capabilities.update(tool_policy_effects(policy))
     if policy.mutates_state:
         capabilities.add(MUTATES_STATE)
     if policy.delegates:

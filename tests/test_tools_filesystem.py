@@ -122,6 +122,25 @@ class TestFindFilesTool:
         assert result.startswith("Error:")
         assert "outside workspace" in result
 
+    @pytest.mark.asyncio
+    async def test_excludes_runtime_and_generated_directories(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        visible_dir = os.path.join(temp_dir, "src")
+        os.makedirs(visible_dir, exist_ok=True)
+        with open(os.path.join(visible_dir, "app.py"), "w") as f:
+            f.write("")
+        for dirname in [".venv314", ".smolclaw", "stores", "workspace", "memory", "research", "smolclaw.egg-info"]:
+            hidden_dir = os.path.join(temp_dir, dirname)
+            os.makedirs(hidden_dir, exist_ok=True)
+            with open(os.path.join(hidden_dir, "hidden.py"), "w") as f:
+                f.write("")
+
+        tool = FindFilesTool(workspace=workspace)
+        result = await tool.execute(pattern="**/*.py", max_results=1000)
+
+        assert "src/app.py" in result
+        assert "hidden.py" not in result
+
 
 class TestApplyPatchTool:
     def test_apply_patch_schema_accepts_mutation_reason(self):
@@ -266,6 +285,24 @@ class TestGrepSearchTool:
 
         assert result.startswith("Error:")
         assert "outside workspace" in result
+
+    @pytest.mark.asyncio
+    async def test_excludes_runtime_and_generated_directories(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        os.makedirs(os.path.join(temp_dir, "src"), exist_ok=True)
+        with open(os.path.join(temp_dir, "src", "app.py"), "w") as f:
+            f.write("needle\n")
+        for dirname in [".venv314", ".smolclaw", "stores", "workspace", "memory", "research", "smolclaw.egg-info"]:
+            hidden_dir = os.path.join(temp_dir, dirname)
+            os.makedirs(hidden_dir, exist_ok=True)
+            with open(os.path.join(hidden_dir, "hidden.py"), "w") as f:
+                f.write("needle\n")
+
+        tool = GrepSearchTool(workspace=workspace)
+        result = await tool.execute(query="needle", include_glob="*.py", max_results=1000)
+
+        assert "src/app.py" in result
+        assert "hidden.py" not in result
 
 
 class TestAllowedDir:

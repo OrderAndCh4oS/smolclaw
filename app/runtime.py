@@ -196,10 +196,11 @@ def build_configured_agent(
         capability_names=capability_names,
     )
     llm_factory_kwargs = {"db_path": env.llm_db_path}
-    registry_factory = lambda agent_config: build_master_registry(
-        env,
-        capability_names=resolve_capability_names(agent_config, env),
-    )
+    def registry_factory(agent_config):
+        return build_master_registry(
+            env,
+            capability_names=resolve_capability_names(agent_config, env),
+        )
 
     return build_agent_loop(
         config=config,

@@ -4,6 +4,7 @@ import re
 
 from app.tools.base import Tool, ToolCallPolicy
 from app.tools.permissions import FILESYSTEM_READ, FILESYSTEM_WRITE
+from app.workspace_excludes import DEFAULT_DISCOVERY_EXCLUDES, is_discovery_excluded
 from app.workspace import WorkspaceContext
 
 
@@ -192,21 +193,7 @@ class ListDirTool(_WorkspacePathMixin, Tool):
 
 
 class FindFilesTool(_WorkspacePathMixin, Tool):
-    DEFAULT_EXCLUDED_DIRS = {
-        ".git",
-        ".hg",
-        ".svn",
-        ".mypy_cache",
-        ".nltk_data",
-        ".pytest_cache",
-        ".ruff_cache",
-        ".tox",
-        ".venv",
-        "__pycache__",
-        "build",
-        "dist",
-        "node_modules",
-    }
+    DEFAULT_EXCLUDED_DIRS = DEFAULT_DISCOVERY_EXCLUDES
 
     @property
     def name(self) -> str:
@@ -261,7 +248,7 @@ class FindFilesTool(_WorkspacePathMixin, Tool):
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [
                 name for name in sorted(dirnames)
-                if name not in self.DEFAULT_EXCLUDED_DIRS
+                if not is_discovery_excluded(name, self.DEFAULT_EXCLUDED_DIRS)
             ]
             for filename in sorted(filenames):
                 file_path = os.path.join(dirpath, filename)
@@ -402,29 +389,6 @@ class ApplyPatchTool(_WorkspacePathMixin, Tool):
             raise ValueError(f"unknown patch header: {line}")
         return operations
 
-    def _add_file(self, path: str, lines: list[str]):
-        if os.path.exists(path):
-            raise ValueError(f"file already exists: {path}")
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f:
-            f.write("\n".join(lines))
-            if lines:
-                f.write("\n")
-
-    def _delete_file(self, path: str):
-        if not os.path.isfile(path):
-            raise ValueError(f"file not found: {path}")
-        os.remove(path)
-
-    def _update_file(self, path: str, hunks: list[list[str]]):
-        if not os.path.isfile(path):
-            raise ValueError(f"file not found: {path}")
-        with open(path) as f:
-            content = f.read()
-        updated_content = self._apply_hunks_to_content(content, hunks, path)
-        with open(path, "w") as f:
-            f.write(updated_content)
-
     def _plan_operations(self, operations: list[dict]) -> tuple[dict[str, dict], dict[str, dict]]:
         planned_states: dict[str, dict] = {}
         original_states: dict[str, dict] = {}
@@ -529,21 +493,7 @@ class ApplyPatchTool(_WorkspacePathMixin, Tool):
 
 
 class GrepSearchTool(_WorkspacePathMixin, Tool):
-    DEFAULT_EXCLUDED_DIRS = {
-        ".git",
-        ".hg",
-        ".svn",
-        ".mypy_cache",
-        ".nltk_data",
-        ".pytest_cache",
-        ".ruff_cache",
-        ".tox",
-        ".venv",
-        "__pycache__",
-        "build",
-        "dist",
-        "node_modules",
-    }
+    DEFAULT_EXCLUDED_DIRS = DEFAULT_DISCOVERY_EXCLUDES
 
     @property
     def name(self) -> str:
@@ -639,7 +589,7 @@ class GrepSearchTool(_WorkspacePathMixin, Tool):
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [
                 name for name in dirnames
-                if name not in self.DEFAULT_EXCLUDED_DIRS
+                if not is_discovery_excluded(name, self.DEFAULT_EXCLUDED_DIRS)
             ]
             for filename in sorted(filenames):
                 if include_glob and not fnmatch.fnmatch(filename, include_glob):

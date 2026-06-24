@@ -7,22 +7,22 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Install dependencies first (layer caching)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Download NLTK punkt tokenizer (needed by chunking.py)
-RUN python -c "import nltk; d='/usr/local/share/nltk_data'; nltk.download('punkt', download_dir=d, quiet=True); nltk.download('punkt_tab', download_dir=d, quiet=True); nltk.download('stopwords', download_dir=d, quiet=True)"
-
-# Pre-download tiktoken encodings (needed at runtime, no network in container)
-RUN python -c "import tiktoken; tiktoken.get_encoding('o200k_base'); tiktoken.get_encoding('cl100k_base')"
-
-# Copy application code
+# Copy application code and package metadata
+COPY pyproject.toml README.md ./
 COPY app/ app/
 COPY cli/ cli/
 COPY agents/ agents/
 COPY agents.yaml .
 COPY AGENT.md .
+
+# Install from pyproject.toml, the dependency source of truth.
+RUN pip install --no-cache-dir .
+
+# Download NLTK corpora used by chunking and BM25.
+RUN python -c "import nltk; d='/usr/local/share/nltk_data'; nltk.download('punkt', download_dir=d, quiet=True); nltk.download('punkt_tab', download_dir=d, quiet=True); nltk.download('stopwords', download_dir=d, quiet=True)"
+
+# Pre-download tiktoken encodings (needed at runtime, no network in container)
+RUN python -c "import tiktoken; tiktoken.get_encoding('o200k_base'); tiktoken.get_encoding('cl100k_base')"
 
 # Create runtime directories (overridable via volume mounts)
 RUN mkdir -p store cache logs sessions memory

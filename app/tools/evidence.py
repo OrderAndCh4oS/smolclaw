@@ -12,6 +12,7 @@ from app.tools.base import (
     Tool,
     ToolOutcome,
     normalize_tool_result,
+    tool_policy_effects,
 )
 from app.tools.middleware import NextFn
 
@@ -35,6 +36,14 @@ class EvidenceMiddleware:
             self._record_command(kwargs, normalized)
         elif not normalized.ok:
             return result
+        elif "memory_write" in tool_policy_effects(tool.get_call_policy(kwargs)):
+            tool_call_id, tool_trace_event_id = self._active_tool_ids()
+            self._record_ledger_evidence(
+                kind="memory",
+                summary=f"Memory state changed: {tool.name}",
+                trace_event_id=tool_trace_event_id,
+                tool_call_id=tool_call_id,
+            )
         elif tool.name == "read_file":
             tool_call_id, tool_trace_event_id = self._active_tool_ids()
             self._record_ledger_evidence(

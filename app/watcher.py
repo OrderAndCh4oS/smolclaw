@@ -4,9 +4,10 @@ import os
 from typing import Dict, Optional
 
 from app.hooks import HookRunner
+from app.memory_documents import MemoryDocumentService
+from app.utilities import get_docs, make_hash
 
 ON_FILE_CHANGE = "on_file_change"
-from app.utilities import make_hash, get_docs
 
 logger = logging.getLogger("smolclaw.watcher")
 
@@ -70,16 +71,21 @@ class MemoryFileWatcher:
         # Process changes
         for path, action in changes.items():
             logger.info(f"File {action}: {path}")
+            document_service = MemoryDocumentService(self.smol_rag)
+            source_id = document_service.external_source_id(path)
             if action in ("created", "modified"):
                 try:
                     with open(path) as f:
                         content = f.read()
-                    await self.smol_rag.ingest_text(content, source_id=path)
+                    await document_service.ingest_external_text(
+                        content,
+                        source_id=source_id,
+                    )
                 except Exception as e:
                     logger.error(f"Failed to ingest {path}: {e}")
             elif action == "deleted":
                 try:
-                    await self.smol_rag.remove_document_by_source(path)
+                    await self.smol_rag.remove_document_by_source(source_id)
                 except Exception as e:
                     logger.warning(f"Failed to remove {path} from index: {e}")
 

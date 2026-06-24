@@ -452,14 +452,21 @@ class RunCommandTool(_WorkspaceCommandMixin, Tool):
 
     @property
     def default_call_policy(self) -> ToolCallPolicy:
-        return ToolCallPolicy(tags=frozenset({COMMAND_EXECUTION}))
+        return ToolCallPolicy(
+            effects=frozenset({"command_read"}),
+            tags=frozenset({COMMAND_EXECUTION}),
+        )
 
     def get_call_policy(self, arguments: dict | None = None) -> ToolCallPolicy:
         command = (arguments or {}).get("command") or ""
         tags = {COMMAND_EXECUTION}
         mutates = self._command_may_mutate(command)
         tags.add(SHELL_WRITE if mutates else SHELL_READ)
-        return ToolCallPolicy(mutates_state=mutates, tags=frozenset(tags))
+        return ToolCallPolicy(
+            effects=frozenset({"command_write" if mutates else "command_read"}),
+            mutates_state=mutates,
+            tags=frozenset(tags),
+        )
 
     @property
     def name(self) -> str:

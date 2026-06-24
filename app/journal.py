@@ -1,9 +1,8 @@
 import logging
-import os
 from datetime import datetime, timezone
 
+from app.memory_documents import MemoryDocumentService
 from app.session import Session
-from app.storage_paths import atomic_write_text, contained_storage_path
 from app.tools.memory_tools import format_memory_content
 
 logger = logging.getLogger("smolclaw.journal")
@@ -42,7 +41,8 @@ async def generate_journal(
     if not journal_content:
         return ""
 
-    source_id = f"journal-{session.key}"
+    service = MemoryDocumentService(smol_rag, memory_dir=memory_dir)
+    source_id = service.journal_source_id(session.key)
 
     # Format with taxonomy
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -53,14 +53,11 @@ async def generate_journal(
         source_id=source_id,
     )
 
-    # Write to memory directory
-    os.makedirs(memory_dir, exist_ok=True)
-    file_path = contained_storage_path(memory_dir, source_id, ".md")
-    atomic_write_text(file_path, formatted)
-
-    # Re-exporting the same session should overwrite the prior journal.
-    await smol_rag.remove_document_by_source(source_id)
-    await smol_rag.ingest_text(formatted, source_id=source_id)
+    await service.store_document(
+        formatted,
+        kind="journal",
+        source_id=source_id,
+    )
 
     logger.info(f"Journal generated: {source_id} ({len(journal_content)} chars)")
     return journal_content

@@ -132,7 +132,6 @@ class ContextAssembler(ContextBuilder):
         # 2. KG entity/relationship excerpts
         try:
             from app.prompts import get_high_low_level_keywords_prompt
-            from app.definitions import KG_SEP
 
             prompt = get_high_low_level_keywords_prompt(query)
 

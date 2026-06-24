@@ -1,6 +1,5 @@
 """Meta-tool for discovering deferred tools at runtime."""
 
-import json
 
 from app.tools.base import Tool, ToolRuntimeContext
 

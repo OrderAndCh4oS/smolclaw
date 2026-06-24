@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.memory_documents import MemoryDocumentService
 from app.tools.base import Tool, ToolCallPolicy
 from app.tools.permissions import MUTATES_STATE
 
@@ -111,7 +112,11 @@ class ResearchSourceStoreTool(Tool):
 
     @property
     def default_call_policy(self) -> ToolCallPolicy:
-        return ToolCallPolicy(mutates_state=True, tags=frozenset({"memory", "research", MUTATES_STATE}))
+        return ToolCallPolicy(
+            effects=frozenset({"memory_write", "network"}),
+            mutates_state=True,
+            tags=frozenset({"memory", "research", MUTATES_STATE}),
+        )
 
     async def execute(self, **kwargs) -> str:
         url = str(kwargs.get("url") or "").strip()
@@ -145,21 +150,20 @@ class ResearchSourceStoreTool(Tool):
             digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:10]
             stem = f"{datetime.now(timezone.utc).strftime('%Y%m%d')}-{_slugify(title)}-{digest}"
 
+        service = MemoryDocumentService(
+            self.smol_rag,
+            research_dir=self.research_dir,
+        )
+        stored = await service.store_document(
+            content,
+            kind="research",
+            source_id=stem,
+            extension=".txt",
+            ingest=kwargs.get("ingest", True),
+            source="research",
+        )
+
+        path = Path(stored.path or "")
         research_dir = Path(self.research_dir)
-        research_dir.mkdir(parents=True, exist_ok=True)
-        path = research_dir / f"{stem}.txt"
-        counter = 2
-        while path.exists():
-            path = research_dir / f"{stem}-{counter}.txt"
-            counter += 1
-        path.write_text(content, encoding="utf-8")
-
-        if kwargs.get("ingest", True) and self.smol_rag is not None:
-            await self.smol_rag.ingest_text(
-                content,
-                source_id=f"research/{path.stem}",
-                source="research",
-            )
-
         display_path = Path("research") / path.name if research_dir.name == "research" else Path(path.name)
         return f"Stored research source: {display_path}"

@@ -5,7 +5,6 @@ only when needed. User-explicit input always outranks automatic extraction.
 """
 
 import hashlib
-import json
 import logging
 import time
 

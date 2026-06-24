@@ -1,7 +1,6 @@
-import json
 
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import patch, MagicMock
 
 from app.mcp_client import McpClient, McpDeniedException
 

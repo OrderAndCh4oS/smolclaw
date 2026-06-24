@@ -1,12 +1,11 @@
-import json
 import os
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, AsyncMock
 
 import pytest
 
 from app.agent_loop import AgentLoop
 from app.context_builder import ContextBuilder
-from app.goal import GoalStore
+from app.goal_ledger import GoalLedgerStore
 from app.run_trace import RunTraceStore
 from app.session import Session, SessionManager
 from app.tools.base import (
@@ -191,7 +190,7 @@ class TestAgentLoop:
         builder = ContextBuilder()
         session = Session(key="goal-context")
         sm = SessionManager(temp_dir)
-        goal_store = GoalStore(temp_dir)
+        goal_store = GoalLedgerStore(os.path.join(temp_dir, "ledgers"))
         goal_store.start(session.key, "Ship goal loop")
 
         loop = AgentLoop(

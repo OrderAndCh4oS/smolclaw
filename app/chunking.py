@@ -88,7 +88,11 @@ def preserve_markdown_code_excerpts(
 
             # Paragraph still too big — split by sentences
             sentence_buffer = ""
-            for sentence in sent_tokenize(para):
+            try:
+                sentences = sent_tokenize(para)
+            except LookupError:
+                sentences = [item for item in re.split(r"(?<=[.!?])\s+", para) if item]
+            for sentence in sentences:
                 sentence = sentence.strip()
                 if not sentence:
                     continue

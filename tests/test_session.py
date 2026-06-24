@@ -2,7 +2,6 @@ import json
 import os
 from unittest.mock import MagicMock
 
-import pytest
 
 from app.agent_factory import ChildAgentFactory
 from app.session import Session, SessionManager
@@ -146,26 +145,3 @@ class TestSessionManager:
         assert loaded is not None
         assert loaded.key == unsafe_key
         assert loaded.messages[0]["content"] == "do not escape"
-
-    def test_session_manager_keeps_usage_sidecar_inside_sessions_dir(self, temp_dir):
-        manager = SessionManager(temp_dir)
-        unsafe_key = "../../usage/session"
-
-        manager.save_usage(unsafe_key, {"ok": True})
-
-        assert not os.path.exists(os.path.join(temp_dir, "..", "..", "usage", "session.usage.json"))
-        usage_files = [name for name in os.listdir(temp_dir) if name.endswith(".usage.json")]
-        assert len(usage_files) == 1
-        assert manager.load_usage(unsafe_key) == {"ok": True}
-
-    def test_session_manager_recovers_usage_sidecar_from_backup(self, temp_dir):
-        manager = SessionManager(temp_dir)
-        manager.save_usage("usage-session", {"total": 1})
-        manager.save_usage("usage-session", {"total": 2})
-        path = os.path.join(temp_dir, "usage-session.usage.json")
-        assert os.path.exists(backup_storage_path(path))
-
-        with open(path, "w") as f:
-            f.write("{not-json")
-
-        assert manager.load_usage("usage-session") == {"total": 1}

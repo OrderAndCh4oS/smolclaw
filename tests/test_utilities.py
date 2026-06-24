@@ -64,7 +64,8 @@ class TestTokenCountingPerformance:
         ]
 
         # Need to provide get_text_for_row callback
-        get_text = lambda x: x
+        def get_text(value):
+            return value
 
         start_time = time.perf_counter()
         result = truncate_list_by_token_size(chunks, get_text, max_token_size=1000)
@@ -86,21 +87,22 @@ class TestTokenCountingPerformance:
             "OpenAI provides embedding APIs."
         ] * 25  # 100 chunks
 
-        get_text = lambda x: x
+        def get_text(value):
+            return value
 
         # Simulate being called 6 times per query (as in smol_rag.py)
         times = []
 
         for _ in range(6):
             start_time = time.perf_counter()
-            result = truncate_list_by_token_size(text_chunks, get_text, max_token_size=1000)
+            truncate_list_by_token_size(text_chunks, get_text, max_token_size=1000)
             elapsed = time.perf_counter() - start_time
             times.append(elapsed)
 
         total_time = sum(times)
         avg_time = total_time / len(times)
 
-        print(f"\n6 truncation calls (simulating query):")
+        print("\n6 truncation calls (simulating query):")
         print(f"  Total time: {total_time:.4f}s")
         print(f"  Average per call: {avg_time:.4f}s")
 
@@ -115,12 +117,13 @@ class TestTokenCountingPerformance:
             "Test text. " * (100 * i) for i in range(1, 11)
         ]
 
-        get_text = lambda x: x
+        def get_text(value):
+            return value
         times = []
 
         for i, chunk in enumerate(chunks):
             start_time = time.perf_counter()
-            result = truncate_list_by_token_size([chunk], get_text, max_token_size=1000)
+            truncate_list_by_token_size([chunk], get_text, max_token_size=1000)
             elapsed = time.perf_counter() - start_time
             times.append(elapsed)
 
@@ -198,14 +201,16 @@ class TestUtilitiesEdgeCases:
 
     def test_truncate_empty_list(self):
         """Test truncating an empty list."""
-        get_text = lambda x: x
+        def get_text(value):
+            return value
         result = truncate_list_by_token_size([], get_text, max_token_size=1000)
         assert result == []
 
     def test_truncate_with_zero_token_size(self):
         """Test truncating with zero max tokens."""
         chunks = ["text1", "text2"]
-        get_text = lambda x: x
+        def get_text(value):
+            return value
         result = truncate_list_by_token_size(chunks, get_text, max_token_size=0)
         assert len(result) == 0
 

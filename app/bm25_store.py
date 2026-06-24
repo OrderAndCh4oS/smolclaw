@@ -9,7 +9,10 @@ import aiosqlite
 from nltk.corpus import stopwords
 from nltk.stem import SnowballStemmer
 
-_STOP_WORDS = set(stopwords.words("english"))
+try:
+    _STOP_WORDS = set(stopwords.words("english"))
+except LookupError:
+    _STOP_WORDS = set()
 _STEMMER = SnowballStemmer("english")
 
 

@@ -1,11 +1,11 @@
 """Tests for structured output LLM methods and integration."""
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.schemas import ContradictionVerdict, HighLowKeywords, MemoryClassification
+from app.schemas import MemoryClassification
 from app.taxonomy import MemoryType, classify_chunk
 
 

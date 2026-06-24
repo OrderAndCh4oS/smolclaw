@@ -1,4 +1,3 @@
-import pytest
 
 from app.obsidian import parse_wiki_links, parse_tags
 

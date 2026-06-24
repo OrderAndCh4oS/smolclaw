@@ -2,7 +2,6 @@
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Optional
 
 from app.pricing import aggregate_cost, estimate_record_cost
 from app.storage_paths import atomic_write_json, contained_storage_path

@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.memory_documents import MemoryDocumentService
 from app.agent_factory import ChildAgentFactory
 from app.session import Session, SessionManager
 from app.session_indexer import (
@@ -155,7 +156,7 @@ class TestIndexSession:
 
         source_id = await index_session(session, mock_smol_rag, memory_dir=temp_dir)
 
-        assert source_id == f"session-{unsafe_key}"
+        assert source_id == MemoryDocumentService(mock_smol_rag).session_source_id(unsafe_key)
         assert not os.path.exists(os.path.join(temp_dir, "..", "outside", "session.md"))
         md_files = [name for name in os.listdir(temp_dir) if name.endswith(".md")]
         assert len(md_files) == 1

@@ -80,8 +80,7 @@ def truncate_list_by_token_size(data_list, get_text_for_row, max_token_size=4000
 
 
 def get_encoded_tokens(text, model=COMPLETION_MODEL):
-    global tiktoken_encoders
-    if not model in tiktoken_encoders:
+    if model not in tiktoken_encoders:
         try:
             tiktoken_encoders[model] = tiktoken.encoding_for_model(model)
         except Exception:

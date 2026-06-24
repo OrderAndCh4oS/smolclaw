@@ -1,7 +1,6 @@
 import asyncio
 import json
 import os
-import tempfile
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -11,7 +10,6 @@ from app.definitions import build_workspace_paths
 from app.gateway import Gateway
 from app.hooks import ON_SESSION_END, HookRunner
 from app.session import SessionManager
-from tests.conftest import FakeWebSocket
 
 
 @pytest.fixture
@@ -54,6 +52,29 @@ class TestGatewayProtocol:
     def test_gateway_init(self, gateway):
         assert gateway.token_issuer_url == "http://localhost:9999/mcp-tokens"
         assert gateway.gateway_url == "http://localhost:9999/mcp"
+
+    def test_default_validator_requires_configured_token(self):
+        gateway = Gateway(port=0)
+
+        with pytest.raises(RuntimeError, match="Gateway token is required"):
+            gateway._validate_startup_security()
+
+    def test_default_validator_uses_shared_token(self):
+        gateway = Gateway(port=0, auth_token="secret")
+
+        assert gateway._default_validate_token("secret") is True
+        assert gateway._default_validate_token("wrong") is False
+
+    def test_remote_bind_requires_explicit_opt_in(self):
+        gateway = Gateway(port=0, host="0.0.0.0", auth_token="secret")
+
+        with pytest.raises(RuntimeError, match="--allow-remote"):
+            gateway._validate_startup_security()
+
+    def test_remote_bind_can_be_explicitly_allowed(self):
+        gateway = Gateway(port=0, host="0.0.0.0", auth_token="secret", allow_remote=True)
+
+        gateway._validate_startup_security()
 
     @pytest.mark.asyncio
     async def test_challenge_response_flow(self, wired_gateway, fake_ws):

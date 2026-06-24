@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.tools.base import Tool, ToolCallPolicy, ToolOutcome, normalize_tool_result
+from app.tools.base import Tool, ToolCallPolicy, ToolOutcome, normalize_tool_result, tool_policy_effects
 from app.tools.middleware import NextFn
 from app.tools.permissions import FILESYSTEM_WRITE, SHELL_WRITE
 
@@ -202,8 +202,11 @@ class SafetyMiddleware:
         )
 
     def _is_guarded_mutation(self, tool_name: str, policy: ToolCallPolicy) -> bool:
+        effects = tool_policy_effects(policy)
         return (
             tool_name in FILESYSTEM_WRITE_TOOLS
+            or "workspace_write" in effects
+            or "command_write" in effects
             or FILESYSTEM_WRITE in policy.tags
             or SHELL_WRITE in policy.tags
         )

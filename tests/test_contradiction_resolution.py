@@ -9,7 +9,7 @@ import time
 import numpy as np
 import pytest
 
-from app.contradiction import ContradictionDetector, _make_contradiction_id
+from app.contradiction import ContradictionDetector
 from app.definitions import KG_SEP
 from app.tools.memory_tools import ContradictionReviewTool
 
@@ -297,7 +297,7 @@ class TestCategoryResolution:
         }
         store = FakeKvStore()
 
-        detector = ContradictionDetector(
+        ContradictionDetector(
             graph, store,
             # Description agrees, so entity_description won't fire
             _llm_fn("agree"),

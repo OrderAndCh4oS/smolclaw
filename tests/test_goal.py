@@ -1,9 +1,8 @@
 import pytest
 import os
 
-from app.goal import GoalState, GoalStore
+from app.goal import GoalState
 from app.goal_ledger import GoalLedgerStore
-from app.storage_paths import backup_storage_path
 from app.tools.base import ToolRuntimeContext
 from app.tools.factory import build_tool_registry
 from app.tools.goal import (
@@ -13,62 +12,6 @@ from app.tools.goal import (
     GoalUpdateTool,
 )
 from cli.main import _format_goal_status, _parse_goal_run_count
-
-
-def test_goal_store_start_update_clear(temp_dir):
-    store = GoalStore(temp_dir)
-
-    goal = store.start("session-a", "Finish harness loop")
-    assert goal.objective == "Finish harness loop"
-    assert goal.status == "active"
-
-    incremented = store.increment_turn_count("session-a")
-    assert incremented.turn_count == 1
-
-    updated = store.update("session-a", status="complete", note="done")
-    assert updated.status == "complete"
-    assert updated.note == "done"
-
-    assert store.load("session-a").status == "complete"
-    assert store.clear("session-a") is True
-    assert store.load("session-a") is None
-
-
-def test_goal_store_recovers_from_corrupt_json_using_backup(temp_dir):
-    store = GoalStore(temp_dir)
-    store.start("session-a", "Recover this goal")
-    store.update("session-a", status="complete", note="done")
-    path = os.path.join(temp_dir, "session-a.goal.json")
-    assert os.path.exists(backup_storage_path(path))
-
-    with open(path, "w") as f:
-        f.write("{not-json")
-
-    recovered = store.load("session-a")
-    assert recovered is not None
-    assert recovered.objective == "Recover this goal"
-    assert recovered.status == "active"
-
-
-def test_goal_store_rejects_empty_objective(temp_dir):
-    store = GoalStore(temp_dir)
-    with pytest.raises(ValueError):
-        store.start("session-a", "   ")
-
-
-def test_goal_store_keeps_unsafe_session_key_inside_sessions_dir(temp_dir):
-    store = GoalStore(temp_dir)
-    unsafe_key = "../outside/goal-session"
-
-    store.start(unsafe_key, "Keep goal contained")
-
-    assert not os.path.exists(os.path.join(temp_dir, "..", "outside", "goal-session.goal.json"))
-    goal_files = [name for name in os.listdir(temp_dir) if name.endswith(".goal.json")]
-    assert len(goal_files) == 1
-    assert "/" not in goal_files[0]
-    assert store.load(unsafe_key).objective == "Keep goal contained"
-    assert store.clear(unsafe_key) is True
-    assert store.load(unsafe_key) is None
 
 
 def test_goal_capability_registers_goal_start_when_session_manager_available(temp_dir):
@@ -86,7 +29,7 @@ def test_goal_capability_registers_goal_start_when_session_manager_available(tem
 
 @pytest.mark.asyncio
 async def test_goal_tools_bind_to_runtime_context(temp_dir):
-    store = GoalStore(temp_dir)
+    store = GoalLedgerStore(os.path.join(temp_dir, "ledgers"))
     store.start("session-a", "Write code")
     runtime = ToolRuntimeContext(goal_store=store, session_key="session-a")
 
@@ -125,25 +68,6 @@ def test_goal_ledger_store_start_record_and_complete(temp_dir):
     assert completed.status == "complete"
     assert completed.verification[0].summary == "pytest passed"
     assert store.load("session-a").status == "complete"
-
-
-def test_goal_ledger_store_migrates_legacy_goal(temp_dir):
-    legacy = GoalStore(os.path.join(temp_dir, "sessions"))
-    legacy.start("session-a", "Legacy goal")
-    legacy.increment_turn_count("session-a")
-
-    store = GoalLedgerStore(
-        os.path.join(temp_dir, "ledgers"),
-        legacy_sessions_dir=os.path.join(temp_dir, "sessions"),
-    )
-    ledger = store.load("session-a")
-
-    assert ledger is not None
-    assert ledger.objective == "Legacy goal"
-    assert ledger.turn_count == 1
-    incremented = store.increment_turn_count("session-a")
-    assert incremented.turn_count == 2
-    assert os.path.exists(os.path.join(temp_dir, "ledgers", "session-a.ledger.json"))
 
 
 def test_goal_ledger_completion_requires_criteria_or_verification_reason(temp_dir):

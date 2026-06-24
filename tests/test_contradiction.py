@@ -1,12 +1,11 @@
 """Unit tests for ContradictionDetector with mocked graph/LLM."""
 
-import asyncio
 import time
 
 import numpy as np
 import pytest
 
-from app.contradiction import ContradictionDetector, _cosine_similarity, SIMILARITY_THRESHOLD
+from app.contradiction import ContradictionDetector, _cosine_similarity
 
 
 class FakeGraph:

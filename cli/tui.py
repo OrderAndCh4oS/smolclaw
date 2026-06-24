@@ -24,7 +24,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.styles import Style
 
 from app import diagnostics
-from app.checkpoints import CheckpointStore, CheckpointUndoResult
+from app.checkpoints import CheckpointStore
 from app.model_settings import (
     apply_subagent_model_selection,
     apply_runtime_model_selection,
@@ -36,6 +36,13 @@ from app.model_settings import (
     subagent_model_status,
 )
 from app.pricing import format_costs
+from cli.commands import (
+    SLASH_COMMANDS_HELP,
+    SlashCommandDispatcher,
+    _format_diagnostics_paths,
+    _format_undo_result,
+    parse_slash_command,
+)
 
 SPINNER_FRAMES = ("|", "/", "-", "\\")
 DETAILS_HEIGHT = 4
@@ -274,6 +281,7 @@ class CoderTui:
         self._shutdown_started = False
         self._shutdown_complete = False
         self._shutdown_forced = False
+        self._slash_dispatcher = self._build_slash_dispatcher()
 
     async def run(self):
         self._ui_loop = asyncio.get_running_loop()
@@ -522,27 +530,42 @@ class CoderTui:
         self.state.git_state = git_state
         self._invalidate()
 
+    def _build_slash_dispatcher(self) -> SlashCommandDispatcher:
+        dispatcher = SlashCommandDispatcher()
+
+        @dispatcher.register("/", "/help", "/commands")
+        async def _dispatch_help(parsed):
+            self._append("system", self.slash_commands_help or SLASH_COMMANDS_HELP)
+            return True
+
+        @dispatcher.register("/quit", "/exit")
+        async def _dispatch_exit(parsed):
+            self._begin_exit()
+            return True
+
+        @dispatcher.register("/logs")
+        async def _dispatch_logs(parsed):
+            self._append("system", self._diagnostics_paths())
+            return True
+
+        @dispatcher.register("/details")
+        async def _dispatch_details(parsed):
+            self.state.details_visible = not self.state.details_visible
+            state = "shown" if self.state.details_visible else "hidden"
+            self._append("system", f"Tool details {state}.")
+            return True
+
+        return dispatcher
+
     async def submit(self, text: str):
         if self._ui_loop is None:
             self._ui_loop = asyncio.get_running_loop()
         self._append("user", text, title="you")
-        command_parts = text.split(maxsplit=1)
-        command = command_parts[0]
-        command_arg = command_parts[1].strip() if len(command_parts) > 1 else ""
+        parsed = parse_slash_command(text)
+        command = parsed.name
+        command_arg = parsed.arg
 
-        if command in ("/", "/help", "/commands"):
-            self._append("system", self.slash_commands_help)
-            return
-        if text in ("/quit", "/exit"):
-            self._begin_exit()
-            return
-        if text == "/logs":
-            self._append("system", self._diagnostics_paths())
-            return
-        if text == "/details":
-            self.state.details_visible = not self.state.details_visible
-            state = "shown" if self.state.details_visible else "hidden"
-            self._append("system", f"Tool details {state}.")
+        if await self._slash_dispatcher.dispatch(parsed):
             return
 
         if command.startswith("/") and self._reject_if_active(command):
@@ -802,7 +825,7 @@ class CoderTui:
         )
         if result is _TASK_FAILED:
             return
-        self._append("system" if result.ok else "error", self._format_undo_result(result))
+        self._append("system" if result.ok else "error", _format_undo_result(result))
         self._schedule_git_refresh()
 
     async def _start_agent_turn(self, prompt: str):
@@ -1127,16 +1150,6 @@ class CoderTui:
         self.state.reasoning_effort = get_reasoning_effort(self.agent.llm) or ""
         self._append("system", f"Switched {model_status(self.agent.llm)}")
 
-    def _format_undo_result(self, result: CheckpointUndoResult) -> str:
-        if not result.ok:
-            if result.conflicts:
-                return "\n".join([result.message, *result.conflicts])
-            return result.message
-        lines = [result.message]
-        if result.restored_paths:
-            lines.extend(f"- {path}" for path in result.restored_paths)
-        return "\n".join(lines)
-
     async def _refresh_goal_state(self):
         try:
             goal = await self._run_in_worker(lambda: self.goal_store.load(self.agent.session.key))
@@ -1389,12 +1402,7 @@ class CoderTui:
             self._invalidate()
 
     def _diagnostics_paths(self) -> str:
-        log_dir = self.log_dir
-        return "\n".join([
-            f"Diagnostics logs: {log_dir}",
-            f"Events: {os.path.join(log_dir, 'events.jsonl')}",
-            f"Text log: {os.path.join(log_dir, 'smolclaw.log')}",
-        ])
+        return _format_diagnostics_paths(self.log_dir)
 
     @contextlib.contextmanager
     def _suppress_terminal_logs(self):

@@ -11,7 +11,6 @@ from app.behaviors import load_behaviors, resolve_behavior_names
 from app.context_builder import ContextBuilder
 from app.definitions import PROJECT_ROOT
 from app.approvals import ApprovalRequestStore
-from app.goal import GoalStore
 from app.goal_ledger import GoalLedgerStore
 from app.hooks import HookRunner, ON_AFTER_TOOL
 from app.llm import create_llm
@@ -173,13 +172,7 @@ def build_agent_loop(
         configure_hook_runner(hook_runner)
 
     resolved_session_key = session_key or f"{config.name}-{session_key_prefix}"
-    if session_manager and workspace is not None:
-        goal_store = GoalLedgerStore(
-            workspace.paths.ledgers_dir,
-            legacy_sessions_dir=session_manager.sessions_dir,
-        )
-    else:
-        goal_store = GoalStore(session_manager.sessions_dir) if session_manager else None
+    goal_store = GoalLedgerStore(workspace.paths.ledgers_dir) if session_manager and workspace is not None else None
     runtime_ctx = ToolRuntimeContext(
         llm=llm,
         hook_runner=hook_runner,

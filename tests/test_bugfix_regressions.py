@@ -205,7 +205,7 @@ class TestRuntimeRegressions:
         rag = _build_rag(temp_dir=temp_dir, llm=mock_openai_llm)
         rag.entities_db.query = AsyncMock(return_value=[{"__entity_name__": "MissingNode"}])
 
-        ll_dataset, ll_excerpts, ll_relations = await rag._get_low_level_dataset(
+        ll_dataset, ll_excerpts, ll_relations = await rag.get_low_level_dataset(
             {"low_level_keywords": ["missing node"]}
         )
 
@@ -219,7 +219,7 @@ class TestRuntimeRegressions:
         rag = _build_rag(temp_dir=temp_dir, llm=mock_openai_llm)
         rag.relationships_db.query = AsyncMock(return_value=[{"__source__": "A", "__target__": "B"}])
 
-        hl_dataset, hl_entities, hl_excerpts = await rag._get_high_level_dataset(
+        hl_dataset, hl_entities, hl_excerpts = await rag.get_high_level_dataset(
             {"high_level_keywords": ["missing edge"]}
         )
 

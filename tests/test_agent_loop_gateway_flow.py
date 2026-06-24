@@ -3,7 +3,6 @@
 All LLM calls and tools are mocked — no container or credentials required.
 Equivalent to OpenClaw's gateway.test.ts mock-tool-call flow.
 """
-import asyncio
 import json
 
 import pytest
@@ -130,7 +129,6 @@ class TestGatewayAgentFlow:
         # Patch _get_or_create_agent to return a real AgentLoop with mocked LLM
         from app.agent_loop import AgentLoop
         from app.context_builder import ContextBuilder
-        from app.session import Session
 
         def make_agent(session_key):
             session = flow_gateway._session_manager.get_or_create(session_key)

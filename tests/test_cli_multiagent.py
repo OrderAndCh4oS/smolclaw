@@ -221,7 +221,7 @@ class TestCliMultiagent:
         fake_ctx.cleanup.assert_called_once()
 
     def test_format_trace_status_shows_latest_summary(self, temp_dir):
-        from cli.main import _format_trace_status
+        from cli.commands import _format_trace_status
 
         traces_dir = build_workspace_paths(temp_dir).traces_dir
         trace_store = RunTraceStore(traces_dir)
@@ -790,7 +790,7 @@ class TestCliMultiagent:
 
     @pytest.mark.asyncio
     async def test_chat_loop_skips_export_hook_for_memoryless_multiagent(self):
-        from cli.main import DEFAULT_AGENTS_CONFIG, _chat_loop
+        from cli.main import _chat_loop
 
         class FakePromptSession:
             def __init__(self, **kwargs):
@@ -1605,10 +1605,7 @@ class TestCliMultiagent:
                 self.lines.append(" ".join(str(arg) for arg in args))
 
         prompt_outputs = []
-        goal_store = GoalLedgerStore(
-            os.path.join(temp_dir, "ledgers"),
-            legacy_sessions_dir=os.path.join(temp_dir, "sessions"),
-        )
+        goal_store = GoalLedgerStore(os.path.join(temp_dir, "ledgers"))
 
         async def fake_process(message, on_output=None, on_event=None):
             prompt_outputs.append(message)

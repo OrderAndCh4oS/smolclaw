@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from app.agent_config import AgentConfig
 from app.agent_factory import ChildAgentFactory

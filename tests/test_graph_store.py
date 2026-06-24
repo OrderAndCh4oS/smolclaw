@@ -134,8 +134,8 @@ class TestGraphStorePerformance:
 
         # Do synchronous graph operations (this blocks the event loop)
         for i in range(50):
-            node = graph_store.get_node(f"Entity_{i}")
-            degree = graph_store.degree(f"Entity_{i}")
+            graph_store.get_node(f"Entity_{i}")
+            graph_store.degree(f"Entity_{i}")
 
         await task
         elapsed = time.perf_counter() - start_time

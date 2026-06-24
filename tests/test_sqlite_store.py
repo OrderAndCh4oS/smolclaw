@@ -52,13 +52,6 @@ class TestSqliteKvStoreBaseline:
         assert await sqlite_kv.has("missing") is False
 
     @pytest.mark.asyncio
-    async def test_equal(self, sqlite_kv):
-        await sqlite_kv.add("key", "value")
-        assert await sqlite_kv.equal("key", "value") is True
-        assert await sqlite_kv.equal("key", "other") is False
-        assert await sqlite_kv.equal("missing", "value") is False
-
-    @pytest.mark.asyncio
     async def test_get_all(self, sqlite_kv):
         await sqlite_kv.add("a", 1)
         await sqlite_kv.add("b", 2)

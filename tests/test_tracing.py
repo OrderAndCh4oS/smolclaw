@@ -1,7 +1,7 @@
 """Tests for the tracing module."""
 
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, AsyncMock
 
 from app.tracing import (
     NoOpSpan,

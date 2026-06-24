@@ -9,7 +9,7 @@ from app.approvals import ApprovalRequestStore
 from app.tools.command import RunCommandTool
 from app.tools.base import Tool, ToolCallPolicy, normalize_tool_result
 from app.tools.middleware import MiddlewareChain
-from app.tools.permissions import PERMISSION_BLOCKED, PermissionMiddleware
+from app.tools.permissions import PERMISSION_MODES, PermissionMiddleware
 from app.tools.policy import (
     PermissionPolicy,
     PermissionRule,
@@ -402,13 +402,6 @@ class TestPlanMode:
         assert result.startswith("Error:")
 
     @pytest.mark.asyncio
-    async def test_blocks_exec(self):
-        mw = PermissionMiddleware("plan")
-        chain = MiddlewareChain([mw])
-        result = await chain.run(FakeTool("exec"), {})
-        assert result.startswith("Error:")
-
-    @pytest.mark.asyncio
     async def test_blocks_memory_store(self):
         mw = PermissionMiddleware("plan")
         chain = MiddlewareChain([mw])
@@ -727,16 +720,15 @@ class TestPathPolicy:
         assert "secret path" in result
 
 
-class TestPermissionBlockedMapping:
+class TestPermissionModes:
     def test_full_blocks_nothing(self):
-        assert PERMISSION_BLOCKED["full"] == set()
+        assert PERMISSION_MODES["full"].blocked_tools == frozenset()
 
     def test_plan_blocks_expected_tools(self):
         expected = {
             "apply_patch",
             "write_file",
             "edit_file",
-            "exec",
             "memory_store",
             "research_source_store",
             "memory_relate",
@@ -745,34 +737,32 @@ class TestPermissionBlockedMapping:
             "route",
             "spawn_agent",
         }
-        assert PERMISSION_BLOCKED["plan"] == expected
+        assert PERMISSION_MODES["plan"].blocked_tools == frozenset(expected)
 
     def test_execute_blocks_expected_tools(self):
         expected = {"sequential_pipeline", "fanout_pipeline", "route", "spawn_agent"}
-        assert PERMISSION_BLOCKED["execute"] == expected
+        assert PERMISSION_MODES["execute"].blocked_tools == frozenset(expected)
 
     def test_research_blocks_expected_tools(self):
         expected = {
             "apply_patch",
             "write_file",
             "edit_file",
-            "exec",
             "memory_relate",
             "sequential_pipeline",
             "fanout_pipeline",
             "route",
             "spawn_agent",
         }
-        assert PERMISSION_BLOCKED["research"] == expected
+        assert PERMISSION_MODES["research"].blocked_tools == frozenset(expected)
 
     def test_delegate_only_blocks_expected_tools(self):
         expected = {
             "apply_patch",
             "write_file",
             "edit_file",
-            "exec",
             "memory_store",
             "research_source_store",
             "memory_relate",
         }
-        assert PERMISSION_BLOCKED["delegate_only"] == expected
+        assert PERMISSION_MODES["delegate_only"].blocked_tools == frozenset(expected)

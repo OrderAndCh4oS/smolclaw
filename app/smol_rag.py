@@ -158,14 +158,6 @@ class SmolRag:
     def contradiction_detector(self, value):
         self.stores.contradiction_detector = value
 
-    @property
-    def _provenance_lock(self):
-        return self.stores.provenance_lock
-
-    async def rate_limited_get_completion(self, *args, **kwargs):
-        """Backward-compatible completion helper; defaults to extraction model."""
-        return await self.rate_limited_get_extract_completion(*args, **kwargs)
-
     async def rate_limited_get_extract_completion(self, *args, **kwargs):
         kwargs.setdefault("model", self.memory_extract_model)
         async with self.llm_limiter:
@@ -232,13 +224,6 @@ class SmolRag:
 
     async def mix_query(self, text, memory_type=None, include_bm25=False, return_metadata=False):
         return await self.query_engine.mix_query(text, memory_type=memory_type, include_bm25=include_bm25, return_metadata=return_metadata)
-
-    # Backward-compatible aliases for internal dataset methods
-    async def _get_high_level_dataset(self, keyword_data):
-        return await self.query_engine.get_high_level_dataset(keyword_data)
-
-    async def _get_low_level_dataset(self, keyword_data):
-        return await self.query_engine.get_low_level_dataset(keyword_data)
 
     @staticmethod
     def _attach_excerpt_id(excerpt_id, excerpt_data):

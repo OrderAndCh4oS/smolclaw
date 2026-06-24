@@ -43,10 +43,10 @@ Tests are organized into three main categories using pytest markers:
 ### Install Dependencies
 
 ```bash
-pip install -r requirements.txt
+pip install -e ".[dev]"
 ```
 
-The test dependencies (pytest, etc.) are already included in `requirements.txt`.
+The test dependencies are declared in the `dev` optional dependency group in `pyproject.toml`.
 
 ### Run All Tests
 

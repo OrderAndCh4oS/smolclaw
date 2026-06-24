@@ -2,8 +2,8 @@ import logging
 import os
 from typing import Optional
 
+from app.memory_documents import MemoryDocumentService
 from app.session import Session, SessionManager
-from app.storage_paths import atomic_write_text, contained_storage_path
 from app.tools.memory_tools import format_memory_content
 
 logger = logging.getLogger("smolclaw.session_indexer")
@@ -53,7 +53,8 @@ async def index_session(
     if not content.strip():
         return ""
 
-    source_id = f"session-{session.key}"
+    service = MemoryDocumentService(smol_rag, memory_dir=memory_dir)
+    source_id = service.session_source_id(session.key)
 
     # Extract topics if LLM available
     tags = ["session", f"session_{session.key}"]
@@ -68,15 +69,12 @@ async def index_session(
         source_id=source_id,
     )
 
-    # Write to memory dir if provided
-    if memory_dir:
-        os.makedirs(memory_dir, exist_ok=True)
-        file_path = contained_storage_path(memory_dir, source_id, ".md")
-        atomic_write_text(file_path, formatted)
-
-    # Remove old version if exists, then ingest
-    await smol_rag.remove_document_by_source(source_id)
-    await smol_rag.ingest_text(formatted, source_id=source_id)
+    await service.store_document(
+        formatted,
+        kind="session",
+        source_id=source_id,
+        ingest=True,
+    )
 
     logger.info(f"Indexed session {session.key} ({len(content)} chars)")
     return source_id

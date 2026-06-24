@@ -4,7 +4,7 @@ import shutil
 
 import pytest
 import numpy as np
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 from app.graph_store import NetworkXGraphStore
 from app.sqlite_store import SqliteKvStore
@@ -135,7 +135,7 @@ For the text editor project, add tests for cursor movement.
 
     @pytest.mark.asyncio
     async def test_ingest_text_with_obsidian_links(self, test_rag):
-        from app.definitions import TUPLE_SEP, REC_SEP, COMPLETE_TAG
+        from app.definitions import TUPLE_SEP, COMPLETE_TAG
         entity_output = (
             f'("entity"{TUPLE_SEP}"Python"{TUPLE_SEP}"language"{TUPLE_SEP}"A language")'
             f'{COMPLETE_TAG}'

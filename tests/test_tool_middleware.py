@@ -272,7 +272,6 @@ class TestCacheMiddleware:
 
     @pytest.mark.asyncio
     async def test_ttl_expiry(self):
-        import time
 
         tool = FakeTool(result="v")
         cache = CacheMiddleware(ttl_seconds=0.01)
