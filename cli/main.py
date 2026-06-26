@@ -446,6 +446,7 @@ def _build_multiagent(
     session_manager: SessionManager,
     auto_export: bool,
     child_loop_registrar=None,
+    model_override: Optional[str] = None,
 ) -> AgentLoop:
     from app.agent_config import AgentConfigLoader
 
@@ -466,6 +467,7 @@ def _build_multiagent(
         env=env,
         session_key_prefix=session_key,
         child_loop_registrar=child_loop_registrar,
+        model_override=model_override,
     )
 
 
@@ -1183,6 +1185,7 @@ async def _run_once(
                 active_workspace,
                 session_manager,
                 auto_export,
+                model_override=model,
             )
         else:
             agent = _build_default_chat_agent(
@@ -1287,6 +1290,7 @@ async def _tui_chat_loop(
             session_manager,
             auto_export,
             child_loop_registrar=register_session_end_hooks,
+            model_override=model,
         )
         label = display_label or agent_name.capitalize()
     else:
@@ -1404,6 +1408,7 @@ async def _chat_loop(
             session_manager,
             auto_export,
             child_loop_registrar=register_session_end_hooks,
+            model_override=model,
         )
         label = display_label or agent_name.capitalize()
     else:

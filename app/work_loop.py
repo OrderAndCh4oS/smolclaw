@@ -1193,6 +1193,7 @@ class InternalReviewRunner:
         candidate: TaskCandidate,
         config: WorkLoopConfig,
         execution_result: TaskExecutionResult,
+        profile: TaskExecutionProfile | None = None,
     ) -> InternalReviewRecord:
         if not config.internal_review_enabled:
             return InternalReviewRecord(status="not-run")
@@ -1210,6 +1211,9 @@ class InternalReviewRunner:
             "--agents-config",
             config.agents_config,
         ]
+        review_model = (profile or execution_profile_from_item(item, config)).models.review_model
+        if review_model:
+            args.extend(["--model", review_model])
         review_run = self.runner.run(args, cwd=item.workspace_path, timeout=1800)
         if not review_run.ok:
             return InternalReviewRecord(
@@ -1461,7 +1465,7 @@ class WorkLoopRunner:
         item.verification.extend(result.verification)
         if self.config.internal_review_enabled:
             self.control.check(f"internal review for {item.jira_key}")
-            review = self.internal_reviewer.review(item, candidate, self.config, result)
+            review = self.internal_reviewer.review(item, candidate, self.config, result, profile=profile)
             item.internal_review = review
             self.ledger.save(item)
             if (

@@ -603,6 +603,24 @@ class TestCliMultiagent:
             assert agent.llm.completion_model == "gpt-5.2-instant"
             assert "researcher" in agent.session.key
 
+    def test_build_multiagent_honors_model_override(self, agents_yaml, mock_smol_rag, sessions_dir):
+        sm = SessionManager(sessions_dir)
+        from app.tools.registry import ToolRegistry
+        registry = ToolRegistry()
+        with patch("cli.main._build_cli_tool_registry", return_value=registry):
+
+            agent = _build_multiagent(
+                agent_name="researcher",
+                agents_config_path=agents_yaml,
+                session_key="default",
+                smol_rag=mock_smol_rag,
+                workspace="/tmp",
+                session_manager=sm,
+                auto_export=True,
+                model_override="claude-sonnet-4-20250514",
+            )
+            assert agent.llm.completion_model == "claude-sonnet-4-20250514"
+
     def test_build_default_chat_agent_uses_exact_session_key_and_model_override(
         self, agents_yaml, mock_smol_rag, sessions_dir
     ):

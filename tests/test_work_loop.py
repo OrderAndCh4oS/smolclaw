@@ -165,8 +165,8 @@ class FakeInternalReviewer:
         self.record = record
         self.calls = []
 
-    def review(self, item, candidate, config, result):
-        self.calls.append((item.jira_key, candidate.key, result.summary))
+    def review(self, item, candidate, config, result, profile=None):
+        self.calls.append((item.jira_key, candidate.key, result.summary, profile.name if profile else ""))
         return self.record
 
 
@@ -569,6 +569,36 @@ def test_cli_agent_executor_passes_explicit_profile_coding_model(temp_dir):
     assert agent_run[0][agent_run[0].index("--model") + 1] == "gpt-5.4"
     assert agent_run[0][agent_run[0].index("--max-turns") + 1] == "3"
     assert result.success is True
+
+
+def test_internal_reviewer_passes_profile_review_model(temp_dir):
+    from app.work_loop import InternalReviewRunner
+
+    workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+    runner = FakeCommandRunner()
+    reviewer = InternalReviewRunner(runner)
+    item = WorkItem(jira_key="APP-14", title="Review model", workspace_path=workspace.root_dir)
+    candidate = JiraCandidate(key="APP-14", summary="Review model")
+    config = WorkLoopConfig(project="APP")
+    profile = TaskExecutionProfile(
+        name="claude-review",
+        models=WorkLoopModels(review_model="claude-sonnet-4-20250514"),
+    )
+
+    record = reviewer.review(
+        item,
+        candidate,
+        config,
+        TaskExecutionResult(success=True, summary="Done."),
+        profile=profile,
+    )
+
+    agent_run = next(call for call in runner.calls if call[0][:4] == [os.sys.executable, "-m", "cli.main", "run"])
+    assert "--agent" in agent_run[0]
+    assert agent_run[0][agent_run[0].index("--agent") + 1] == "reviewer"
+    assert "--model" in agent_run[0]
+    assert agent_run[0][agent_run[0].index("--model") + 1] == "claude-sonnet-4-20250514"
+    assert record.status == "passed"
 
 
 def test_run_reviews_processes_only_new_actionable_comments(temp_dir):
