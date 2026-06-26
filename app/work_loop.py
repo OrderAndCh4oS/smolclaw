@@ -74,7 +74,7 @@ def terminate_active_work_loop_processes():
             _unregister_process(process)
             continue
         with contextlib.suppress(ProcessLookupError, PermissionError):
-            if os.name == "posix":
+            if os.name == "posix" and getattr(process, "_smolclaw_own_process_group", False):
                 os.killpg(process.pid, 15)
             else:
                 process.terminate()
@@ -85,7 +85,7 @@ def terminate_active_work_loop_processes():
             process.wait(timeout=remaining)
         if process.poll() is None:
             with contextlib.suppress(ProcessLookupError, PermissionError):
-                if os.name == "posix":
+                if os.name == "posix" and getattr(process, "_smolclaw_own_process_group", False):
                     os.killpg(process.pid, 9)
                 else:
                     process.kill()
@@ -133,6 +133,7 @@ class SubprocessCommandRunner:
         timeout: int = 600,
     ) -> CommandResult:
         process: subprocess.Popen | None = None
+        own_process_group = os.name == "posix" and not os.getenv("SMOLCLAW_WORK_LOOP_JOB_ID")
         try:
             process = subprocess.Popen(
                 args,
@@ -141,8 +142,9 @@ class SubprocessCommandRunner:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                start_new_session=(os.name == "posix"),
+                start_new_session=own_process_group,
             )
+            process._smolclaw_own_process_group = own_process_group
             _register_process(process)
             stdout, stderr = process.communicate(input=input_text, timeout=timeout)
             return CommandResult(args=args, returncode=process.returncode, stdout=stdout, stderr=stderr)
@@ -815,6 +817,8 @@ class WorkLoopJobSupervisor:
         command = [sys.executable, "-m", "cli.main", "work-loop", "worker", "--job-id", job_id, "--mode", mode, *worker_args]
         job = self.store.save(WorkLoopJob(job_id=job_id, mode=mode, command=command))
         try:
+            env = os.environ.copy()
+            env["SMOLCLAW_WORK_LOOP_JOB_ID"] = job_id
             process = subprocess.Popen(
                 command,
                 cwd=self.workspace.root_dir,
@@ -822,6 +826,7 @@ class WorkLoopJobSupervisor:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=(os.name == "posix"),
+                env=env,
             )
         except OSError as exc:
             job.state = "failed"
@@ -1455,6 +1460,7 @@ class WorkLoopRunner:
         result = self.task_executor.execute(item, candidate, self.config, profile=profile)
         item.verification.extend(result.verification)
         if self.config.internal_review_enabled:
+            self.control.check(f"internal review for {item.jira_key}")
             review = self.internal_reviewer.review(item, candidate, self.config, result)
             item.internal_review = review
             self.ledger.save(item)

@@ -769,12 +769,14 @@ def test_in_app_work_loop_tasks_starts_background_job(temp_dir, monkeypatch):
 
 def test_work_loop_job_supervisor_start_records_job_metadata(temp_dir, monkeypatch):
     workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+    captured = []
 
     class FakePopen:
         def __init__(self, command, **kwargs):
             self.command = command
             self.kwargs = kwargs
             self.pid = 12345
+            captured.append(self)
 
         def poll(self):
             return None
@@ -791,3 +793,30 @@ def test_work_loop_job_supervisor_start_records_job_metadata(temp_dir, monkeypat
     assert loaded.mode == "reviews"
     assert "work-loop" in loaded.command
     assert "worker" in loaded.command
+    assert captured[0].kwargs["env"]["SMOLCLAW_WORK_LOOP_JOB_ID"] == job.job_id
+
+
+def test_subprocess_runner_keeps_worker_children_in_job_process_group(monkeypatch):
+    captured = []
+
+    class FakePopen:
+        def __init__(self, args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+            self.pid = 456
+            self.returncode = 0
+            captured.append(self)
+
+        def communicate(self, input=None, timeout=None):
+            return "ok\n", ""
+
+    monkeypatch.setattr("app.work_loop.subprocess.Popen", FakePopen)
+    monkeypatch.setenv("SMOLCLAW_WORK_LOOP_JOB_ID", "job-test")
+
+    from app.work_loop import SubprocessCommandRunner
+
+    result = SubprocessCommandRunner().run(["python", "--version"])
+
+    assert result.ok
+    assert captured[0].kwargs["start_new_session"] is False
+    assert captured[0]._smolclaw_own_process_group is False
