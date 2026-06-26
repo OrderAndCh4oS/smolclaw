@@ -10,6 +10,28 @@ smolclaw
 
 There is no separate `smolcode` command. Coding work, chat, goals, and model switching all happen through `smolclaw`.
 
+## Current Project Goals
+
+SmolClaw is currently focused on becoming a reliable local-first coding agent
+harness. The active goals are:
+
+- Build a terminal coding assistant that inspects the workspace before editing.
+- Keep external systems behind explicit dependency seams, providers, factories,
+  or scoped dependency containers.
+- Make runtime behavior adapter-driven for LLMs, embeddings, commands, task
+  sources, review providers, MCP, and HTTP clients.
+- Preserve user control through permission policies, exact-call approvals,
+  checkpoints, undo, traces, goal ledgers, diagnostics, and usage records.
+- Provide durable project memory through SmolRAG with provenance,
+  contradiction handling, research sources, and eval coverage.
+- Support multi-agent and work-loop automation without weakening local safety,
+  observability, or test determinism.
+- Keep tests deterministic by using explicit fakes and providers instead of
+  global monkeypatching for dependencies.
+
+The full source-derived system design spec is
+[docs/system-design-spec.md](docs/system-design-spec.md).
+
 ## Direction
 
 SmolClaw is being shaped into a focused local coding tool, closer to OpenCode or Claude Code than to a broad always-on personal assistant.
@@ -24,7 +46,8 @@ The current priority is reliability:
 - run explicit goals with verification evidence;
 - build evals that prove agent behavior, not just unit-level code paths.
 
-For the roadmap, see [docs/reliability-roadmap.md](docs/reliability-roadmap.md).
+For the current architecture and constraints, see
+[docs/system-design-spec.md](docs/system-design-spec.md).
 
 ## What Works Today
 
@@ -80,7 +103,7 @@ OPENAI_API_KEY=...
 ANTHROPIC_API_KEY=...
 ```
 
-SmolRAG memory model defaults:
+SmolRAG still honors these legacy environment overrides:
 
 ```bash
 MEMORY_EXTRACT_MODEL=gpt-5.4-mini
@@ -88,8 +111,9 @@ MEMORY_QUERY_MODEL=gpt-5.4
 EMBEDDING_MODEL=text-embedding-3-small
 ```
 
-Project-specific provider defaults can be configured in `.smolclaw/config.yaml`.
-CLI flags such as `--model` and runtime `/model` changes override YAML for the active session.
+For normal project configuration, prefer `.smolclaw/config.yaml`. CLI flags
+such as `--model` and runtime `/model` changes override YAML for the active
+session.
 
 ```yaml
 adapters:
@@ -199,9 +223,10 @@ For workspace behavior and reset semantics, see [docs/workspaces.md](docs/worksp
 
 ## Architecture
 
-The maintained runtime architecture doc is [docs/architecture-runtime.md](docs/architecture-runtime.md).
-The supporting research for the architecture and roadmap is [docs/research-agentic-coding-harnesses.md](docs/research-agentic-coding-harnesses.md).
-The next-phase implementation design is [docs/next-phase-implementation-design.md](docs/next-phase-implementation-design.md).
+The full current system design specification is [docs/system-design-spec.md](docs/system-design-spec.md).
+That document is the source of truth for architecture after the project pivot.
+Older roadmap, research, and design-planning docs were removed to avoid
+contradicting the implemented system.
 
 At a high level:
 
@@ -237,9 +262,9 @@ python scripts/ci_memory_eval.py
 
 The default deterministic mode checks corpus structure offline, including stale-source and conflicting-claim hygiene gates; `--mode rag` ingests the same suite into SmolRAG and scores retrieved source IDs, entities, relationships, and evidence terms; `--mode answer` asks a model to cite the retrieved evidence and grades citation/provenance coverage. Baselines can fail on score drops with `--max-score-drop`; `scripts/ci_memory_eval.py` runs the deterministic fixture and docs suites for CI. See [docs/memory-evals.md](docs/memory-evals.md).
 
-## Current Reliability Work
+## Current Engineering Focus
 
-The next major work is tracked in [docs/reliability-roadmap.md](docs/reliability-roadmap.md) and [docs/next-phase-implementation-design.md](docs/next-phase-implementation-design.md). The highest-priority items are:
+The current priorities are:
 
 1. Harden shared run presentation across `/trace`, `/goal status`, eval reports, non-interactive JSON, and TUI drawers.
 2. Expand the eval suite with realistic fixtures and CI score-delta reporting.

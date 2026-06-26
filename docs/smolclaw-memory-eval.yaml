@@ -1,105 +1,66 @@
 id: smolclaw_docs_memory
 corpus:
-  - path: reliability-roadmap.md
-    source_id: reliability-roadmap
-    title: SmolClaw Reliability Roadmap
+  - path: system-design-spec.md
+    source_id: system-design-spec
+    title: SmolClaw System Design Specification
     kind: produced
-    captured_at: "2026-06-23"
+    captured_at: "2026-06-26"
     entities:
       - SmolClaw
-      - Local coding harness
-      - Subagents
-      - Traces
-      - Evals
+      - Explicit dependency seams
+      - Adapter config
+      - RuntimeServices
+      - AgentLoop
     relationships:
       - source: SmolClaw
-        relation: should_remain
-        target: Local coding harness
-      - source: SmolClaw
-        relation: supports
-        target: Subagents
-      - source: Traces
-        relation: support
-        target: Evals
-    claims:
-      - subject: SmolClaw product scope
-        predicate: direction
-        object: focused local coding harness
-  - path: research-agentic-coding-harnesses.md
-    source_id: agentic-coding-research
-    title: "Research: Agentic Coding Harness Architecture"
-    kind: produced-research
-    captured_at: "2026-06-23"
-    entities:
-      - Agentic coding harnesses
-      - Simple observable loops
-      - Automated tests
-      - Environment feedback
-    relationships:
-      - source: Research evidence
-        relation: supports
-        target: Simple observable loops
-      - source: Automated tests
-        relation: provide
-        target: Verification evidence
-    claims:
-      - subject: SmolClaw agent loop
-        predicate: shape
-        object: simple observable loop
-  - path: next-phase-implementation-design.md
-    source_id: next-phase-design
-    title: Next Phase Implementation Design
-    kind: produced
-    captured_at: "2026-06-23"
-    entities:
-      - Goal ledger
-      - Trace export
-      - Eval harness
-      - Run recording spine
-    relationships:
-      - source: Goal ledger
-        relation: records
-        target: Acceptance criteria
-      - source: Trace export
-        relation: records
-        target: Tool events
-      - source: Eval harness
-        relation: scores
-        target: Trace and ledger artifacts
-    claims:
-      - subject: SmolClaw reliability phase
-        predicate: spine
-        object: run recording
-  - path: architecture-runtime.md
-    source_id: runtime-architecture
-    title: SmolClaw Runtime Architecture
-    kind: produced
-    captured_at: "2026-06-23"
-    entities:
-      - Runtime builder
-      - WorkspaceContext
-      - ChildAgentFactory
-      - Memory hooks
-    relationships:
-      - source: Runtime builder
-        relation: creates
-        target: AgentLoop
-      - source: ChildAgentFactory
+        relation: uses
+        target: Explicit dependency seams
+      - source: RuntimeServices
         relation: builds
-        target: Child agents
-      - source: Memory hooks
-        relation: promote
-        target: Accessed excerpts
+        target: AgentLoop
+      - source: Adapter config
+        relation: configures
+        target: RuntimeServices
+    claims:
+      - subject: SmolClaw architecture
+        predicate: source_of_truth
+        object: system-design-spec
+  - path: workspaces.md
+    source_id: workspaces
+    title: SmolClaw Workspaces
+    kind: produced
+    captured_at: "2026-06-26"
+    entities:
+      - WorkspaceContext
+      - Source root
+      - State root
+      - Adapter config
+      - Reset behavior
+    relationships:
+      - source: WorkspaceContext
+        relation: separates
+        target: Source root and state root
+      - source: Reset behavior
+        relation: preserves
+        target: Research sources
+      - source: Adapter config
+        relation: lives_in
+        target: Workspace config
+    claims:
+      - subject: SmolClaw workspace state
+        predicate: location
+        object: .smolclaw
   - path: memory-evals.md
     source_id: memory-eval-design
     title: Memory And Knowledge-Graph Evals
     kind: produced
-    captured_at: "2026-06-24"
+    captured_at: "2026-06-26"
     entities:
       - Memory evals
       - Knowledge graph
-      - Produced docs
-      - Sourced articles
+      - Source retrieval
+      - Citation provenance
+      - Staleness checks
     relationships:
       - source: Memory evals
         relation: check
@@ -107,58 +68,85 @@ corpus:
       - source: Memory evals
         relation: grade
         target: Citation provenance
+      - source: Staleness checks
+        relation: detect
+        target: Stale evidence
+    claims:
+      - subject: Memory evals
+        predicate: purpose
+        object: provenance-first answers
+  - path: smolclaw-memory-eval.yaml
+    source_id: docs-eval-suite
+    title: SmolClaw Docs Memory Eval Suite
+    kind: produced-config
+    captured_at: "2026-06-26"
+    entities:
+      - Docs eval suite
+      - Current docs corpus
+      - Deterministic checks
+    relationships:
+      - source: Docs eval suite
+        relation: evaluates
+        target: Current docs corpus
+      - source: Deterministic checks
+        relation: cover
+        target: Current docs corpus
+    claims:
+      - subject: Docs eval suite
+        predicate: corpus_scope
+        object: current docs
 questions:
-  - id: local_harness_and_simple_loop_scope
-    query: What evidence supports keeping SmolClaw as a focused local coding harness with simple observable loops?
+  - id: explicit_dependency_architecture
+    query: How does the SmolClaw system design specification describe explicit dependency seams, adapter-driven runtime behavior, provider factories, command adapters, and RuntimeServices building AgentLoop?
     expected_sources:
-      - reliability-roadmap
-      - agentic-coding-research
-    min_source_hits: 2
+      - system-design-spec
     expected_entities:
       - SmolClaw
-      - Agentic coding harnesses
-      - Simple observable loops
+      - Explicit dependency seams
+      - RuntimeServices
+      - AgentLoop
     expected_relationships:
       - source: SmolClaw
-        relation: should_remain
-        target: Local coding harness
-      - source: Research evidence
-        relation: supports
-        target: Simple observable loops
+        relation: uses
+        target: Explicit dependency seams
+      - source: RuntimeServices
+        relation: builds
+        target: AgentLoop
     required_terms:
-      - focused local coding harness
-      - simple, explicit, and observable
-  - id: run_recording_spine
-    query: How do trace export goal ledgers and eval scoring fit together?
+      - explicit constructors
+      - adapter-driven
+      - command adapter
+  - id: workspace_state_boundaries
+    query: How do SmolClaw workspaces describe source root, state root, reset behavior, adapter config, and research source preservation?
     expected_sources:
-      - next-phase-design
-      - runtime-architecture
-    min_source_hits: 2
+      - workspaces
     expected_entities:
-      - Goal ledger
-      - Trace export
-      - Runtime builder
+      - WorkspaceContext
+      - Source root
+      - State root
+      - Adapter config
+      - Reset behavior
     expected_relationships:
-      - source: Goal ledger
-        relation: records
-        target: Acceptance criteria
-      - source: Trace export
-        relation: records
-        target: Tool events
+      - source: WorkspaceContext
+        relation: separates
+        target: Source root and state root
+      - source: Reset behavior
+        relation: preserves
+        target: Research sources
     required_terms:
-      - run-recording spine
-      - trace
-      - ledger
+      - source root
+      - state root
+      - Adapter Config
   - id: memory_eval_provenance_scope
-    query: How should memory evals test sourced articles and produced writing?
+    query: How do memory evals test deterministic source retrieval, knowledge graph relationships, citation provenance, stale evidence, and contradiction checks?
     expected_sources:
       - memory-eval-design
-      - agentic-coding-research
-    min_source_hits: 2
     expected_entities:
       - Memory evals
-      - Produced docs
-      - Sourced articles
+      - Knowledge graph
+      - Source retrieval
+      - Citation provenance
+      - Staleness checks
     expected_relationships:
       - source: Memory evals
         relation: check
@@ -167,17 +155,37 @@ questions:
         relation: grade
         target: Citation provenance
     required_terms:
-      - produced docs
-      - sourced articles
       - citation/provenance
+      - stale-source
+      - conflicting-claim
+  - id: docs_eval_current_corpus
+    query: What does the SmolClaw docs memory eval suite say about the current docs corpus and deterministic checks?
+    expected_sources:
+      - docs-eval-suite
+    expected_entities:
+      - Docs eval suite
+      - Current docs corpus
+      - Deterministic checks
+    expected_relationships:
+      - source: Docs eval suite
+        relation: evaluates
+        target: Current docs corpus
+    required_terms:
+      - current docs corpus
+      - deterministic checks
 staleness:
-  - id: research_note_is_current
-    source_id: agentic-coding-research
+  - id: system_design_spec_is_current
+    source_id: system-design-spec
     expected: fresh
-    max_age_days: 30
-    as_of: "2026-06-24"
+    max_age_days: 45
+    as_of: "2026-06-26"
+  - id: workspace_docs_are_current
+    source_id: workspaces
+    expected: fresh
+    max_age_days: 45
+    as_of: "2026-06-26"
   - id: memory_eval_design_is_current
     source_id: memory-eval-design
     expected: fresh
-    max_age_days: 30
-    as_of: "2026-06-24"
+    max_age_days: 45
+    as_of: "2026-06-26"

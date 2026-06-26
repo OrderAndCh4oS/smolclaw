@@ -5,223 +5,324 @@ Last reviewed: 2026-06-26
 
 This document describes the current SmolClaw architecture as implemented in the
 repository. It is intended for developers who need to modify the system safely,
-add adapters, extend tools, or reason about the runtime. It also calls out
-areas that do not fit the intended patterns cleanly.
+add adapters, extend tools, reason about runtime behavior, or evaluate whether a
+change follows the project architecture. Accuracy matters more than aspiration:
+where the implementation has gaps, this document names them.
 
-Related maintained docs:
+Related docs:
 
-- `docs/architecture-runtime.md`: runtime and tool execution diagrams.
-- `docs/workspaces.md`: workspace layout, reset behavior, and adapter config.
-- `docs/next-phase-implementation-design.md`: reliability implementation notes.
-- `docs/memory-evals.md`: memory evaluation design and operating guidance.
+- [workspaces.md](workspaces.md): workspace layout, reset behavior, and adapter config.
+- [memory-evals.md](memory-evals.md): memory evaluation design and operating guidance.
+- [smolclaw-memory-eval.yaml](smolclaw-memory-eval.yaml): deterministic eval suite for current project docs.
 
-## 1. System Purpose
+Older roadmap, research, and design-planning notes have been removed after the
+project pivot. This specification is the architecture source of truth.
 
-SmolClaw is an agentic coding and research harness. It provides:
+## 1. Project Goals
 
-- interactive CLI and TUI chat surfaces;
-- one-shot CLI execution for automation;
-- a WebSocket gateway surface for remote/MCP-backed tool execution;
-- configurable multi-agent personalities;
-- local and MCP-backed tools;
-- persistent session, memory, trace, approval, checkpoint, and goal state;
-- a SmolRAG memory subsystem with vector search, BM25, a knowledge graph, and
-  contradiction detection;
-- a Jira/GitHub-oriented autonomous work-loop;
-- local evaluation harnesses for agent trajectories and memory retrieval.
+SmolClaw is a local-first coding assistant harness. The current project goals are:
 
-The primary architectural pattern is a dependency-injected runtime built from
-small adapters and services. Production defaults use local files, SQLite,
-NetworkX, OpenAI/Anthropic/Voyage clients, httpx, git, `gh`, and Atlassian
-`acli`. Tests should supply fakes through constructors, factories, protocol
-objects, or the CLI dependency context instead of patching globals.
+1. Build a reliable terminal coding agent that understands a workspace before editing it.
+2. Keep all external dependencies behind explicit constructors, factories, providers, or context-scoped dependency containers.
+3. Make runtime behavior adapter-driven so model, command, task-source, review, MCP, and HTTP dependencies can be configured and tested without global patching.
+4. Preserve user control and auditability through permission policies, approvals, checkpoints, traces, ledgers, usage records, and diagnostics.
+5. Provide durable project memory through SmolRAG with provenance, contradiction handling, source documents, and eval coverage.
+6. Support multi-agent and work-loop automation while keeping the core local agent path safe, observable, and recoverable.
+7. Keep tests deterministic by using explicit seams instead of `patch`, `patch.dict`, or `monkeypatch.setattr` dependency substitution.
 
-## 2. Top-Level Architecture
+Non-goals for the current phase:
+
+- SmolClaw is not a general-purpose shell sandbox. Direct arbitrary shell execution remains disabled.
+- The gateway and MCP surfaces are secondary to local reliability, although they are maintained.
+- Work-loop automation currently targets Jira and GitHub only.
+- The command adapter provider registry supports `subprocess` only today; unsupported providers fail fast.
+
+## 2. System Context
 
 ```text
-+---------------------+        +-----------------------+
-| Human / Automation  |        | WebSocket Client / MCP|
-+----------+----------+        +-----------+-----------+
-           |                               |
-           v                               v
-+----------+----------+        +-----------+-----------+
-| CLI / TUI / run     |        | Gateway               |
-| cli.main / cli.tui  |        | app.gateway           |
-+----------+----------+        +-----------+-----------+
-           |                               |
-           +---------------+---------------+
-                           |
-                           v
-              +------------+-------------+
-              | RuntimeServices          |
-              | workspace, SmolRag,      |
-              | SessionManager, env      |
-              +------------+-------------+
-                           |
-                           v
-              +------------+-------------+
-              | Agent Factory            |
-              | LLM, registry, hooks,    |
-              | policies, shared state   |
-              +------------+-------------+
-                           |
-                           v
-              +------------+-------------+
-              | AgentLoop                |
-              | prompt, LLM, tools,      |
-              | traces, goals, usage     |
-              +------------+-------------+
-                           |
-          +----------------+----------------+
-          |                |                |
-          v                v                v
- +--------+------+ +-------+-------+ +------+-------+
- | Tool System   | | SmolRAG       | | State Stores |
- | local/MCP     | | memory graph  | | sessions,    |
- | middleware    | | vector/BM25   | | traces, etc. |
- +---------------+ +---------------+ +--------------+
+-------------------+        +-------------------+
+| Human / CLI / TUI|        | Gateway / MCP     |
+| cli.main/cli.tui |        | app.gateway       |
++---------+---------+        +---------+---------+
+          |                            |
+          +-------------+--------------+
+                        |
+                        v
+          +-------------+--------------+
+          | RuntimeServices            |
+          | workspace, diagnostics,    |
+          | adapter config, commands,  |
+          | SmolRAG, sessions, env     |
+          +-------------+--------------+
+                        |
+                        v
+          +-------------+--------------+
+          | Agent Factory              |
+          | LLM, registry projection,  |
+          | middleware, hooks, state   |
+          +-------------+--------------+
+                        |
+                        v
+          +-------------+--------------+
+          | AgentLoop                  |
+          | prompt assembly, LLM turn, |
+          | tool calls, traces, goals  |
+          +-------------+--------------+
+                        |
+        +---------------+----------------+
+        |               |                |
+        v               v                v
++-------+------+ +------+-------+ +------+-------+
+| Tool System  | | SmolRAG      | | State Stores |
+| local/MCP    | | memory, KG,  | | sessions,    |
+| middleware   | | vector, BM25 | | ledgers, etc |
++--------------+ +--------------+ +--------------+
 ```
 
-The runtime has four main boundaries:
-
-- Entrypoints: CLI/TUI, WebSocket gateway, work-loop commands, eval scripts.
-- Runtime composition: workspace paths, adapter config, SmolRAG, sessions,
-  runtime environment, agent configs.
-- Agent execution: context building, LLM calls, tool calls, middleware, traces,
-  goal ledgers, usage.
-- External adapters: LLM providers, embeddings providers, HTTP clients, MCP
-  client, command runners, Jira/GitHub CLIs, filesystem and git.
+The design uses composition over global lookup. Entrypoints build dependency
+objects, factories consume those objects, and tests supply fakes through the same
+interfaces production uses.
 
 ## 3. Source Layout
 
 ```text
 app/
-  agent_*.py                 Agent config, factory, loop, eval runner
-  runtime*.py                Runtime service building, capability config, adapter config
-  tools/                     Tool interface, registry, concrete tools, middleware
-  smol_rag.py                Memory facade and SmolRAG service composition
-  ingestion.py/query_engine.py/document_manager.py
-                             RAG ingestion, retrieval, and document removal
-  *_store.py/vector_store.py/graph_store.py
-                             SQLite, BM25, vector, and graph persistence
-  gateway.py/mcp_client.py   WebSocket gateway and MCP JSON-RPC client
-  work_loop.py/worktree.py/coding_lifecycle.py
-                             Coding lifecycle automation and isolated worktrees
-  goal_ledger.py/run_trace.py/approvals.py/checkpoints.py/usage.py
-                             Reliability and observability stores
-  diagnostics.py/logger.py/tracing.py
-                             Logging, JSONL diagnostics, OpenTelemetry wrapper
+  runtime_config.py          Adapter config data model and loader.
+  runtime_builder.py         Workspace-scoped runtime service composition.
+  runtime.py                 RuntimeEnvironment and configured-agent assembly.
+  command_runner.py          Infrastructure command runner protocol and subprocess implementation.
+  command_adapters.py        Runtime command provider bundle for infrastructure and agent-facing tools.
+  agent_config.py            AgentConfig model and YAML loader.
+  agent_factory.py           AgentLoop composition, middleware wiring, child-agent factory.
+  agent_loop.py              Main model/tool iteration engine.
+  llm.py                     LLM provider selection and CompositeLlm.
+  openai_llm.py              OpenAI completion/tool/Responses/embedding adapter.
+  anthropic_llm.py           Anthropic Messages adapter.
+  voyage_llm.py              Voyage embedding adapter.
+  smol_rag.py                Memory facade and SmolRAG service composition.
+  ingestion.py               Chunking, embeddings, entity extraction, and graph ingestion.
+  document_manager.py        Document deletion and source-map cleanup.
+  memory_documents.py        Durable memory/research document writes and opt-in ingestion jobs.
+  graph_store.py             NetworkX graph persistence and async atomic save.
+  vector_store.py            Local vector store.
+  bm25_store.py              Keyword index.
+  sqlite_store.py            SQLite key-value store.
+  tools/                     Tool contracts, registry, concrete tools, policies, middleware.
+  checkpoints.py             File mutation checkpoint records and undo.
+  goal_ledger.py             Goal state, acceptance criteria, and evidence.
+  run_trace.py               Append-only run trace and summary store.
+  approvals.py               Exact-call approval store.
+  diagnostics.py             Structured JSONL diagnostics and incident reporting.
+  gateway.py                 WebSocket JSON-RPC gateway.
+  mcp_client.py              MCP/token/gateway HTTP client.
+  worktree.py                Isolated git worktree helper.
+  work_loop.py               Jira/GitHub coding lifecycle automation.
+  coding_lifecycle.py        Provider-neutral lifecycle data contracts.
+
 cli/
-  main.py                    Typer commands and dependency container
-  tui.py                     Prompt-toolkit full-screen UI
-  commands.py                Slash-command parsing and render helpers
-agents.yaml                 Declarative agent definitions
-agents/*.md                 Agent bootstraps
-docs/                       Architecture, workspace, reliability, eval docs
-scripts/                    Smoke, regression, memory eval, agent eval scripts
-plugins/                    Currently bytecode-only residue, not an active plugin API
+  main.py                    Typer commands, CliDependencies, TUI/run/work-loop flows.
+  tui.py                     Prompt-toolkit full-screen UI.
+  commands.py                Slash-command parser and formatting helpers.
+
+agents.yaml                  Default agent definitions.
+agents/*.md                  Agent bootstrap prompts.
+docs/                        Project docs.
+scripts/                     Eval and smoke scripts.
+tests/                       Unit, integration-style, CLI, eval, and regression tests.
 ```
 
-## 4. Workspace, Paths, And State
+## 4. Architectural Principles
 
-### Workspace Service
+### Explicit Dependency Seams
 
-`app.workspace.WorkspaceContext` is the source of truth for repository and state
-paths. It wraps `WorkspacePaths` from `app.definitions`.
+Dependencies cross boundaries through:
+
+- constructors;
+- factory parameters;
+- protocol objects;
+- runtime provider bundles;
+- `CliDependencies`;
+- scoped CLI overrides through `override_cli_dependencies`;
+- injected HTTP clients and LLM clients;
+- injected command runners.
+
+Tests should not patch global module functions for dependency substitution.
+Environment and cwd monkeypatching is acceptable only when the behavior under
+test is environment or cwd handling.
+
+### Local-First Runtime
+
+The direct local path is the primary product surface. Gateway and MCP code are
+kept functional, but local CLI/TUI reliability drives design decisions.
+
+### Least Privilege By Projection
+
+Agent configs declare tools and capabilities. The master registry contains the
+system catalog, but each agent receives a projected registry with only the tools
+it is allowed to see. Deferred tools remain hidden until exposed through
+`tool_search`.
+
+### Durable, Inspectable State
+
+Runtime state is intentionally stored under the workspace `.smolclaw/` tree.
+Most state stores use JSON or SQLite so users and developers can inspect,
+repair, and test behavior without opaque services.
+
+### Fail Fast At Adapter Boundaries
+
+Unsupported provider config should fail when the runtime or work-loop is built,
+not halfway through agent execution. The command adapter currently supports only
+`subprocess`; task-source and review adapters support only `jira` and `github`.
+
+## 5. Workspace And State Model
+
+`WorkspaceContext` is the source of truth for source root and state root.
 
 Responsibilities:
 
-- resolve source root and state root;
-- create required state directories;
-- resolve relative paths inside the workspace;
-- reject paths outside the workspace with `resolve_contained_path`;
-- support isolated worktree mode where source root and state root differ.
+- resolve workspace-relative paths;
+- reject paths outside the workspace;
+- ensure runtime directories exist;
+- support isolated worktrees where source root and state root differ.
 
-Important paths:
+Important workspace paths:
 
-- workspace root: source repository under operation;
-- state root: defaults to `<workspace>/.smolclaw`;
-- `stores/`: SQLite database, graph, traces, ledgers, approvals, checkpoints,
-  eval reports;
-- `memory/`: durable memory markdown documents;
-- `research/`: durable research source notes;
-- `sessions/`: chat session JSONL files and usage sidecars;
-- `logs/`: rotating logs and diagnostics events;
-- `work-loop/`: work-loop items, job controls, and run workspaces;
-- `input_docs/`: imported documents for ingestion.
+- `.smolclaw/stores/smolclaw.db`: SQLite-backed stores and caches.
+- `.smolclaw/stores/kg.graphml`: knowledge graph.
+- `.smolclaw/stores/traces`: run traces and summaries.
+- `.smolclaw/stores/ledgers`: goal ledgers.
+- `.smolclaw/stores/approvals`: approval requests.
+- `.smolclaw/stores/checkpoints`: file mutation checkpoints.
+- `.smolclaw/sessions`: session JSON files and usage sidecars.
+- `.smolclaw/logs`: logs and diagnostics events.
+- `.smolclaw/memory`: durable memory markdown.
+- `.smolclaw/research`: durable research/source notes.
+- `.smolclaw/work-loop`: work-loop items, jobs, controls, and run workspaces.
 
-### Path Safety
+`app.storage_paths` provides safe storage stems, contained storage paths,
+backup paths, and atomic writes. Durable JSON/text/binary state should use these
+helpers.
 
-`app.storage_paths` provides safe storage stems, containment for storage files,
-backup paths, and atomic writes. State stores should use these helpers instead
-of ad hoc file writes when writing durable JSON, text, or binary data.
+## 6. Configuration Model
 
-Tool-facing path safety is enforced in three layers:
+`RuntimeAdapterConfig` has four provider domains:
 
-- filesystem tools resolve paths through `WorkspaceContext`;
-- permission middleware rejects external paths and secret paths;
-- checkpoint and safety middleware independently resolve mutation targets.
+- `llm`: default, memory extraction, memory query, embeddings, and subagents.
+- `task_source`: work-loop task source provider.
+- `code_review`: work-loop review/publication provider.
+- `command`: host command provider.
 
-## 5. Configuration Model
+Config lookup order:
 
-### Runtime Adapter Config
-
-`app.runtime_config.RuntimeAdapterConfig` contains:
-
-- `llm.default`: main agent completion provider/model;
-- `llm.memory_extract`: model/provider used for memory extraction;
-- `llm.memory_query`: model/provider used for memory querying;
-- `llm.embeddings`: embedding provider/model;
-- `llm.subagents`: default child-agent completion provider/model;
-- `task_source`: work-loop task discovery provider;
-- `code_review`: work-loop review provider;
-- `command`: intended generic command provider.
-
-Config files are merged in order:
-
-1. `SMOLCLAW_CONFIG`;
-2. user config under `~/.config/smolclaw/config.yaml`;
-3. user config under `~/.smolclaw/config.yaml`;
-4. workspace state config files;
+1. `SMOLCLAW_CONFIG`.
+2. `~/.config/smolclaw/config.yaml`.
+3. `~/.smolclaw/config.yaml`.
+4. workspace state config files.
 5. `.smolclaw/config.*` under state root and source root.
 
-Later files are applied over earlier values through `RuntimeAdapterConfig.from_dict`.
-The loader accepts either a top-level adapter mapping or an `adapters:` wrapper.
-For `task_source`, `code_review`, and `command`, it also accepts a nested
-`default:` adapter shape.
+Later files override earlier values. The loader accepts either a top-level
+adapter mapping or an `adapters:` wrapper. Provider selections also accept a
+nested `default:` shape where relevant.
 
-Adapter config consumption status:
+Current consumption:
 
-| Config section | Consumed by | Current status |
+| Config | Consumer | Status |
 | --- | --- | --- |
-| `llm.default` | `build_agent_loop` | Respected for default agent model/provider unless explicit model override is passed. |
-| `llm.memory_extract` | `build_runtime_services` -> `create_smol_rag` | Respected for memory extraction completion. |
-| `llm.memory_query` | `build_runtime_services` -> `create_smol_rag` | Respected for memory query completion. |
-| `llm.embeddings` | `build_runtime_services` -> `create_smol_rag` | Respected for memory/vector embeddings. |
-| `llm.subagents` | `RuntimeModelSettings`, `build_agent_loop` | Respected for child-agent defaults. |
-| `task_source` | `cli.main._load_work_loop_config` | Respected unless work-loop config explicitly sets task-source type. |
-| `code_review` | `cli.main._load_work_loop_config` | Respected unless work-loop config explicitly sets code-review type. |
-| `command` | Parsed and stored | Not globally consumed by command runners or tool factories. This is a gap. |
+| `llm.default` | `build_agent_loop` | Used for default agent model/provider unless a model override or explicit agent model applies. |
+| `llm.memory_extract` | `build_runtime_services` -> `create_smol_rag` | Used. |
+| `llm.memory_query` | `build_runtime_services` -> `create_smol_rag` | Used. |
+| `llm.embeddings` | `build_runtime_services` -> `create_smol_rag` | Used. |
+| `llm.subagents` | `RuntimeModelSettings`, child-agent construction | Used. |
+| `task_source` | CLI work-loop config loading | Used unless work-loop YAML explicitly sets the task source type. |
+| `code_review` | CLI work-loop config loading | Used unless work-loop YAML explicitly sets the review type. |
+| `command` | `build_command_adapter_bundle` | Used to build infrastructure and agent-facing command runners. Only `subprocess` is supported. |
 
-### Agent Config
+## 7. Runtime Composition
 
-`agents.yaml` is loaded by `AgentConfigLoader`. Each `AgentConfig` declares:
+`build_runtime_services` creates `RuntimeServices`:
 
-- name;
-- model or `default`;
-- persona;
-- explicit tool names;
-- capability names;
-- behaviors;
-- bootstrap file;
-- skills;
-- permission mode;
-- max iterations;
-- memory window;
-- context budget;
-- timeout.
+- `workspace`: ensured `WorkspaceContext`;
+- `smol_rag`: created or injected `SmolRag`;
+- `session_manager`: created or injected `SessionManager`;
+- `env`: `RuntimeEnvironment`.
 
-Capabilities are validated against:
+Runtime build sequence:
+
+1. Normalize and ensure workspace paths.
+2. Configure diagnostics under the workspace log directory.
+3. Load `RuntimeAdapterConfig` unless supplied.
+4. Build command adapters from `adapter_config.command`.
+5. Build SmolRAG with memory and embedding provider config.
+6. Build session manager.
+7. Build subagent `RuntimeModelSettings`.
+8. Return `RuntimeEnvironment`.
+
+`RuntimeEnvironment` carries:
+
+- SmolRAG;
+- session manager;
+- workspace;
+- transport;
+- token issuer and gateway URLs;
+- agent configs and subagent enablement;
+- optional fixed LLM;
+- optional LLM factory;
+- infrastructure command runner;
+- agent-facing subprocess-compatible command runner;
+- model settings;
+- adapter config.
+
+`build_master_registry` passes `env.agent_command_runner` into command and git
+tools. Infrastructure consumers such as worktrees and work-loops use
+`env.command_runner` or command adapters created directly from the same config.
+
+## 8. Command Architecture
+
+There are two command seams:
+
+1. Infrastructure command runner: `CommandRunner.run(args, cwd, input_text, timeout)` returning `CommandResult`.
+2. Agent-facing command callable: a `subprocess.run`-compatible callable used by `RunCommandTool` and git tools.
+
+`app.command_adapters.build_command_adapter_bundle` creates both from the same
+provider selection. Today:
+
+- supported provider: `subprocess`;
+- unsupported providers raise `ValueError`;
+- `SubprocessCommandRunner` owns `Popen`, captured output, timeouts, process groups, and active process termination;
+- `AgentSubprocessAdapter` exposes the `CommandRunner` through the subset of `subprocess.run` used by command tools.
+
+Consumers:
+
+- CLI worktree creation uses a configured infrastructure runner.
+- `WorktreeRunner` and `WorktreeContext` carry an injected runner.
+- `WorkLoopRunner`, Jira adapter, GitHub adapter, git operations, verification, internal review, and run workspace cleanup use injected runners.
+- Agent command tools receive the agent-facing runner through tool registry construction.
+- Eval runners accept command runners.
+- TUI git state accepts a provider; production TUI receives the configured agent runner.
+
+Intentional exception:
+
+- `WorkLoopJobSupervisor` directly uses `subprocess.Popen` and signal APIs because it owns background worker process lifecycle. This is process supervision, not simple command execution.
+
+## 9. Agent Configuration
+
+`AgentConfig` fields include:
+
+- `name`;
+- `model`;
+- `persona`;
+- `tools`;
+- `capabilities`;
+- `behaviors`;
+- `bootstrap_path`;
+- `skills`;
+- `permission_mode`;
+- `max_iterations`;
+- `memory_window`;
+- `context_budget`;
+- `timeout_seconds`.
+
+Capabilities:
 
 - `filesystem`;
 - `web`;
@@ -232,351 +333,99 @@ Capabilities are validated against:
 - `command`;
 - `goal`.
 
-Transport is not declared in agent configs. Transport is runtime-selected:
-direct local transport builds local tools, while MCP transport swaps supported
-filesystem, web, and shell tools to MCP wrappers.
+Default configured agents:
 
-Current default agents:
+- `default`: plan-mode assistant focused on inspection, memory, web, and goals.
+- `researcher`: research-mode assistant with web and memory write/source tools.
+- `coder`: execute-mode coding agent with filesystem writes, git, run command, memory, web, and goals.
+- `reviewer`: read-only reviewer for correctness and tests.
+- `orchestrator`: delegate-only coordinator with orchestration and subagent tools.
 
-- `default`: plan-mode assistant with filesystem read/search, git status/diff,
-  web, memory, and goal tools.
-- `researcher`: research-mode assistant with web, memory write/source storage,
-  read/search, and goal tools.
-- `coder`: execute-mode engineer with read/write filesystem tools, git tools,
-  `run_command`, web, memory, and goal tools.
-- `reviewer`: plan-mode read-only reviewer with memory and git inspection.
-- `orchestrator`: delegate-only coordinator with memory lookup, orchestration,
-  and subagent tools.
+## 10. Agent Factory And Loop
 
-### Permission Policy Config
+`build_configured_agent` resolves capabilities, memory, context builders, hooks,
+and the projected master registry before calling `build_agent_loop`.
 
-`app.tools.policy.load_permission_policy` merges:
+`build_agent_loop` is responsible for:
 
-- explicit paths;
-- `SMOLCLAW_PERMISSION_POLICY`;
-- user policy files;
-- workspace policy files.
+- selecting the LLM provider/model;
+- creating or reusing the LLM;
+- creating/loading the session;
+- creating goal, trace, approval, and checkpoint stores;
+- creating `RuntimeSharedState`;
+- creating `SafetyState`;
+- creating `ToolRuntimeContext`;
+- creating `ChildAgentFactory`;
+- projecting the tool registry;
+- installing middleware;
+- creating the context builder or assembler;
+- returning `AgentLoop`.
 
-The default action is merged conservatively by action rank:
-`deny` > `ask` > `allow`. Rules are appended in load order, and resolution uses
-first matching rule. The docstring says user/explicit rules can override project
-rules; because resolution is first-match, that is true for matching rules, while
-default action remains conservative.
+Runtime middleware order:
 
-## 6. Runtime Composition
+1. `HookFiringMiddleware`.
+2. `PolicyPermissionMiddleware`.
+3. `SafetyMiddleware`.
+4. `EvidenceMiddleware`.
+5. `CheckpointMiddleware`.
 
-### Runtime Builder
+Registry-level logging and tracing middleware are installed before runtime
+projection. Middleware order matters:
 
-`app.runtime_builder.build_runtime_services` creates `RuntimeServices`:
+- policy must block before safety/evidence/checkpoints;
+- safety must block before mutation execution;
+- evidence records command/read/search/test/verification outcomes;
+- checkpoints snapshot only successful filesystem mutations.
 
-- `workspace`: `WorkspaceContext`, ensured on disk;
-- `smol_rag`: `SmolRag` or injected instance;
-- `session_manager`: `SessionManager` or injected instance;
-- `env`: `RuntimeEnvironment`.
+`AgentLoop.process` flow:
 
-Inputs:
+1. Start trace and goal-loop run state.
+2. Append user message.
+3. Consolidate old messages into memory when needed.
+4. Build context messages.
+5. Inject active goal context.
+6. Call LLM with visible tool definitions.
+7. Stream final text or execute tool calls.
+8. For each tool call, set active tool IDs in shared state, invoke registry, append trace and session events.
+9. Repeat until final response or max iterations.
+10. Finalize trace, goal run state, and session.
 
-- workspace root or `WorkspaceContext`;
-- transport, token issuer URL, gateway URL;
-- agent configs and subagent enablement;
-- optional LLM, RAG, and session manager;
-- optional adapter config.
+On close, the loop drains usage, fires session-end hooks, closes owned resources,
+and deduplicates close calls by object identity.
 
-Runtime builder effects:
+## 11. Runtime Shared State
 
-- loads adapter config if not injected;
-- configures diagnostics under workspace log dir;
-- creates SmolRAG with adapter-configured memory models and embedding provider;
-- builds `RuntimeModelSettings` from subagent model/provider config;
-- returns a `RuntimeEnvironment` that carries all runtime-level dependencies.
+`RuntimeSharedState` is a typed facade over the shared-state dictionary used by
+tools and middleware. It preserves the dict wire format while providing stable
+accessors for:
 
-### Runtime Environment
-
-`app.runtime.RuntimeEnvironment` is the dependency object used by agent
-construction. It carries:
-
-- SmolRAG instance;
-- session manager;
-- workspace context;
-- transport;
-- token issuer and gateway URLs;
-- agent configs;
-- subagent enablement;
-- optional fixed LLM;
-- optional LLM factory;
-- runtime model settings;
-- runtime adapter config.
-
-Runtime helper functions:
-
-- resolve capability names from agent config and available services;
-- suppress memory for agents without memory capability;
-- build context builder factories;
-- build master tool registry;
-- validate that configured tools exist;
-- build an agent with `build_configured_agent`.
-
-## 7. Agent Construction
-
-`app.agent_factory.build_agent_loop` is the main composition function for an
-agent loop.
-
-Inputs:
-
-- `AgentConfig`;
-- master `ToolRegistry`;
-- SmolRAG or `None`;
-- `SessionManager`;
-- session key or prefix;
-- optional hook configurers;
-- optional child loop registrar;
-- optional model override;
-- optional runtime model settings;
-- optional LLM or LLM factory;
-- optional adapter config;
-- optional context builder factory;
-- optional existing runtime shared state.
-
-Main responsibilities:
-
-- choose the completion model and provider from explicit model, runtime model
-  settings, adapter config, or config model;
-- create or reuse an LLM;
-- resolve memory availability from capabilities;
-- create a session;
-- create durable stores:
-  - `GoalLedgerStore`;
-  - `RunTraceStore`;
-  - `ApprovalRequestStore`;
-  - `CheckpointStore`;
-- create per-loop shared state via `RuntimeSharedState`;
-- create `SafetyState`;
-- create `ToolRuntimeContext`;
-- create `ChildAgentFactory`;
-- project the master registry to the configured agent tools and capabilities;
-- install runtime middleware;
-- create `ContextBuilder` or `ContextAssembler`;
-- return an `AgentLoop`.
-
-### Runtime Middleware Order
-
-The per-agent projected registry is wrapped in this order after registry-level
-logging/tracing middleware:
-
-1. `HookFiringMiddleware`;
-2. `PolicyPermissionMiddleware`;
-3. `SafetyMiddleware`;
-4. `EvidenceMiddleware`;
-5. `CheckpointMiddleware`, when a workspace exists.
-
-Because middleware is onion-style, developer changes must preserve the intended
-semantics:
-
-- hook events surround policy/safety/evidence/checkpoint behavior;
-- permission blocks occur before safety and mutation execution;
-- safety checks occur before evidence/checkpoint recording;
-- evidence records tool outcomes and verification;
-- checkpoints capture filesystem state around successful filesystem mutations.
-
-### Child Agent Factory
-
-`ChildAgentFactory` builds child loops for orchestration and subagents while
-preserving:
-
-- master registry;
-- SmolRAG resolver;
-- workspace;
-- session manager;
-- parent session key;
-- LLM factory and model settings;
-- adapter config;
-- registry/context factories;
-- hook configurers;
-- child loop registrar.
-
-Child sessions use stable parent-derived prefixes with a purpose slug and
-counter. Child loops are flagged as child agents, which makes subagent model
-config apply.
-
-## 8. Agent Loop Runtime
-
-`app.agent_loop.AgentLoop` is the execution engine for one session.
-
-### Runtime State Owned By The Loop
-
-The loop owns:
-
-- LLM instance;
-- projected tool registry;
-- context builder;
-- session and session manager;
-- hook runner;
-- SmolRAG reference;
-- goal ledger store;
-- safety state;
-- runtime model settings;
+- trace recorder;
 - trace store;
-- runtime shared state;
-- usage collector and session usage summary;
-- owned closeable resources.
+- session key;
+- approval store;
+- checkpoint store;
+- safety state;
+- permission policy;
+- active tool call IDs;
+- one-shot denied-command bypass.
 
-### Turn Flow
+It also provides scoped context managers for active tool IDs and approved command
+bypass, plus typed retrieval helpers for new state keys.
 
-```text
-process(user_content)
-  record diagnostics event
-  start run trace
-  mark goal loop running
-  append turn.started
-  _process_impl
-    fire session-start hooks once
-    begin safety task
-    append user message
-    increment active goal turn count
-    consolidate old session messages into memory when the window is exceeded
-    build context messages
-    inject active goal prompt
-    for iteration in max_iterations:
-      fire before-turn hooks
-      append behavior prompts on first iteration
-      call LLM with visible tool schemas
-      record usage, trace, events
-      if no tool calls:
-        stream/final assistant response
-        save session
-        fire after-turn hooks
-        return
-      append assistant tool-call message
-      for each tool call:
-        append tool.started
-        set active tool ids in RuntimeSharedState
-        invoke registry
-        record tool duration/status
-        append tool.ended / denied / safety events
-        append tool result message
-      drain tool-initiated LLM usage
-      append behavior after-tools prompts
-      fire after-turn hooks
-    finalization pass without tools
-  append turn.ended
-  mark goal loop finished
-  finish run trace
-```
+## 12. LLM And Embedding Providers
 
-### Session Start And End
+`create_llm` detects providers by explicit config or model prefix:
 
-On first turn, the loop wires `UsageCollector` into the agent LLM and SmolRAG
-LLM when available, then fires `ON_SESSION_START`.
-
-On close:
-
-- drain background usage;
-- set session usage end time;
-- fire `ON_SESSION_END`;
-- close the LLM and owned resources, deduplicated by object identity.
-
-Session-end hooks commonly include:
-
-- `UsagePersistHook`;
-- `SessionExportHook`;
-- `ContradictionExpiryHook`.
-
-### Memory Consolidation
-
-When unconsolidated session messages exceed `memory_window`, the loop
-summarizes that chunk using the agent LLM and ingests the summary into SmolRAG
-as `session-<session_key>`. If summarization fails, raw text is ingested.
-
-## 9. Context And Prompt Assembly
-
-### ContextBuilder
-
-`app.context_builder.ContextBuilder` builds the base prompt:
-
-- persona or default SmolClaw identity;
-- current timestamp;
-- shared bootstrap;
-- agent bootstrap;
-- project instructions from `AGENTS.md`, `CLAUDE.md`, and state/source
-  `.smolclaw/instructions.md`;
-- latest memory eval summary if available;
-- preloaded skill markdown.
-
-It then appends session history and the current user message.
-
-### ContextAssembler
-
-`app.context_assembly.ContextAssembler` extends `ContextBuilder` when memory is
-enabled. It retrieves relevant memories and appends them to the system prompt.
-
-Retrieval sources:
-
-- tier-0 identity memories from all current excerpts;
-- vector search over excerpt embeddings;
-- KG low-level and high-level retrieval;
-- BM25 keyword search.
-
-Scoring:
-
-```text
-score = importance * confidence * recency_decay * type_weight * tier_boost
-```
-
-Memory tiers:
-
-- tier 0: identity, always included outside the normal budget;
-- tier 1: core, boosted;
-- tier 2: working, normal priority.
-
-The assembler records an `AssemblyManifest` with included/excluded excerpts and
-token usage. It also adds a lightweight prompt notice when unresolved memory
-contradictions exist.
-
-Important caveat: tier-0 memories are outside the token budget. That is useful
-for identity invariants but can exceed prompt expectations if too many tier-0
-items are stored.
-
-### Behaviors
-
-`app.behaviors` defines optional loop behaviors:
-
-- `plan`: adds internal planning instructions before first LLM call and after
-  tool results;
-- `reflect`: adds internal sufficiency/checking instructions after tool results.
-
-Agent config may use explicit `behaviors` or legacy booleans `planning` and
-`reflection`.
-
-## 10. LLM And Embedding Adapters
-
-### LLM Protocols
-
-`app.llm_base` defines protocol interfaces:
-
-- `CompletionAdapter`;
-- `ToolCompletionAdapter`;
-- `StructuredCompletionAdapter`;
-- `EmbeddingAdapter`;
-- `LlmAdapter`.
-
-Implementations are expected to be async from the harness perspective, even
-where the underlying SDK is synchronous.
-
-### LLM Factory
-
-`app.llm.create_llm` chooses providers by explicit provider or model prefix:
-
-- `claude-*` -> Anthropic;
-- `voyage-*` -> Voyage embeddings;
+- `claude-*`: Anthropic.
+- `voyage-*`: Voyage embeddings.
 - otherwise OpenAI.
 
-It can return:
+It returns:
 
 - `OpenAiLlm`;
 - `AnthropicLlm`;
-- `VoyageEmbeddingLlm` for embedding-only usage;
-- `CompositeLlm`, pairing one completion provider with another embedding
-  provider.
+- `VoyageEmbeddingLlm`;
+- `CompositeLlm` when completion and embedding providers differ.
 
 Factory seams:
 
@@ -584,125 +433,85 @@ Factory seams:
 - `anthropic_factory`;
 - `voyage_factory`.
 
-### OpenAI Adapter
-
-`app.openai_llm.OpenAiLlm` supports:
+`OpenAiLlm` supports:
 
 - chat completions;
-- Responses API translation for models/tool/reasoning settings that require it;
-- tool calls;
-- streaming chat output;
-- structured output through `client.beta.chat.completions.parse`;
-- single and batched embeddings;
-- query and embedding caching in `SqliteKvStore`;
-- usage recording.
-
-Constructor seams:
-
-- concrete `client`;
-- `client_factory`;
-- cache stores;
-- API key;
-- DB path.
-
-### Anthropic Adapter
-
-`app.anthropic_llm.AnthropicLlm` supports:
-
-- Anthropic Messages API completion;
+- Responses API translation for reasoning/tool turns;
 - tool calls;
 - streaming;
-- structured completion through schema-in-prompt plus parsing;
-- query caching;
+- structured output through OpenAI parse API;
+- single and batched embeddings;
+- SQLite query and embedding caches;
 - usage recording.
 
-It does not provide embeddings. Embedding requests raise
-`NotImplementedError`, and Anthropic completion with embeddings should be
-wrapped in `CompositeLlm`.
+`AnthropicLlm` supports:
 
-Constructor seams:
+- Messages API completions;
+- tool calls;
+- streaming;
+- schema-prompted structured completion;
+- SQLite query cache;
+- usage recording.
 
-- concrete `client`;
-- `client_factory`;
-- query cache;
-- DB path.
+Anthropic does not provide embeddings. Use `CompositeLlm` with OpenAI or Voyage
+embeddings.
 
-### Voyage Adapter
+`VoyageEmbeddingLlm` supports Voyage embeddings, caching, usage recording, and
+explicit close semantics.
 
-`app.voyage_llm.VoyageEmbeddingLlm` provides async embedding calls to Voyage,
-embedding caching, usage recording, and closeable HTTP client ownership.
+OpenAI and Anthropic SDK calls are wrapped with an async compatibility helper:
+sync client methods run in a worker thread, and awaitable results are awaited.
+This keeps the harness async-facing while supporting sync SDK clients and test
+fakes.
 
-### Model Switching
+## 13. Context And Prompt Assembly
 
-`app.model_settings` supports runtime model selection and subagent model
-selection. It intentionally disallows switching completion provider families on
-an existing LLM instance; switching from OpenAI to Anthropic, for example,
-requires rebuilding the runtime/agent.
+`ContextBuilder` builds system context from:
 
-## 11. Tool System
+- persona;
+- current timestamp;
+- shared bootstrap;
+- agent bootstrap;
+- project instructions from `AGENTS.md`, `CLAUDE.md`, and `.smolclaw/instructions.md`;
+- latest memory eval summary;
+- configured skills;
+- session history.
 
-### Tool Contract
+`ContextAssembler` extends `ContextBuilder` when memory is enabled. It retrieves:
 
-`app.tools.base.Tool` defines the tool interface:
+- tier-0 identity memories;
+- vector matches;
+- BM25 keyword matches;
+- low-level and high-level graph context;
+- contradiction notices.
+
+Memory scoring uses importance, confidence, recency, type weighting, and tier
+boosts. Tier-0 memories are intentionally outside the normal token budget, which
+is useful for identity invariants but can inflate prompts if overused.
+
+## 14. Tool System
+
+`Tool` defines:
 
 - `name`;
 - `description`;
-- JSON-schema `parameters`;
+- JSON schema parameters;
 - examples;
-- deferred exposure flag;
+- deferred visibility flag;
 - default call policy;
-- runtime binding;
-- dynamic call policy;
+- bind behavior;
 - async `execute`;
-- OpenAI-compatible `to_schema`.
+- OpenAI-compatible schema conversion.
 
-Tool return values are normalized into `ToolResult` with:
+`ToolRegistry` owns:
 
-- `status`;
-- content;
-- metadata.
-
-`ToolCallPolicy` describes side effects:
-
-- effects;
-- exploration requirements;
-- approval requirements;
-- reversibility;
-- evidence recording;
-- mutation state;
-- delegation state;
-- tags.
-
-### Tool Runtime Context
-
-`ToolRuntimeContext` carries:
-
-- projected registry;
-- LLM;
-- hook runner;
-- session manager;
-- SmolRAG;
-- workspace;
-- session key;
-- goal store;
-- child-agent factory;
-- loop registrar;
-- shared runtime state;
-- owned resources list.
-
-Tools receive this context through `bind`.
-
-### Tool Registry
-
-`app.tools.registry.ToolRegistry` owns:
-
-- registered tools;
-- tool capability metadata;
+- tool instances;
+- capability metadata;
 - global middleware;
 - per-tool middleware;
-- dynamically exposed deferred tools.
+- exposed deferred tools.
 
-Important operations:
+Important registry operations:
 
 - `register`;
 - `get_definitions`;
@@ -712,218 +521,142 @@ Important operations:
 - `filter_by_names`;
 - `project_for_agent`.
 
-`project_for_agent` is central to least-privilege behavior. It exposes only:
+Deferred tool search uses deterministic lexical ranking. Exact name matches rank
+above prefix/name-token matches, which rank above description-only matches.
+Ties are sorted by tool name.
 
-- explicitly enabled non-deferred tools;
-- deferred tools that match allowed capabilities;
-- `tool_search` when hidden deferred tools exist.
-
-### Tool Discovery
-
-`ToolSearchTool` lets the model search and expose deferred tools at runtime.
-Search is currently simple case-insensitive substring matching over name and
-description, not semantic retrieval.
-
-### Tool Factory
-
-`app.tools.factory.build_tool_registry` maps capabilities and transport to tool
-implementations.
+`build_tool_registry` maps capabilities and transport to concrete tools.
 
 Direct transport:
 
-- filesystem: local read/write/edit/list/find/apply-patch/grep tools;
-- web: direct Brave/httpx web search/fetch;
-- command: direct git tools and `run_command`;
-- memory: direct SmolRAG tools;
-- goal: local goal tools;
-- orchestration: local child-loop orchestration tools;
-- subagents: local background subagent tools.
+- filesystem tools;
+- web tools;
+- command/git tools;
+- memory tools;
+- goal tools;
+- orchestration tools;
+- subagent tools.
 
 MCP transport:
 
-- filesystem: MCP file read/write/edit wrappers;
-- web: MCP HTTP fetch and web search wrappers;
-- shell: MCP shell exec wrapper.
+- file read/write/edit wrappers;
+- shell wrapper;
+- HTTP fetch wrapper;
+- web search wrapper.
 
-Direct shell is explicitly rejected until a real sandbox backend exists.
+Direct local shell execution remains disabled until a real sandbox backend
+exists.
 
-### Filesystem Tools
+## 15. Tool Families
 
-`app.tools.filesystem` provides:
+### Filesystem
 
-- `ReadFileTool`;
-- `WriteFileTool`;
-- `EditFileTool`;
-- `ListDirTool`;
-- `FindFilesTool`;
-- `ApplyPatchTool`;
-- `GrepSearchTool`.
+Tools:
 
-All operate relative to `WorkspaceContext`. Mutation tools declare filesystem
-write effects and accept optional `reason` metadata for trace/ledger records.
+- `read_file`;
+- `write_file`;
+- `edit_file`;
+- `list_dir`;
+- `find_files`;
+- `apply_patch`;
+- `grep_search`.
 
-`ApplyPatchTool` parses structured patch operations, plans changes, applies all
-operations, and restores original state on errors. It is separate from Codex's
-developer `apply_patch` tool.
+All paths are resolved through `WorkspaceContext`. Mutation tools accept
+optional `reason` metadata for checkpoint and evidence records. `ApplyPatchTool`
+plans and applies structured patch operations and restores original state on
+multi-step failure.
 
-### Command And Git Tools
+### Command And Git
 
-`app.tools.command` provides agent-facing command tools:
+Tools:
 
-- `GitStatusTool`;
-- `GitDiffTool`;
-- `GitBranchTool`;
-- `GitCheckoutTool`;
-- `GitPullTool`;
-- `GitAddTool`;
-- `GitCommitTool`;
-- `GitPushTool`;
-- `RunCommandTool`.
+- `git_status`;
+- `git_diff`;
+- `git_branch`;
+- `git_checkout`;
+- `git_pull`;
+- `git_add`;
+- `git_commit`;
+- `git_push`;
+- `run_command`.
 
-These tools use their own injected runner seam, defaulting to `subprocess.run`.
-This is deliberately separate from `app.command_runner.CommandRunner`, which is
-for harness infrastructure such as work-loop and worktree operations.
+`run_command` is allowlist-based. It permits common verification commands and
+read-only inspection commands, denies risky tokens, enforces cwd containment,
+formats output, handles timeouts, and supports a narrowly scoped approval bypass.
 
-`RunCommandTool` is allowlist-based. It allows common verification commands and
-read-only commands, denies known risky tokens by default, formats stdout/stderr,
-handles timeouts, and supports a narrow approval bypass when policy middleware
-has approved an exact command once.
+### Web
 
-### Infrastructure Command Runner
+Tools:
 
-`app.command_runner` defines:
+- `web_search`, using Brave Search API;
+- `web_fetch`, using httpx and HTML text extraction.
 
-- `CommandResult`;
-- `CommandRunner` protocol;
-- `SubprocessCommandRunner`;
-- active process registry and termination helpers.
+Both accept HTTP client factory seams. Search configuration can come from
+environment, local `.env`, or config-dir `.env`.
 
-This runner is used by work-loop, worktree, Jira/GitHub adapters, and eval live
-runs. It uses `subprocess.Popen`, captures output, handles timeouts, and starts
-its own process group on POSIX except inside managed work-loop jobs.
+### MCP
 
-### Web Tools
+`McpClient` supports token-issuer flow, gateway/direct proxy execution, and
+injected async HTTP client factories. MCP tool wrappers accept a client or client
+factory.
 
-`app.tools.web` provides:
+MCP edit is implemented as read, local string replace, write. It is not remote
+atomic.
 
-- `WebSearchTool`, using Brave Search API;
-- `WebFetchTool`, using httpx to fetch and strip HTML.
+### Memory
 
-Both accept HTTP client factory seams. Search API configuration is loaded from
-environment, the current working directory `.env`, or `SMOLCLAW_CONFIG_DIR/.env`
-(defaulting to `~/.config/smolclaw/.env`).
+Tools:
 
-### MCP Tools
+- `memory_search`;
+- `memory_graph_query`;
+- `memory_store`;
+- `research_source_store`;
+- `memory_relate`;
+- `memory_recall`;
+- `memory_get`;
+- `contradiction_review`.
 
-`app.mcp_client.McpClient` supports:
+Memory search and recall can return accessed excerpt IDs. Agent factory installs
+hooks that promote accessed memories after tool use. `MemoryStoreTool` writes
+durable markdown through `MemoryDocumentService` and ingests through SmolRAG.
 
-- token issuer JSON-RPC flow;
-- legacy one-hop direct execution response;
-- token + gateway execution flow;
-- injected async HTTP client factory.
+### Goal
 
-`app.tools.mcp_tools` wraps MCP tools for:
-
-- file read;
-- file write;
-- edit file as read/write composite;
-- shell exec;
-- HTTP fetch;
-- web search.
-
-MCP edit is not remote-atomic; it reads, replaces, then writes.
-
-### Memory Tools
-
-`app.tools.memory_tools` provides:
-
-- `MemorySearchTool`;
-- `MemoryGraphQueryTool`;
-- `MemoryStoreTool`;
-- `ResearchSourceStoreTool`;
-- `MemoryRelateTool`;
-- `MemoryRecallTool`;
-- `MemoryGetTool`;
-- `ContradictionReviewTool`.
-
-Important behaviors:
-
-- memory search and recall can return accessed excerpt IDs;
-- agent factory installs a hook that promotes accessed excerpts;
-- `MemoryStoreTool` writes durable markdown through `MemoryDocumentService` and
-  then ingests into SmolRAG;
-- `MemoryStoreTool` can classify memory type through the runtime LLM when the
-  type is omitted;
-- `ContradictionReviewTool` resolves pending contradictions through the
-  contradiction detector.
-
-### Research Source Tool
-
-`ResearchSourceStoreTool` writes source-backed research notes under the
-workspace research directory. It stores URL, title, summary, related URLs,
-extracted text, topic, and captured timestamp. It can also ingest the note into
-SmolRAG.
-
-### Goal Tools
-
-`app.tools.goal` provides:
+Tools:
 
 - `goal_start`;
 - `goal_status`;
 - `goal_update`;
 - `goal_record_evidence`.
 
-They bind to the session-specific `GoalLedgerStore`. Completion is validated by
-the ledger store: all acceptance criteria must be satisfied or not applicable,
-and changed files require verification evidence or an explicit no-verification
-reason.
+Goal completion is constrained by `GoalLedgerStore`: acceptance criteria must be
+satisfied or not applicable, and changed files require verification evidence or
+an explicit no-verification reason.
 
-### Orchestration Tools
+### Orchestration And Subagents
 
-`app.tools.orchestration_tools` wraps:
+Orchestration tools:
 
 - `sequential_pipeline`;
 - `fanout_pipeline`;
 - `route`.
 
-Each wrapper accepts a runner function seam and binds the runtime
-`ChildAgentFactory`. The underlying `app.orchestration` functions build child
-loops, run them, close them, and return results. Route uses structured LLM
-classification when available and falls back to regex matching, then to the
-first configured route.
+They bind to the runtime `ChildAgentFactory` and accept runner seams. Route uses
+structured LLM classification when available, then regex fallback, then first
+configured route.
 
-### Subagent Tools
-
-`app.tools.spawn` provides:
+Subagent tools:
 
 - `spawn_agent`;
 - `get_result`;
 - `await_result`.
 
-They bind a `SubagentManager` into shared runtime state. The manager limits
-concurrency, creates background asyncio tasks, stores results, and cancels
-unfinished subagents when closed.
+They use `SubagentManager`, stored in runtime shared state, to manage background
+tasks and close/cancel behavior.
 
-## 12. Tool Middleware And Safety Systems
+## 16. Permission, Safety, Evidence, And Checkpoints
 
-### Logging And Tracing Middleware
-
-`app.tools.middleware` provides:
-
-- `MiddlewareChain`;
-- `logging_middleware`;
-- `RetryMiddleware`;
-- `TimeoutMiddleware`;
-- `CacheMiddleware`;
-- `HookFiringMiddleware`;
-- `TracingMiddleware`.
-
-Registry-level middleware logs and traces all tool calls. Runtime-level
-middleware adds policy, safety, evidence, and checkpoint behavior.
-
-### Permission Modes
-
-`app.tools.permissions` defines static permission modes:
+Permission modes:
 
 - `full`;
 - `plan`;
@@ -931,66 +664,30 @@ middleware adds policy, safety, evidence, and checkpoint behavior.
 - `research`;
 - `delegate_only`.
 
-Modes block tools and/or capability tags such as:
+Permission policy supports subjects:
 
-- `mutates_state`;
-- `command_execution`;
-- `workspace_write`;
-- `memory_write`;
-- `runtime_state_write`;
-- `command_write`;
-- `delegation`.
-
-Hard path denies reject:
-
-- `.env` and `.env.*` secret paths, excluding examples/templates;
-- paths outside the workspace.
-
-### Policy Permission Middleware
-
-`PolicyPermissionMiddleware` layers configurable rules on top of hard path and
-mode denies. Rule subjects:
-
-- `tool`;
-- `capability`;
-- `path`;
-- `command`.
+- tool;
+- capability;
+- path;
+- command.
 
 Actions:
 
-- `allow`;
-- `ask`;
-- `deny`.
+- allow;
+- ask;
+- deny.
 
-`ask` creates an exact-call approval request. Approval can be consumed once. For
-`run_command`, approved requests set a scoped bypass so the command tool can
-execute a command that would otherwise be denied by its internal token filter.
+Hard denies always block secret `.env` files and paths outside the workspace.
+`ask` creates an exact-call approval request. Approved exact calls are consumed
+once.
 
-### Safety Middleware
-
-`SafetyMiddleware` is task-scoped and blocks workspace mutations until the agent
-has explored the workspace.
-
-Tracked evidence:
+Safety middleware blocks mutation until the agent has explored:
 
 - git status;
 - workspace search/list/diff;
-- read paths;
-- repeated identical tool calls.
+- relevant target file or parent path.
 
-Mutation gates require:
-
-- git status or equivalent `run_command git status`;
-- workspace search through find/grep/list/diff;
-- relevant exploration of target path or parent;
-- reading existing files before editing/deleting/updating.
-
-### Evidence Middleware
-
-`EvidenceMiddleware` records tool evidence into the active goal ledger and run
-trace.
-
-Evidence kinds:
+Evidence middleware records:
 
 - read;
 - search;
@@ -998,1029 +695,367 @@ Evidence kinds:
 - diff;
 - command;
 - test;
-- memory;
 - checkpoint.
 
-Verification commands are detected from common test/check/lint command shapes.
-Non-verification commands are recorded separately.
+Checkpoint middleware snapshots successful filesystem mutations. Large or
+non-file snapshots are skipped and now surfaced in checkpoint metadata and trace
+events. Undo refuses skipped snapshots and refuses conflicts when files changed
+after the checkpoint.
 
-### Checkpoint Middleware
+## 17. SmolRAG Memory System
 
-`CheckpointMiddleware` snapshots filesystem mutation targets before and after
-successful `write_file`, `edit_file`, and `apply_patch` calls.
-
-`CheckpointStore` stores JSON records with base64 snapshots up to
-`MAX_SNAPSHOT_BYTES` (1 MB). Undo is refused if:
-
-- no checkpoint exists;
-- snapshots were skipped;
-- original content is missing;
-- current files no longer match the checkpoint's after-snapshot.
-
-Checkpoint events update both traces and goal ledgers.
-
-## 13. SmolRAG Memory System
-
-### SmolRag Facade
-
-`app.smol_rag.SmolRag` composes:
+`SmolRag` composes:
 
 - LLM/embedding provider;
 - store bundle;
 - query engine;
 - document manager;
 - ingestion pipeline;
-- rate limiter.
+- rate limiter;
+- contradiction detector.
 
-Constructor seams:
+Stores:
 
-- LLM;
-- LLM factory;
-- individual stores;
-- graph store;
-- contradiction detector;
-- document source provider;
-- models/providers;
-- DB paths;
-- input docs dir;
-- log dir.
-
-The default `create_smol_rag` additionally wires a `ContradictionDetector` with
-graph store, contradiction KV store, embedding function, and LLM adjudication
-function.
-
-### Store Bundle
-
-`StoreBundle` groups:
-
-- excerpt embeddings vector store;
-- entity vector store;
-- relationship vector store;
-- source-doc mapping store;
-- doc-excerpt mapping store;
-- doc-entity mapping store;
-- doc-relationship mapping store;
-- excerpt KV store;
+- SQLite source/excerpt/entity/relationship maps;
+- vector store;
 - BM25 store;
 - NetworkX graph store;
-- contradiction detector;
-- provenance lock.
+- contradiction store.
 
-### Vector Store
+Ingestion flow:
 
-`SqliteVectorStore` persists vectors in SQLite and maintains an in-memory
-normalized matrix for fast cosine queries.
+1. Normalize source ID.
+2. Split document into excerpts.
+3. Summarize excerpts.
+4. Generate embeddings.
+5. Extract entities and relationships.
+6. Parse Obsidian links/tags and frontmatter metadata.
+7. Upsert vector, entity, relationship, source map, and graph records.
+8. Save vector stores and graph asynchronously.
 
-Key behaviors:
+Graph persistence is atomic:
 
-- WAL mode;
-- table per vector domain;
-- embedding model and dimension compatibility metadata;
-- incompatible persisted rows ignored on load;
-- upsert/delete update SQLite and in-memory matrix under a lock.
+- writes GraphML to a temp file;
+- replaces the destination with `os.replace`;
+- runs async saves in a worker thread.
 
-### BM25 Store
+Graph metadata includes a schema version.
 
-`BM25Store` is a SQLite-backed in-memory Okapi BM25 index. It uses NLTK
-stopwords and Snowball stemming, with a fallback empty stopword set when NLTK
-data is unavailable.
+`MemoryDocumentService` owns durable memory, journal, session, research, and
+external source writes. It supports opt-in ingestion job records with stages,
+errors, and repair. Job persistence is explicit through `ingestion_jobs_dir` so
+existing memory directories are not polluted by default.
 
-### KV And Mapping Stores
+Document deletion is handled by `DocumentManager`, which removes source maps,
+excerpts, vector rows, BM25 entries, graph provenance, and orphaned graph
+entities/relationships.
 
-`SqliteKvStore` provides JSON value storage per table.
+## 18. State Stores And Observability
 
-`SqliteMappingStore` provides relational left/right mapping tables for:
+Primary durable stores:
 
-- source -> doc;
-- doc -> excerpts;
-- doc -> entities;
-- doc -> relationships.
+- `SessionManager`: session messages and metadata.
+- `GoalLedgerStore`: objective, acceptance criteria, verification, evidence, changed files.
+- `RunTraceStore`: append-only JSONL events plus run summaries.
+- `ApprovalRequestStore`: exact-call approval requests.
+- `CheckpointStore`: mutation snapshots and undo metadata.
+- `UsagePersistHook`: usage JSON sidecars.
+- `MemoryDocumentService`: durable memory/research document files.
+- work-loop item/job stores.
 
-### Graph Store
+Diagnostics:
 
-`NetworkXGraphStore` stores the knowledge graph in GraphML. It provides
-async-locked writes for nodes/edges and relationship upserts. It merges
-multi-value fields using the KG separator.
+- `diagnostics.configure` installs rotating logs and JSONL events.
+- `record_exception` writes structured incidents with redaction.
+- Graph load degradation records structured diagnostics and falls back to an empty graph.
 
-Synchronous `save()` uses `nx.write_graphml` directly and blocks. `async_save()`
-uses `asyncio.to_thread`.
+Tracing:
 
-### Ingestion Pipeline
+- `app.tracing` wraps OpenTelemetry when configured and no-ops otherwise.
+- Tool middleware and LLM adapters set trace attributes for duration, model, tokens, and tool status.
 
-`IngestionPipeline` handles:
+Pricing:
 
-- document source discovery;
-- text ingestion;
-- markdown/code-aware excerpting;
-- frontmatter parsing;
-- excerpt summaries;
-- batched excerpt embeddings;
-- BM25 indexing;
-- LLM entity/relationship extraction;
-- entity/relationship embeddings;
-- graph upserts;
-- Obsidian wiki links and tags;
-- provenance mapping;
-- contradiction checks;
-- stale document replacement.
+- `app.pricing` tracks model pricing with source URLs, effective dates, and a table version.
+- Usage summaries aggregate credits/USD and unknown model calls.
 
-Document discovery uses an injected `document_source_provider`, defaulting to
-`utilities.get_docs`.
+## 19. CLI And TUI
 
-Recognized frontmatter includes:
+`cli.main` is the Typer entrypoint. It defines:
 
-- memory type;
-- tags;
-- confidence;
-- importance;
-- source id;
-- tier;
-- title/kind/source URL/author;
-- trust/evidence/captured metadata;
-- entities;
-- relationships;
-- claims;
-- supersedes.
+- `smolclaw` chat/TUI default;
+- `smolclaw run`;
+- `smolclaw init`;
+- `smolclaw doctor`;
+- `smolclaw reset`;
+- `smolclaw research-loop`;
+- `smolclaw memory-eval`;
+- `smolclaw work-loop ...`.
 
-### Query Engine
+`CliDependencies` is the dependency container for tests and alternate entrypoint
+composition. It includes console, prompt session, async runner, runtime builder,
+agent builder, registry builder, worktree runner factory, TUI factory, work-loop
+factories, stores, hooks, and loop runner overrides.
 
-`QueryEngine` supports:
+`override_cli_dependencies` uses a `ContextVar` so tests can scope dependency
+overrides and guarantee restoration.
 
-- vector RAG query;
-- local KG query;
-- global KG query;
-- hybrid KG query;
-- BM25 keyword query;
-- mixed query combining vector, KG, and optional BM25.
+`cli.tui.CoderTui` owns the full-screen prompt-toolkit UI. It accepts:
 
-It uses extract-model calls for keyword extraction and query-model calls for
-answer synthesis. It filters stale vector rows when graph nodes/edges are
-missing and filters excerpts by embedding model/dimension metadata.
-
-### Document Manager
-
-`DocumentManager` removes documents by ID or source. It cleans:
-
-- source mappings;
-- excerpt KV rows;
-- BM25 rows;
-- excerpt vectors;
-- doc-excerpt mappings;
-- entity/relationship mappings;
-- graph node/edge excerpt references;
-- orphaned entity/relationship vectors.
-
-KG cleanup is protected by the store bundle provenance lock.
-
-### Contradiction Detection
-
-`ContradictionDetector` checks new entity and relationship facts before graph
-upsert.
-
-Detection phases:
-
-1. structural embedding similarity check;
-2. LLM adjudication only for candidates.
-
-Resolution strategy:
-
-- agreement merges silently;
-- extraction-source contradictions are usually dismissed;
-- user-source contradictions become pending;
-- ambiguous cases become pending.
-
-Records are stored in a SQLite KV table. Resolutions can keep existing, keep
-new, merge, or dismiss. `ContradictionExpiryHook` auto-dismisses stale pending
-records on session end.
-
-### Memory Lifecycle
-
-`MemoryLifecycleManager` promotes accessed excerpts by increasing importance.
-Tier 2 memories auto-promote to tier 1 at importance >= 0.8. Recency is handled
-at query/context scoring time rather than by decreasing importance.
-
-### Memory Documents
-
-`MemoryDocumentService` owns durable memory and research document files and
-their SmolRAG source lifecycle.
-
-Supported kinds:
-
-- memory;
-- journal;
-- session;
-- research;
-- external.
-
-It writes non-external documents through atomic storage helpers, optionally
-removes prior indexed source content, then ingests the new content.
-
-Important caveat: file write and RAG ingestion are not one database
-transaction. A failure after writing but before full ingestion can leave the
-document and index temporarily inconsistent.
-
-### Session Export And Indexing
-
-`SessionExportHook` runs on session end when enabled:
-
-- generates a first-person journal through `journal.generate_journal`;
-- indexes user/assistant session content through `session_indexer.index_session`.
-
-Journal and session memories are written as markdown and ingested into SmolRAG.
-Journal generation failure does not block session indexing.
-
-### Memory Watcher
-
-`MemoryFileWatcher` is a poll-based watcher. It hashes memory directory files,
-detects created/modified/deleted documents, ingests changed files, removes
-deleted files from SmolRAG, and fires `ON_FILE_CHANGE`.
-
-## 14. Persistence And Observability
-
-### Sessions
-
-`app.session.SessionManager` stores sessions as JSONL sidecars under
-`sessions/`. The first line is session metadata, followed by messages. Loading
-uses containment checks.
-
-### Goal Ledgers
-
-`GoalLedgerStore` stores one structured JSON ledger per session. It tracks:
-
-- objective;
-- status;
-- loop status;
-- run ID;
-- turn count;
-- pending approvals;
-- acceptance criteria;
-- plan steps;
-- inspected files;
-- changed files;
-- command evidence;
-- verification evidence;
-- blockers;
-- notes.
-
-The ledger is also rendered into the prompt for active goals.
-
-### Run Traces
-
-`RunTraceStore` stores append-only JSONL events plus summary JSON per run.
-
-Events include:
-
-- run started/ended;
-- turn started/ended;
-- LLM started/ended;
-- tool started/ended/denied;
-- safety blocks;
-- permission decisions;
-- approval requests/resolutions;
-- checkpoints;
-- ledger updates;
-- verification records;
-- errors.
-
-Summaries track model, tool counts, denied calls, files changed, commands run,
-checkpoints, verification, status, and stop reason.
-
-### Approvals
-
-`ApprovalRequestStore` stores exact-call approval requests per session.
-
-Approval identity is based on:
-
-- session key;
-- tool name;
-- hash of redacted, JSON-safe arguments.
-
-Only `scope="once"` exists today. Approved requests are consumed and marked
-`used` on the next matching call.
-
-### Usage And Pricing
-
-`UsageCollector` records LLM usage from provider adapters. The loop groups usage
-by turn and background category.
-
-Usage categories include:
-
-- agent turn;
-- consolidation;
-- context retrieval;
-- ingestion;
-- journal;
-- session index.
-
-`UsagePersistHook` writes a `.usage.json` sidecar on session end.
-
-`app.pricing` estimates costs for known models. Pricing values are static and
-must be updated when provider pricing changes.
-
-### Diagnostics
-
-`app.diagnostics` configures workspace-local logging:
-
-- rotating `smolclaw.log`;
-- structured `events.jsonl`;
-- error incidents with IDs;
-- redaction of common secret keys and token-shaped values.
-
-`app.logger` configures the `smolclaw.rag` logger and log cleanup.
-
-### OpenTelemetry
-
-`app.tracing` provides a no-op-by-default OpenTelemetry wrapper. When OTEL SDK
-is installed and configured, it can export spans to an OTLP endpoint. Agent,
-retrieval, and LLM span helpers are provided.
-
-### Run Views
-
-`app.run_views` builds and renders combined trace/ledger views for CLI and TUI:
-
-- goal status;
-- trace status;
-- trace list;
-- event tail;
-- replay;
-- run status view.
-
-## 15. CLI And TUI Surfaces
-
-### CLI Dependency Container
-
-`cli.main.CliDependencies` is the CLI service container. It includes:
-
-- console;
-- prompt session factory;
-- async runner;
-- runtime builder;
-- agent builder;
-- tool registry builder;
-- worktree runner factory;
-- default chat agent builder;
-- multiagent builder;
-- memory store tool factory;
-- session export hook factory;
-- goal store factory;
-- checkpoint store factory;
-- approval store factory;
-- TUI factory;
-- run-once runner;
-- TUI chat loop runner;
-- research loop runner;
-- work-loop supervisor factory;
-- work-loop runner factory;
-- research stop controller factory.
-
-`override_cli_dependencies` is a scoped `ContextVar` override. It is the
-preferred seam for CLI tests and alternate embeddings.
-
-### CLI Commands
-
-Primary Typer commands:
-
-- `chat`: interactive chat, TUI by default;
-- `run`: one-shot JSON-producing execution;
-- `work-loop ...`: task/review automation and background job management;
-- `init`: write/update project guidance;
-- `doctor`: environment and dependency checks;
-- `memory-eval`: memory eval suite runner;
-- `research-loop`: repeated research runs;
-- `ingest`: ingest documents into SmolRAG;
-- `watch`: watch memory docs and re-ingest changes;
-- `serve`: start gateway;
-- `recall`: query memory;
-- `index-sessions`: index existing session files;
-- `reset`: clear derived state;
-- `clear-logs`: remove log files.
-
-### One-Shot Run
-
-`_run_once` builds runtime, optionally creates an isolated worktree, builds the
-requested agent, runs a prompt or goal loop, closes resources, and returns JSON
-with:
-
-- session key;
-- status;
-- loop status;
-- goal run ID;
-- pending approvals;
-- response(s);
-- trace path;
-- trace summary path;
-- ledger path;
-- stop reason;
-- worktree path/diff when applicable.
-
-### Interactive Chat
-
-There are two interactive paths:
-
-- `_tui_chat_loop`: full-screen prompt-toolkit TUI;
-- `_chat_loop`: prompt-toolkit prompt loop.
-
-Both build runtime, stores, memory tools, session export hooks, slash commands,
-and agent loops through dependency seams.
-
-Slash commands cover:
-
-- help;
-- quit;
-- logs;
-- clear;
-- init;
-- undo;
-- trace;
-- approval;
-- memory;
-- worktree;
-- work-loop;
-- model;
-- goal;
-- remember;
-- remember-thread.
-
-### TUI
-
-`cli.tui.CoderTui` is UI-only orchestration around an already-built agent. It
-takes callbacks/providers for:
-
-- goal store;
-- session manager;
-- memory store;
-- session export hook;
-- SmolRAG;
-- checkpoint store;
-- approval store;
-- trace formatter;
-- approval resolver;
-- memory resolver;
-- worktree resolver;
-- work-loop resolver;
-- project initializer;
-- action-event formatter;
 - terminal size provider;
 - shutdown phase timeout;
-- git state provider.
+- git state provider;
+- stores and command resolvers;
+- formatting callbacks.
 
-The TUI owns UI state, transcript/activity rendering, key bindings, worker loop
-coordination, git/goal refresh tasks, slash command dispatch, streaming output,
-and graceful shutdown.
+The TUI runs slow status/utility tasks in a worker loop so rendering is not
+blocked by filesystem, trace, memory, approval, or undo operations.
 
-### Research Loop
+## 20. Gateway And MCP
 
-`research-loop` repeatedly runs a research agent against an ongoing goal. It
-uses:
+`app.gateway` provides a WebSocket JSON-RPC style protocol.
 
-- runtime builder;
-- agent builder;
-- configurable interval;
-- optional max runs;
-- stop controller;
-- optional Escape-key watcher on POSIX TTYs.
+Responsibilities:
 
-Each cycle asks the agent to search memory first, use web when needed, store
-verified findings, and return deltas.
+- authentication challenge/response;
+- agent creation and session reuse;
+- chat send/abort lifecycle;
+- output streaming;
+- run ID and session metadata;
+- error event emission.
 
-## 16. Gateway And MCP Transport
+Gateway construction accepts dependencies for config loading, runtime building,
+and agent building. This keeps gateway tests and alternate hosting paths from
+patching module globals.
 
-`app.gateway.Gateway` is the WebSocket surface.
+`McpClient` and MCP tools handle remote tool invocation over HTTP. MCP wrappers
+are selected by transport and capability. Gateway and MCP are functional but
+secondary to local CLI/TUI reliability.
 
-Security:
+## 21. Worktree And Work-Loop Automation
 
-- requires `SMOLCLAW_GATEWAY_TOKEN` or injected validator;
-- remote bind requires `allow_remote`;
-- sends challenge then expects `connect` request with token.
+`WorktreeRunner` creates isolated git worktrees or dirty copies and carries an
+injected `CommandRunner`. `WorktreeContext` can:
 
-Runtime:
+- show isolated diffs;
+- apply diffs back to the base repo;
+- clean up worktree state.
 
-- initializes diagnostics in workspace log dir;
-- initializes shared runtime in `mcp` transport;
-- shares SmolRAG and SessionManager across session agents;
-- builds default agent per session key;
-- registers usage and contradiction-expiry hooks;
-- supports `chat.send` and `chat.abort`;
-- streams lifecycle, message, and activity events.
-
-Gateway dependency seams:
-
-- config loader;
-- runtime builder;
-- agent builder;
-- token validator.
-
-MCP transport changes tool implementation but not the agent loop. Unsupported
-capabilities are rejected by `runtime_capabilities`.
-
-## 17. Worktree Isolation
-
-`app.worktree.WorktreeRunner` creates isolated execution workspaces.
-
-Modes:
-
-- clean git worktree from `HEAD`;
-- dirty copy mode that copies the repository excluding `.git`, initializes a
-  new git repo, and commits a baseline.
-
-`WorktreeContext` supports:
-
-- diffing isolated changes while excluding state paths;
-- applying diff back to base repo;
-- cleanup through git worktree removal or directory deletion.
-
-Worktree commands go through `SubprocessCommandRunner`.
-
-In CLI worktree mode, the active source root is the worktree path, while the
-state root remains the original workspace state root. This keeps sessions,
-memory, traces, and ledgers in the original workspace.
-
-## 18. Coding Lifecycle And Work-Loop
-
-### Generic Lifecycle Contracts
-
-`app.coding_lifecycle` defines provider-neutral domain contracts:
-
-- `LifecycleSourceRef`;
-- `PublicationRef`;
-- `ReviewFeedbackRef`;
-- `CodingLifecycleWork`;
-- `CodingPassResult`;
-- `PublicationResult`;
-- `WorkDiscoveryAdapter`;
-- `SourceControlReviewAdapter`;
-- `PublicationAdapter`;
-- `CodingPassExecutor`.
-
-These types represent the desired generic coding lifecycle independent of Jira
-or GitHub.
-
-### Current Work-Loop Implementation
-
-`app.work_loop` is still Jira/GitHub-oriented. It has two modes:
-
-- first-pass task intake from Jira to PR creation;
-- follow-up handling for review comments/check failures on open PRs.
-
-Main services:
-
-- `WorkLoopConfig`: configuration for providers, project, statuses, models,
-  task profiles, verification commands, internal review, concurrency;
-- `TaskCandidate`: generic-ish task candidate with a `JiraCandidate` alias;
-- `WorkItem`: persisted work item state;
-- `WorkLoopLedger`: durable item storage;
-- `WorkLoopControl`: STOP/PAUSE/heartbeat files;
-- `WorkLoopJobStore`: background job metadata;
-- `WorkLoopJobSupervisor`: starts/stops/pauses/resumes worker processes;
-- `JiraAdapter`: Atlassian `acli` integration;
-- `GitHubAdapter`: GitHub `gh` integration;
-- `DoneGateRunner`: verification discovery and execution;
-- `RunWorkspaceManager`: per-item worktree paths and cleanup;
-- `GitOperations`: git status/fetch/worktree/commit/push;
-- `InternalReviewRunner`: runs reviewer agent through CLI;
-- `CliAgentTaskExecutor`: runs coder agent through CLI with goal loop and
-  verification/repair attempts;
-- `WorkLoopRunner`: orchestrates preflight, task runs, review runs, and item
-  state transitions.
-
-### Work-Loop First-Pass Flow
-
-```text
-preflight
-  task-source auth
-  code-review auth
-  clean git status
-  fetch base branch
-  discover verification commands
-search backlog
-filter eligible candidates
-select candidates
-for each candidate:
-  view detailed source item
-  select execution profile
-  create WorkItem
-  create branch worktree
-  transition source item
-  run coder CLI goal loop
-  run verification
-  optionally run internal reviewer
-  optionally repair review findings
-  commit and push
-  create PR
-  transition source item to review
-  comment with PR link/status
-  save ledger
-  cleanup run workspace
-```
-
-### Work-Loop Review Flow
-
-```text
-preflight without task-source requirement
-for each open-pr WorkItem:
-  view PR
-  detect new actionable comments/check failures
-  recreate branch workspace if needed
-  run coder CLI with review feedback
-  run verification
-  commit and push
-  comment on PR
-  record processed review comments
-  save ledger
-```
-
-### Adapter Config In Work-Loop
-
-`cli.main._load_work_loop_config` applies runtime adapter config:
-
-- `task_source.provider` overrides work-loop task source type unless config
-  explicitly declares it;
-- `code_review.provider` overrides work-loop code review type unless config
-  explicitly declares it.
-
-Only `jira` and `github` builders exist today. Other provider names will parse
-but fail at adapter construction.
-
-## 19. Eval Harnesses
-
-### Agent Eval
-
-`app.agent_eval.AgentEvalRunner` supports:
-
-- mock mode;
-- recorded mode;
-- live mode.
-
-It loads task fixtures, copies fixture repos, creates workspace state, records
-mock or live evidence, scores ledger/trace/diff artifacts, writes reports, and
-can run verification commands. Live mode uses an injected command runner seam,
-defaulting to `subprocess.run`.
-
-### Memory Eval
-
-`app.memory_eval` defines deterministic and live-ish memory suites:
-
-- corpus sources;
-- expected entities;
-- expected relationships;
-- expected claims;
-- retrieval questions;
-- staleness expectations;
-- contradiction expectations.
-
-Modes include deterministic, RAG retrieval, and answer generation. Reports are
-written as JSON and used by context building as optional memory eval summaries.
-
-### Memory Coding Eval
-
-`app.memory_coding_eval` compares coding task performance with memory off/on
-for fixture tasks and patch expectations.
-
-## 20. Bootstrap, Doctor, Reset, Utilities
-
-### Bootstrap
-
-`app.bootstrap.init_project_guidance` writes or updates a marked block in
-`AGENTS.md`. It includes:
-
-- project name;
-- local workflow reminders;
-- detected verification commands.
-
-It currently writes with direct file I/O, not atomic storage helpers.
-
-### Doctor
-
-`app.doctor.run_doctor` checks:
-
-- state root writability;
-- OpenAI key;
-- Anthropic key;
-- NLTK stopwords;
-- NLTK punkt_tab;
-- gateway token.
-
-It accepts injected environment and NLTK resource checker seams.
-
-### Reset
-
-`app.reset` clears derived workspace state. It can reset:
-
-- logs;
-- memories;
-- journals;
-- RAG stores;
-- KG stores.
-
-Research source notes are intentionally preserved.
-
-### Utilities
-
-`app.utilities` contains text/file/hash/token helper functions. Some memory and
-ingestion paths still use simple file helpers from this module; newer durable
-state writers should prefer `storage_paths`.
-
-## 21. External Dependencies And Boundaries
-
-| Boundary | Production implementation | Injection seam |
-| --- | --- | --- |
-| OpenAI completion/embedding | `OpenAiLlm` with OpenAI SDK | `client`, `client_factory`, `openai_factory` |
-| Anthropic completion | `AnthropicLlm` with Anthropic SDK | `client`, `client_factory`, `anthropic_factory` |
-| Voyage embeddings | `VoyageEmbeddingLlm` with httpx | `voyage_factory`, owned client/cache |
-| LLM factory | `create_llm` | runtime `llm_factory`, provider factories |
-| Web search/fetch | httpx async clients | `http_client_factory` |
-| MCP execution | `McpClient` | client instance/factory, HTTP client factory |
-| Harness commands | `SubprocessCommandRunner` | `CommandRunner` protocol |
-| Agent command tool | `subprocess.run` callback | per-tool `command_runner` callable |
-| Work-loop task source | `JiraAdapter` using `acli` | `TaskSourceAdapter`, `task_source` constructor arg |
-| Work-loop code review | `GitHubAdapter` using `gh` | `CodeReviewAdapter`, `code_review` constructor arg |
-| CLI runtime | default functions/classes | `CliDependencies` and `override_cli_dependencies` |
-| Gateway runtime | default loaders/builders | constructor `config_loader`, `runtime_builder`, `agent_builder` |
-| Document discovery | `utilities.get_docs` | `document_source_provider` |
-| Doctor environment | `os.environ`, NLTK | `env`, `nltk_resource_checker` |
-| aiosqlite close join | `asyncio.to_thread` | `to_thread` callable |
-
-## 22. Current Architectural Strengths
-
-- Runtime construction is centralized in `RuntimeServices` and
-  `RuntimeEnvironment`.
-- Agent config is declarative and transport-independent.
-- Capability projection creates a least-privilege tool surface per agent.
-- External boundaries have explicit seams for LLMs, HTTP clients, command
-  runners, runtime builders, gateway builders, and CLI dependencies.
-- Tool behavior is composed with middleware instead of embedded directly in
-  every tool.
-- Permission, safety, evidence, and checkpointing are cross-cutting concerns
-  with separate modules.
-- Workspace and state roots are explicit, enabling isolated worktrees while
-  preserving shared state.
-- Durable run traces and goal ledgers make agent behavior inspectable.
-- Approval requests are exact-call and persisted, reducing accidental broad
-  authorization.
-- Memory persistence separates durable source documents from derived indexes.
-- SmolRAG stores track embedding model/dimensions to avoid mixing incompatible
-  vectors.
-- Tests can avoid monkeypatching through constructors, factories, protocols, and
-  context override managers.
-
-## 23. Problem Areas And Design Gaps
-
-### Runtime Adapter Config Is Not Fully Honored
-
-`RuntimeAdapterConfig.command` is parsed and preserved but not consumed by:
-
-- `build_tool_registry`;
-- `RunCommandTool`;
-- infrastructure `CommandRunner`;
-- worktree;
-- work-loop;
-- eval live runners.
-
-This means command provider config is currently documentation/config surface
-without runtime effect.
-
-Recommended fix:
-
-- introduce a command-runner provider factory keyed by adapter config;
-- thread it through `RuntimeEnvironment`;
-- pass agent-facing runners into command tools;
-- pass infrastructure runners into work-loop/worktree/eval services;
-- keep policy and allowlist behavior separate from process execution.
-
-### Work-Loop Is Partially Generic But Still Jira/GitHub Shaped
-
-`coding_lifecycle.py` defines provider-neutral contracts, but `work_loop.py`
-still exposes:
-
-- `JiraCandidate` alias;
+Work-loop automation lives in `app.work_loop`.
+
+Core types:
+
+- `WorkLoopConfig`;
+- `TaskCandidate`;
+- `WorkItem`;
+- `WorkLoopLedger`;
+- `WorkLoopJob`;
+- `WorkLoopControl`;
+- `WorkLoopRunner`;
+- `CodingLifecycleWork`.
+
+`WorkItem` has provider-neutral accessors:
+
+- `source_key`;
+- `source_url`;
+- `source_provider`.
+
+Legacy fields remain:
+
 - `jira_key`;
 - `jira_url`;
-- `jira`/`github` constructor aliases;
-- Jira/GitHub prompt and comment names;
-- builders that support only Jira and GitHub.
+- `task_source_type`.
 
-Recommended fix:
+The ledger writes both neutral and legacy fields for compatibility.
 
-- migrate persisted schema toward `source_ref` and `publication_refs`;
-- keep backward-compatible readers for old work items;
-- replace provider-specific field names in prompts and renderers;
-- introduce adapter registries for task source, code review, and publication.
+Provider registries:
 
-### Some Subprocess Usage Bypasses The CommandRunner Abstraction
+- task source: `jira`;
+- code review: `github`.
 
-Most infrastructure commands use `CommandRunner`, but exceptions remain:
+`JiraAdapter` uses Atlassian `acli` through `CommandRunner`.
+`GitHubAdapter` uses `gh` through `CommandRunner`.
 
-- `RunWorkspaceManager.cleanup` uses raw `subprocess.run`;
-- `WorkLoopJobSupervisor` directly uses `subprocess.Popen` because it owns
-  background process creation;
-- TUI `_git_state` defaults to `subprocess.run`, though it has a provider seam.
+`WorkLoopRunner` flow:
 
-Recommended fix:
+1. Preflight auth, git clean state, base branch fetch, and verification commands.
+2. Search/select task candidates.
+3. Create branch worktree.
+4. Run coder agent through CLI.
+5. Run verification and optional internal review.
+6. Commit and push.
+7. Create PR.
+8. Transition/comment task source.
+9. Record ledger state.
+10. Clean run workspace.
 
-- make cleanup use injected `CommandRunner`;
-- keep supervisor process creation separate but document it as process lifecycle
-  rather than command execution;
-- use `SubprocessCommandRunner` or a small git-state provider in production TUI.
+Review mode:
 
-### Async Interfaces Wrap Synchronous Provider SDK Calls
+1. Find open PR items.
+2. Read GitHub comments/reviews/checks.
+3. Filter actionable feedback.
+4. Recreate/ensure worktree.
+5. Run coder agent with review feedback.
+6. Commit/push.
+7. Respond on PR and update ledger.
 
-OpenAI and Anthropic adapters expose async methods but call synchronous SDK
-clients inside those methods. This can block the event loop during provider
-calls. Voyage uses async HTTP.
+Background jobs are supervised by `WorkLoopJobSupervisor`, which directly owns
+process creation and signal termination. This is the intentional direct process
+lifecycle exception.
 
-Recommended fix:
+## 22. Evaluation Systems
 
-- migrate to async provider clients where available; or
-- use bounded `to_thread` execution around sync calls; and
-- add concurrency tests for TUI/gateway responsiveness.
+Agent evals:
 
-### Memory Document Writes And Indexing Are Not Atomic Together
+- `AgentEvalRunner`;
+- mock, recorded, and live modes;
+- trace/ledger/diff scoring;
+- required evidence checks;
+- score deltas and suite JSON.
 
-`MemoryDocumentService` writes a durable file and then mutates SmolRAG indexes.
-Those operations span filesystem, SQLite, graph, and vector stores without a
-single transaction.
+Memory evals:
 
-Recommended fix:
+- deterministic corpus checks;
+- RAG retrieval scoring;
+- answer/citation scoring;
+- stale-source and contradiction hygiene.
 
-- add ingestion job records with status;
-- make startup/watch repair reconcile documents and index state;
-- store source document version/hash consistently before and after indexing.
+Memory coding evals:
 
-### Graph Persistence Is A Scalability And Consistency Hotspot
+- memory-on versus memory-off workspaces;
+- injected command runner;
+- deterministic verification contrast.
 
-`NetworkXGraphStore` stores the graph in GraphML. It locks writes but sync
-`save()` blocks. GraphML is simple but not ideal for high-concurrency or large
-graphs.
+All eval runners expose command/client seams where external execution is needed.
 
-Recommended fix:
+## 23. Testing Standards
 
-- consistently use `async_save`;
-- evaluate SQLite edge/node tables or a graph-native store if memory grows;
-- add graph integrity checks and migration/version metadata.
+Current acceptance standard:
 
-### Best-Effort Exception Handling Can Hide Data Quality Problems
+- no `with patch(...)`;
+- no `@patch(...)`;
+- no `patch.dict(...)`;
+- no `monkeypatch.setattr(...)` for dependency substitution.
 
-Several paths intentionally swallow or degrade errors:
+Allowed:
 
-- frontmatter parse failures;
-- context retrieval fallbacks;
-- memory promotion hooks;
-- session export journal/indexing failures;
-- contradiction hooks.
+- constructor fakes;
+- provider objects;
+- factory injection;
+- CLI dependency overrides;
+- context managers dedicated to test overrides;
+- `monkeypatch.setenv`, `delenv`, and `chdir` when the test is about environment or cwd behavior.
 
-This is good for user-facing robustness but can obscure memory quality issues.
+Important verification commands:
 
-Recommended fix:
+```bash
+rg 'with patch\(|@patch\(|patch\.dict|monkeypatch\.setattr' tests
+pytest
+git diff --check
+```
 
-- emit structured diagnostics for every degraded path;
-- add counters in run summaries or memory health reports;
-- distinguish expected parse misses from unexpected exceptions.
+## 24. Known Gaps And Problem Areas
 
-### Tool Search Is Simple Substring Matching
+### Command Provider Depth
 
-Deferred tool discovery is name/description substring matching. This is
-predictable but weak once the tool catalog grows.
+The command adapter config is now respected everywhere the runtime builds command
+runners, but only `subprocess` is implemented. A real sandbox, remote executor,
+or container-backed provider would require a new `CommandRunner` implementation
+and policy review.
 
-Recommended fix:
+### Work-Loop Provider Breadth
 
-- add ranked lexical search or embedding-backed discovery;
-- keep deterministic fallback for tests.
-
-### Checkpoint Coverage Is Bounded
-
-Checkpoints skip non-files and files larger than 1 MB. Undo is impossible for
-skipped snapshots. That is safer than partial restore, but users need to know
-large-file mutations are not protected.
-
-Recommended fix:
-
-- surface skipped checkpoint paths in UI and final run status;
-- consider configurable max snapshot size.
-
-### Direct Command Tool And Direct Shell Capability Are Easy To Confuse
-
-Direct local shell capability is disabled. The `command` capability still
-provides git tools and allowlisted `run_command` execution. These are different
-security surfaces.
-
-Recommended fix:
-
-- keep capability naming explicit in docs/UI;
-- consider renaming `command` to `safe_command` or documenting the distinction
-  in agent/tool descriptions.
-
-### Runtime Shared State Is Still A Dict Compatibility Layer
-
-`RuntimeSharedState` is a typed facade, but the underlying wire format remains a
-mutable dict for compatibility. Unknown string keys can still collide.
-
-Recommended fix:
-
-- move all known shared values to typed fields or a dataclass;
-- keep dict adapter only at tool boundary.
-
-### Plugin Directory Is Not An Active Extension System
-
-`plugins/` currently contains only bytecode files and no source manifests wired
-into runtime. Developers should not assume a plugin architecture exists.
-
-Recommended fix:
-
-- remove bytecode residue from the repo; or
-- define a real plugin manifest/loader and document the extension lifecycle.
-
-### Pricing Data Is Static
-
-`app.pricing` contains static pricing with an effective date. Costs can become
-incorrect as provider pricing changes.
-
-Recommended fix:
-
-- make pricing table versioned and easy to update;
-- mark estimates clearly in UI;
-- add tests that only validate shape/math, not market currency truth.
-
-## 24. Recommended Engineering Standards Going Forward
-
-- All external boundaries should be protocols, factories, or constructor
-  dependencies.
-- Runtime config should be consumed in exactly one obvious composition layer.
-- Tool behavior should stay small; safety, permission, evidence, retries, and
-  tracing should remain middleware.
-- Persistent schemas should include version fields and migration paths.
-- New state writes should use `storage_paths` atomic helpers.
-- New provider adapters should include fake-client tests through constructor
-  injection.
-- New CLI behavior should be testable through `CliDependencies`, not global
-  patching.
-- New work-loop providers should implement generic lifecycle protocols first,
-  with legacy Jira/GitHub shape only as compatibility adapters.
-- New memory ingestion flows should record source hash/version and support
-  repair/reconciliation.
-- Async runtime code should not call blocking provider or subprocess APIs
-  without an explicit runner/thread boundary.
-- Permission and safety changes should include regression tests for denied,
-  asked, approved, and allowed paths.
-- Tool schemas and command output shapes should be treated as public API for
-  agent behavior and kept stable unless migration is intentional.
-
-## 25. Developer Modification Guide
-
-### Adding A New Tool
-
-1. Implement `Tool` in `app/tools/`.
-2. Define accurate `ToolCallPolicy` tags/effects.
-3. Add it to `build_tool_registry` under the appropriate capability.
-4. Decide whether it should be deferred.
-5. Add it to agent configs only where needed.
-6. Add tests for schema, permission behavior, safety/evidence interaction, and
-   execution through fakes.
-
-### Adding A New LLM Or Embedding Provider
-
-1. Implement the relevant protocol from `llm_base`.
-2. Accept concrete client and client factory seams.
-3. Record usage through `UsageCollector`.
-4. Add provider detection or explicit provider handling in `create_llm`.
-5. Add adapter config examples.
-6. Add tests with fake clients and composite completion/embedding cases.
-
-### Adding A New Work-Loop Provider
-
-1. Implement generic lifecycle protocols in `coding_lifecycle.py`.
-2. Add a legacy bridge only if current `WorkLoopRunner` still needs it.
-3. Register the provider in task-source/code-review adapter factories.
-4. Add runtime adapter config tests.
-5. Avoid provider-specific field names in new persisted data.
-
-### Adding A New CLI Feature
-
-1. Add dependencies to `CliDependencies` if construction or external effects
-   are needed.
-2. Keep Typer wrapper thin.
-3. Put logic in an internal function accepting `deps`.
-4. Add tests using `override_cli_dependencies`.
-5. Ensure resources are closed on success and error.
-
-### Adding New Persistent State
-
-1. Put it under `WorkspacePaths`.
-2. Use containment-safe path helpers.
-3. Add schema version.
-4. Use atomic writes.
-5. Add load-with-backup behavior for JSON where corruption would be costly.
-6. Document reset behavior.
-
-## 26. Summary
-
-SmolClaw is organized around a strong runtime composition pattern: entrypoints
-build services, services build agents, agents project tools, middleware enforces
-policy/safety/observability, and durable stores make runs inspectable. The best
-parts of the system are the explicit dependency seams, declarative agent config,
-capability projection, and reliability sidecars.
-
-The areas needing the most architectural attention are command adapter config
-consumption, the partially generic work-loop, remaining direct subprocess use,
-blocking sync SDK calls inside async methods, and transactional consistency in
-memory document ingestion. Addressing those would make the implementation match
-the intended application engineering patterns more completely.
+The work-loop lifecycle model is provider-neutral at the data-contract level,
+but concrete task/review providers are still Jira and GitHub only.
+
+### MCP Edit Atomicity
+
+MCP edit is read/replace/write. It is practical but not remote-atomic and can
+race with external edits.
+
+### Prompt Budget Risk
+
+Tier-0 memory bypasses normal context-budget scoring. This is deliberate but can
+cause prompt growth if too many identity/core facts are stored as tier 0.
+
+### Streaming SDK Blocking
+
+Non-streaming OpenAI/Anthropic calls are async-compatible through worker-thread
+wrapping. Streaming paths still iterate synchronous SDK streams in the event loop
+where the SDK exposes synchronous iterators. This is acceptable today but should
+be revisited if streaming latency becomes a UI problem.
+
+### Process Supervision Exception
+
+`WorkLoopJobSupervisor` intentionally uses direct process APIs. Do not route it
+through `CommandRunner` unless the replacement preserves process group,
+environment, pause/stop, and kill semantics.
+
+### Schema Migration Coverage
+
+Work-loop items carry a schema version and migrate legacy Jira fields into
+neutral fields on load/save. Other JSON stores are mostly tolerant readers rather
+than formal migrators. If state contracts harden, add explicit schema versions
+and migration tests per store.
+
+### Gateway Priority
+
+Gateway code is dependency-injected and tested, but local CLI/TUI remains the
+primary reliability target. Avoid designing core features that only work through
+gateway transport.
+
+## 25. Practices Followed Well
+
+- Runtime composition is centralized in `build_runtime_services`.
+- Agent construction is centralized in `build_configured_agent` and `build_agent_loop`.
+- External systems have explicit injection seams.
+- CLI tests use `CliDependencies` and scoped overrides.
+- Local tools are projected by capability and agent tool list.
+- Permission, safety, evidence, and checkpoint behavior are layered as middleware.
+- Durable state lives under the workspace state root.
+- Atomic writes are used for important JSON/text state.
+- Graph save is non-blocking and atomic.
+- Command adapter config is respected by runtime, CLI worktrees, work-loop, TUI git state, and tool registry construction.
+- LLM adapters support client/factory injection and async-facing calls.
+- Tool discovery is deterministic and ranked.
+- Tests cover the seams without monkeypatching dependencies.
+
+## 26. Practices To Improve Next
+
+- Add real non-subprocess command providers only with clear sandbox semantics.
+- Expand provider-neutral work-loop support beyond Jira/GitHub.
+- Formalize schema versions and migrations across all state stores.
+- Replace synchronous streaming SDK iteration with true async streaming where clients support it.
+- Add richer diagnostics for adapter selection and degraded memory/query behavior.
+- Consider making MCP edit transactional through gateway-supported operations.
+- Continue shrinking public mutable shared-state usage in favor of typed helpers.
+- Keep README, runtime architecture docs, and this spec synchronized when architecture changes.
+
+## 27. Developer Change Checklist
+
+Before changing a subsystem:
+
+1. Identify the owning service or adapter boundary.
+2. Prefer existing factories, protocols, and dependency containers.
+3. Add a constructor/factory seam before introducing a test fake.
+4. Preserve workspace containment for file paths.
+5. Preserve middleware order for tool behavior.
+6. Record diagnostics for degraded fallbacks.
+7. Add focused tests for the new seam or behavior.
+8. Run the no-patch grep.
+9. Run the relevant targeted tests.
+10. Run full `pytest` before merging broad architecture changes.
+
+## 28. Current Verdict
+
+The current architecture follows established application engineering patterns:
+explicit dependency injection, adapter boundaries, provider configuration,
+capability projection, middleware composition, durable state stores, and
+source-derived tests. The main remaining risks are not structural confusion but
+provider maturity: command has one provider, work-loop has two concrete external
+providers, and several state stores are tolerant rather than fully migrated.
+
+The system is now in a good position for contributors to add providers and tools
+without patching globals or bypassing runtime configuration. New work should
+continue to make dependencies explicit, keep local reliability first, and update
+this spec when a boundary changes.

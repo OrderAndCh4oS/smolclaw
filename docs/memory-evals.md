@@ -83,11 +83,12 @@ The repo also includes a non-toy suite backed by the current project docs:
 smolclaw memory-eval docs/smolclaw-memory-eval.yaml --output .smolclaw/stores/evals/memory
 ```
 
-This suite references authored roadmap, runtime, research, implementation, and
-memory-eval docs in place. The suite adds metadata in YAML rather than copying
-the documents, so it exercises the real writing while still declaring the graph
-entities, relationships, claims, and freshness expectations the memory layer
-should preserve.
+This suite references the current docs that remain after the project pivot:
+the system design spec, workspace guide, memory-eval guide, and the suite file
+itself. The suite adds metadata in YAML rather than copying the documents, so it
+exercises the real writing while still declaring the graph entities,
+relationships, claims, and freshness expectations the memory layer should
+preserve.
 
 ## Suite Reports And Baselines
 
@@ -219,7 +220,7 @@ contradictions:
 Use this to test whether memory can ground answers such as:
 
 - why an architecture decision was made;
-- which sources support a roadmap claim;
+- which sources support a current architecture claim;
 - which use cases a feature is intended to serve;
 - whether a claim is unsupported by the current corpus;
 - whether a source is stale according to its `captured_at` metadata;
