@@ -1,3 +1,5 @@
+import asyncio
+import inspect
 import json
 import time
 from typing import Any, Callable, Dict, List, Optional
@@ -38,12 +40,12 @@ def _use_responses_for_tool_completion(model: str | None, tools: Optional[List[d
 
 class OpenAiLlm:
     def __init__(self, completion_model=None, embedding_model=None, query_cache_kv=None, embedding_cache_kv=None,
-                 openai_api_key=None, db_path=None) -> None:
+                 openai_api_key=None, db_path=None, client=None, client_factory=None) -> None:
         """
         Initializes the OpenAiLlm instance with specified models and caches.
         """
         api_key = openai_api_key or os.getenv('OPENAI_API_KEY')
-        self.client = OpenAI(api_key=api_key)
+        self.client = client or (client_factory or OpenAI)(api_key=api_key)
         cache_db_path = db_path or SQLITE_DB_PATH
         self.query_cache_kv = query_cache_kv or SqliteKvStore(cache_db_path, "query_cache")
         self.embedding_cache_kv = embedding_cache_kv or SqliteKvStore(cache_db_path, "embedding_cache")
@@ -51,6 +53,12 @@ class OpenAiLlm:
         self.embedding_model = embedding_model or DEFAULT_OPENAI_PROVIDER_EMBEDDING_MODEL
         self.reasoning_effort = _default_reasoning_effort_for_model(self.completion_model)
         self.usage_collector = None
+
+    async def _call_client_method(self, method: Callable, *args, **kwargs):
+        result = await asyncio.to_thread(method, *args, **kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     async def __aenter__(self):
         return self
@@ -259,7 +267,8 @@ class OpenAiLlm:
         try:
             with trace_llm_call("completion", model) as span:
                 started = time.perf_counter()
-                response = self.client.chat.completions.create(
+                response = await self._call_client_method(
+                    self.client.chat.completions.create,
                     model=model,
                     store=True,
                     messages=system_message + messages
@@ -330,7 +339,7 @@ class OpenAiLlm:
         try:
             with trace_llm_call("tool_completion", model) as span:
                 started = time.perf_counter()
-                response = self.client.chat.completions.create(**kwargs)
+                response = await self._call_client_method(self.client.chat.completions.create, **kwargs)
                 duration_ms = int((time.perf_counter() - started) * 1000)
                 message = response.choices[0].message
                 tool_calls = message.tool_calls
@@ -371,7 +380,8 @@ class OpenAiLlm:
         try:
             with trace_llm_call("tool_completion", model) as span:
                 started = time.perf_counter()
-                response = self.client.responses.create(
+                response = await self._call_client_method(
+                    self.client.responses.create,
                     model=model,
                     input=self._responses_input(messages),
                     tools=self._responses_tools(tools),
@@ -413,7 +423,7 @@ class OpenAiLlm:
             tool_call_deltas: Dict[int, dict] = {}
             final_usage = None
 
-            stream = self.client.chat.completions.create(**kwargs)
+            stream = await self._call_client_method(self.client.chat.completions.create, **kwargs)
             for chunk in stream:
                 if not chunk.choices:
                     # Final chunk with usage only
@@ -511,7 +521,8 @@ class OpenAiLlm:
 
         try:
             started = time.perf_counter()
-            response = self.client.beta.chat.completions.parse(
+            response = await self._call_client_method(
+                self.client.beta.chat.completions.parse,
                 model=model,
                 messages=messages,
                 response_format=response_model,
@@ -554,7 +565,8 @@ class OpenAiLlm:
             logger.info("New embedding")
             try:
                 started = time.perf_counter()
-                response = self.client.embeddings.create(
+                response = await self._call_client_method(
+                    self.client.embeddings.create,
                     model=model,
                     input=content,
                 )
@@ -604,7 +616,8 @@ class OpenAiLlm:
             logger.info(f"Fetching {len(uncached_contents)} new embeddings in batch")
             try:
                 started = time.perf_counter()
-                response = self.client.embeddings.create(
+                response = await self._call_client_method(
+                    self.client.embeddings.create,
                     model=model,
                     input=[content for content, _ in uncached_contents],
                 )

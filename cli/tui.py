@@ -177,9 +177,9 @@ def _fit_line(value: str, width: int) -> str:
     return _truncate(value, width).ljust(width)
 
 
-def _git_state(cwd: str) -> str:
+def _git_state(cwd: str, command_runner=subprocess.run) -> str:
     try:
-        branch = subprocess.run(
+        branch = command_runner(
             ["git", "-C", cwd, "branch", "--show-current"],
             check=False,
             capture_output=True,
@@ -187,7 +187,7 @@ def _git_state(cwd: str) -> str:
             timeout=1,
         ).stdout.strip()
         if not branch:
-            commit = subprocess.run(
+            commit = command_runner(
                 ["git", "-C", cwd, "rev-parse", "--short", "HEAD"],
                 check=False,
                 capture_output=True,
@@ -195,7 +195,7 @@ def _git_state(cwd: str) -> str:
                 timeout=1,
             ).stdout.strip()
             branch = commit or "detached"
-        dirty = subprocess.run(
+        dirty = command_runner(
             ["git", "-C", cwd, "status", "--porcelain"],
             check=False,
             capture_output=True,
@@ -236,6 +236,9 @@ class CoderTui:
         format_action_event: Callable[[dict], Optional[str]],
         resolve_worktree_command: Callable[[str], str] | None = None,
         resolve_work_loop_command: Callable[[str], str] | None = None,
+        terminal_size_provider: Callable[[tuple[int, int]], os.terminal_size] | None = None,
+        shutdown_phase_timeout: float = SHUTDOWN_PHASE_TIMEOUT,
+        git_state_provider: Callable[[str], str] | None = None,
         label: str = "smolclaw",
     ):
         self.agent = agent
@@ -260,6 +263,9 @@ class CoderTui:
         self.resolve_memory_command = resolve_memory_command
         self.resolve_worktree_command = resolve_worktree_command or (lambda arg: "No active isolated worktree.")
         self.resolve_work_loop_command = resolve_work_loop_command or (lambda arg: "Work-loop commands are unavailable.")
+        self.terminal_size_provider = terminal_size_provider or shutil.get_terminal_size
+        self.shutdown_phase_timeout = shutdown_phase_timeout
+        self.git_state_provider = git_state_provider or _git_state
         self.initialize_project = initialize_project
         self.format_action_event = format_action_event
         self.state = UiState(
@@ -531,7 +537,7 @@ class CoderTui:
 
     async def _refresh_git_state(self):
         try:
-            git_state = await self._run_in_worker(lambda: _git_state(self.workspace_root))
+            git_state = await self._run_in_worker(lambda: self.git_state_provider(self.workspace_root))
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -1122,7 +1128,7 @@ class CoderTui:
             return False
         self._set_shutdown_phase(message, active_tool=active_tool)
         task = awaitable if isinstance(awaitable, asyncio.Future) else asyncio.create_task(awaitable)
-        done, _pending = await asyncio.wait({task}, timeout=SHUTDOWN_PHASE_TIMEOUT)
+        done, _pending = await asyncio.wait({task}, timeout=self.shutdown_phase_timeout)
         if task not in done:
             task.cancel()
             task.add_done_callback(self._drain_task)
@@ -1416,13 +1422,13 @@ class CoderTui:
         if self._app is not None:
             with contextlib.suppress(Exception):
                 return max(1, int(self._app.output.get_size().columns))
-        return max(1, int(shutil.get_terminal_size((120, 24)).columns))
+        return max(1, int(self.terminal_size_provider((120, 24)).columns))
 
     def _terminal_height(self) -> int:
         if self._app is not None:
             with contextlib.suppress(Exception):
                 return max(1, int(self._app.output.get_size().rows))
-        return max(1, int(shutil.get_terminal_size((100, 24)).lines))
+        return max(1, int(self.terminal_size_provider((100, 24)).lines))
 
     def _transcript_height(self) -> int:
         details_height = DETAILS_HEIGHT if self.state.details_visible else 0

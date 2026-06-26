@@ -77,10 +77,43 @@ class TestMemoryDocumentService:
 
     @pytest.mark.asyncio
     async def test_external_ingest_does_not_write_file(self, temp_dir, mock_smol_rag):
-        service = MemoryDocumentService(mock_smol_rag, memory_dir=temp_dir)
+        service = MemoryDocumentService(
+            mock_smol_rag,
+            memory_dir=temp_dir,
+            ingestion_jobs_dir=os.path.join(temp_dir, "jobs"),
+        )
 
         stored = await service.ingest_external_text("external", source_id="/tmp/source.md")
 
         assert stored.path is None
-        assert os.listdir(temp_dir) == []
+        assert not [name for name in os.listdir(temp_dir) if name.endswith(".md")]
+        jobs = service.list_ingestion_jobs()
+        assert len(jobs) == 1
+        assert jobs[0].source_id == stored.source_id
+        assert jobs[0].status == "complete"
         mock_smol_rag.ingest_text.assert_awaited_once_with("external", source_id=stored.source_id)
+
+    @pytest.mark.asyncio
+    async def test_failed_ingestion_job_can_be_repaired(self, temp_dir):
+        smol_rag = MagicMock()
+        smol_rag.remove_document_by_source = AsyncMock()
+        smol_rag.ingest_text = AsyncMock(side_effect=[RuntimeError("index unavailable"), None])
+        service = MemoryDocumentService(
+            smol_rag,
+            memory_dir=temp_dir,
+            ingestion_jobs_dir=os.path.join(temp_dir, "jobs"),
+        )
+
+        with pytest.raises(RuntimeError, match="index unavailable"):
+            await service.store_document("repair me", kind="memory", source_id="stable")
+
+        failed = service.list_ingestion_jobs(status="failed")
+        assert len(failed) == 1
+        assert failed[0].stage == "failed"
+        assert failed[0].error == "index unavailable"
+
+        repaired = await service.repair_ingestion_job(failed[0].job_id)
+
+        assert repaired.source_id == "stable"
+        assert smol_rag.ingest_text.await_count == 2
+        assert service.list_ingestion_jobs(status="complete")[0].source_id == "stable"

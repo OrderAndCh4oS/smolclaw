@@ -53,6 +53,9 @@ class RuntimeEnvironment:
     agent_configs: Optional[Dict[str, AgentConfig]] = None
     enable_subagents: bool = False
     llm: object = None
+    llm_factory: Callable[..., object] | None = None
+    command_runner: object = None
+    agent_command_runner: Callable[..., object] | None = None
     model_settings: RuntimeModelSettings = field(default_factory=RuntimeModelSettings)
     adapter_config: RuntimeAdapterConfig = field(default_factory=RuntimeAdapterConfig)
 
@@ -166,6 +169,7 @@ def build_master_registry(
         session_manager=env.session_manager,
         capability_names=list(capability_names) if capability_names is not None else None,
         enable_subagents=env.enable_subagents,
+        command_runner=env.agent_command_runner,
     )
 
 
@@ -226,6 +230,7 @@ def build_configured_agent(
         child_smol_rag_resolver=lambda agent_config: resolve_agent_smol_rag(agent_config, env),
         child_hook_runner_configurers_resolver=lambda agent_config: resolve_hook_runner_configurers(agent_config, env),
         llm_factory_kwargs=llm_factory_kwargs,
+        llm_factory=env.llm_factory,
         model_settings=env.model_settings,
         adapter_config=env.adapter_config,
         llm=env.llm,

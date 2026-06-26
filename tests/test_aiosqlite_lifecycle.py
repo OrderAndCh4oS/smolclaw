@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -11,8 +11,8 @@ async def test_close_aiosqlite_connection_uses_bounded_thread_join():
     db.close = AsyncMock()
     db._thread.is_alive.return_value = True
 
-    with patch("app.aiosqlite_lifecycle.asyncio.to_thread", new=AsyncMock()) as to_thread:
-        await close_aiosqlite_connection(db, join_timeout=0.25)
+    to_thread = AsyncMock()
+    await close_aiosqlite_connection(db, join_timeout=0.25, to_thread=to_thread)
 
     db.close.assert_awaited_once()
     to_thread.assert_awaited_once_with(db._thread.join, 0.25)

@@ -2,7 +2,6 @@ import json
 import os
 import subprocess
 import sys
-from unittest.mock import patch
 
 import pytest
 
@@ -300,17 +299,23 @@ expected_status: complete
         }
         return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
 
-    with patch("app.agent_eval.subprocess.run", side_effect=fake_run) as run_mock:
-        report = AgentEvalRunner(
-            mode="live",
-            output_dir=output_dir,
-            model="gpt-test",
-            agent="coder",
-            max_turns=2,
-            timeout_seconds=30,
-        ).run(task_dir)
+    calls = []
 
-    command = run_mock.call_args_list[0].args[0]
+    def recording_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return fake_run(*args, **kwargs)
+
+    report = AgentEvalRunner(
+        mode="live",
+        output_dir=output_dir,
+        model="gpt-test",
+        agent="coder",
+        max_turns=2,
+        timeout_seconds=30,
+        command_runner=recording_run,
+    ).run(task_dir)
+
+    command = calls[0][0][0]
     assert command[:3] == [sys.executable, "-m", "cli.main"]
     assert "--goal" in command
     assert command[command.index("--max-turns") + 1] == "2"

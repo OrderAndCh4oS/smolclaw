@@ -142,6 +142,7 @@ class AgentEvalRunner:
         agent: str | None = None,
         max_turns: int = 3,
         timeout_seconds: int = 300,
+        command_runner=None,
     ):
         if mode not in {"mock", "recorded", "live"}:
             raise ValueError(f"Unsupported eval mode: {mode}")
@@ -152,6 +153,7 @@ class AgentEvalRunner:
         self.agent = agent
         self.max_turns = max(1, max_turns)
         self.timeout_seconds = max(1, timeout_seconds)
+        self.command_runner = command_runner or subprocess.run
 
     def run(self, task_dir: str) -> AgentEvalReport:
         task = load_agent_eval_task(task_dir)
@@ -259,7 +261,7 @@ class AgentEvalRunner:
         command = self._live_command(task, workspace_root, session_key)
         command_outputs: dict[str, str] = {}
         try:
-            result = subprocess.run(
+            result = self.command_runner(
                 command,
                 cwd=os.getcwd(),
                 text=True,
@@ -409,7 +411,7 @@ class AgentEvalRunner:
     def _write_diff(self, workspace_root: str, report_dir: str, task_id: str) -> str:
         path = os.path.join(report_dir, f"{task_id}.diff")
         try:
-            result = subprocess.run(
+            result = self.command_runner(
                 ["git", "diff", "--no-ext-diff"],
                 cwd=workspace_root,
                 text=True,

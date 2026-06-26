@@ -10,8 +10,9 @@ from typing import Any, Literal, Mapping
 
 import yaml
 
+from app.runtime_state import RuntimeSharedState
 from app.workspace import WorkspaceContext
-from app.tools.base import TRACE_RECORDER_STATE_KEY, Tool
+from app.tools.base import Tool
 from app.tools.middleware import NextFn
 from app.tools.permissions import (
     PERMISSION_MODES,
@@ -89,6 +90,7 @@ class PolicyPermissionMiddleware(PermissionMiddleware):
         super().__init__(mode, workspace=workspace)
         self.policy = (policy or PermissionPolicy()).merge(baseline_policy_for_mode(mode))
         self.shared_state = shared_state if shared_state is not None else {}
+        self.runtime_state = RuntimeSharedState(self.shared_state)
         validate_permission_policy(self.policy)
 
     async def __call__(self, tool: Tool, kwargs: dict[str, Any], next_fn: NextFn):
@@ -126,15 +128,8 @@ class PolicyPermissionMiddleware(PermissionMiddleware):
     async def _run_with_approved_bypass(self, tool: Tool, kwargs: dict[str, Any], next_fn: NextFn):
         if tool.name != "run_command":
             return await next_fn(tool, kwargs)
-        previous = self.shared_state.get("allow_denied_command_once")
-        self.shared_state["allow_denied_command_once"] = True
-        try:
+        with self.runtime_state.approved_command_bypass():
             return await next_fn(tool, kwargs)
-        finally:
-            if previous is None:
-                self.shared_state.pop("allow_denied_command_once", None)
-            else:
-                self.shared_state["allow_denied_command_once"] = previous
 
     def resolve(self, tool: Tool, kwargs: Mapping[str, Any]) -> PolicyDecision:
         subjects = self._subjects(tool, kwargs)
@@ -188,7 +183,7 @@ class PolicyPermissionMiddleware(PermissionMiddleware):
         matched_subject: str | None = None,
         matched_pattern: str | None = None,
     ):
-        trace_recorder = self.shared_state.get(TRACE_RECORDER_STATE_KEY)
+        trace_recorder = self.runtime_state.trace_recorder
         if trace_recorder is None:
             return
         trace_recorder.append("permission.decided", {
@@ -201,8 +196,8 @@ class PolicyPermissionMiddleware(PermissionMiddleware):
         })
 
     def _consume_approved_request(self, tool: Tool, kwargs: Mapping[str, Any]):
-        approval_store = self.shared_state.get("approval_store")
-        session_key = self.shared_state.get("session_key")
+        approval_store = self.runtime_state.approval_store
+        session_key = self.runtime_state.session_key
         if approval_store is None or not session_key:
             return None
         return approval_store.consume_approved(
@@ -212,11 +207,11 @@ class PolicyPermissionMiddleware(PermissionMiddleware):
         )
 
     def _create_approval_request(self, tool: Tool, kwargs: Mapping[str, Any], decision: PolicyDecision) -> str | None:
-        approval_store = self.shared_state.get("approval_store")
-        session_key = self.shared_state.get("session_key")
+        approval_store = self.runtime_state.approval_store
+        session_key = self.runtime_state.session_key
         if approval_store is None or not session_key:
             return None
-        trace_recorder = self.shared_state.get(TRACE_RECORDER_STATE_KEY)
+        trace_recorder = self.runtime_state.trace_recorder
         run_id = getattr(trace_recorder, "run_id", None)
         request = approval_store.request(
             str(session_key),
@@ -243,7 +238,7 @@ class PolicyPermissionMiddleware(PermissionMiddleware):
         return request.id
 
     def _emit_approval_resolved(self, tool: Tool, status: str, request=None):
-        trace_recorder = self.shared_state.get(TRACE_RECORDER_STATE_KEY)
+        trace_recorder = self.runtime_state.trace_recorder
         if trace_recorder is None:
             return
         trace_recorder.append("approval.resolved", {

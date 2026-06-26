@@ -4,14 +4,8 @@ import os
 from typing import Any
 
 from app.checkpoints import CheckpointStore, FileSnapshot
-from app.tools.base import (
-    ACTIVE_TOOL_CALL_ID_STATE_KEY,
-    ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY,
-    TRACE_RECORDER_STATE_KEY,
-    Tool,
-    ToolOutcome,
-    normalize_tool_result,
-)
+from app.runtime_state import RuntimeSharedState
+from app.tools.base import Tool, ToolOutcome, normalize_tool_result
 from app.tools.middleware import NextFn
 
 
@@ -36,6 +30,7 @@ class CheckpointMiddleware:
         self.run_id = run_id
         self.prompt_id = prompt_id
         self.shared_state = shared_state if shared_state is not None else {}
+        self.runtime_state = RuntimeSharedState(self.shared_state)
         self.goal_store = goal_store
 
     async def __call__(self, tool: Tool, kwargs: dict[str, Any], next_fn: NextFn) -> ToolOutcome:
@@ -61,8 +56,8 @@ class CheckpointMiddleware:
             metadata={
                 "result_status": normalized.status,
                 "reason": self._mutation_reason(kwargs),
-                "tool_call_id": self.shared_state.get(ACTIVE_TOOL_CALL_ID_STATE_KEY),
-                "tool_trace_event_id": self.shared_state.get(ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY),
+                "tool_call_id": self.runtime_state.active_tool_call_id,
+                "tool_trace_event_id": self.runtime_state.active_tool_trace_event_id,
             },
         )
         if record is not None:
@@ -71,9 +66,17 @@ class CheckpointMiddleware:
         return result
 
     def _record_checkpoint_evidence(self, record):
-        trace_recorder = self.shared_state.get(TRACE_RECORDER_STATE_KEY)
+        trace_recorder = self.runtime_state.trace_recorder
         trace_event = None
         changed_paths = [self._display_path(path) for path in record.changed_paths]
+        skipped_snapshots = [
+            {
+                **snapshot,
+                "path": self._display_path(str(snapshot.get("path") or "")),
+            }
+            for snapshot in record.metadata.get("skipped_snapshots") or []
+            if isinstance(snapshot, dict) and snapshot.get("path")
+        ]
         reason = str(record.metadata.get("reason") or "")
         tool_call_id = record.metadata.get("tool_call_id")
         tool_trace_event_id = record.metadata.get("tool_trace_event_id")
@@ -82,6 +85,7 @@ class CheckpointMiddleware:
                 "checkpoint_id": record.id,
                 "tool_name": record.tool_name,
                 "changed_paths": changed_paths,
+                "skipped_snapshots": skipped_snapshots,
                 "reason": reason or None,
                 "tool_call_id": tool_call_id,
                 "tool_trace_event_id": tool_trace_event_id,

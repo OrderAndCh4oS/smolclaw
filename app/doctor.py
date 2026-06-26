@@ -23,8 +23,15 @@ def check_nltk_resource(resource: str) -> bool:
         return False
 
 
-def run_doctor(workspace_root: str | None = None) -> list[DoctorCheck]:
+def run_doctor(
+    workspace_root: str | None = None,
+    *,
+    env: dict[str, str] | None = None,
+    nltk_resource_checker=None,
+) -> list[DoctorCheck]:
     paths = build_workspace_paths(workspace_root)
+    env = env if env is not None else os.environ
+    nltk_resource_checker = nltk_resource_checker or check_nltk_resource
     checks = [
         DoctorCheck(
             "state_root",
@@ -33,28 +40,28 @@ def run_doctor(workspace_root: str | None = None) -> list[DoctorCheck]:
         ),
         DoctorCheck(
             "openai_key",
-            bool(os.getenv("OPENAI_API_KEY")),
-            "OPENAI_API_KEY configured" if os.getenv("OPENAI_API_KEY") else "OPENAI_API_KEY is not set",
+            bool(env.get("OPENAI_API_KEY")),
+            "OPENAI_API_KEY configured" if env.get("OPENAI_API_KEY") else "OPENAI_API_KEY is not set",
         ),
         DoctorCheck(
             "anthropic_key",
-            bool(os.getenv("ANTHROPIC_API_KEY")),
-            "ANTHROPIC_API_KEY configured" if os.getenv("ANTHROPIC_API_KEY") else "ANTHROPIC_API_KEY is not set",
+            bool(env.get("ANTHROPIC_API_KEY")),
+            "ANTHROPIC_API_KEY configured" if env.get("ANTHROPIC_API_KEY") else "ANTHROPIC_API_KEY is not set",
         ),
         DoctorCheck(
             "nltk_stopwords",
-            check_nltk_resource("corpora/stopwords"),
+            nltk_resource_checker("corpora/stopwords"),
             "NLTK stopwords corpus available",
         ),
         DoctorCheck(
             "nltk_punkt_tab",
-            check_nltk_resource("tokenizers/punkt_tab/english"),
+            nltk_resource_checker("tokenizers/punkt_tab/english"),
             "NLTK punkt_tab tokenizer available",
         ),
         DoctorCheck(
             "gateway_token",
-            bool(os.getenv("SMOLCLAW_GATEWAY_TOKEN")),
-            "SMOLCLAW_GATEWAY_TOKEN configured" if os.getenv("SMOLCLAW_GATEWAY_TOKEN") else "SMOLCLAW_GATEWAY_TOKEN is not set",
+            bool(env.get("SMOLCLAW_GATEWAY_TOKEN")),
+            "SMOLCLAW_GATEWAY_TOKEN configured" if env.get("SMOLCLAW_GATEWAY_TOKEN") else "SMOLCLAW_GATEWAY_TOKEN is not set",
         ),
     ]
     return checks

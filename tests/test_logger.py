@@ -15,11 +15,10 @@ class TestLoggerManagement:
         logger_module.logger.handlers.clear()
 
     def test_set_logger_rotates_when_log_exceeds_max_bytes(self, monkeypatch, temp_dir):
-        monkeypatch.setattr(logger_module, "LOG_DIR", temp_dir)
         monkeypatch.setenv("LOG_MAX_BYTES", "256")
         monkeypatch.setenv("LOG_BACKUP_COUNT", "2")
 
-        logger_module.set_logger("main.log")
+        logger_module.set_logger("main.log", log_dir=temp_dir)
 
         for index in range(20):
             logger_module.logger.info("line-%s %s", index, "x" * 80)
@@ -30,8 +29,7 @@ class TestLoggerManagement:
         assert any(name.startswith("main.log.") for name in files)
 
     def test_clear_logs_removes_files_and_detaches_handlers(self, monkeypatch, temp_dir):
-        monkeypatch.setattr(logger_module, "LOG_DIR", temp_dir)
-        logger_module.set_logger("main.log")
+        logger_module.set_logger("main.log", log_dir=temp_dir)
         logger_module.logger.info("hello")
         _flush_handlers()
 

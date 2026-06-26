@@ -4,6 +4,7 @@ import subprocess
 from typer.testing import CliRunner
 
 from app.work_loop import (
+    CodingLifecycleRunner,
     CommandResult,
     InternalReviewRecord,
     RunWorkspaceManager,
@@ -27,6 +28,7 @@ from app.work_loop import (
     new_actionable_comments,
     summarize_status_checks,
 )
+from app.coding_lifecycle import LifecycleSourceRef, ReviewFeedbackRef
 from app.agent_config import AgentConfigLoader
 from app.runtime_config import RuntimeAdapterConfig
 from app.workspace import WorkspaceContext
@@ -202,6 +204,75 @@ def test_work_loop_ledger_lists_and_formats_status(temp_dir):
     assert "PR: https://github.com/example/repo/pull/7" in status
 
 
+def test_work_loop_ledger_uses_workspace_lifecycle_path(temp_dir):
+    workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+
+    ledger = WorkLoopLedger.for_workspace(workspace)
+
+    assert ledger.root_dir == os.path.realpath(workspace.paths.work_loop_dir)
+    assert workspace.paths.work_loop_dir.endswith(os.path.join(".smolclaw", "work-loop"))
+
+
+def test_work_item_exports_lifecycle_work():
+    item = WorkItem(
+        jira_key="APP-123",
+        title="Fix totals",
+        state="open-pr",
+        task_source_type="jira",
+        jira_url="https://jira.example.invalid/browse/APP-123",
+        branch_name="APP-123-fix-totals",
+        pr_number=42,
+        pr_url="https://github.com/example/repo/pull/42",
+        commits=["abc123"],
+    )
+
+    lifecycle = item.to_lifecycle_work()
+
+    assert lifecycle.source_ref.provider == "jira"
+    assert lifecycle.source_ref.key == "APP-123"
+    assert lifecycle.phase == "open-pr"
+    assert lifecycle.branch_name == "APP-123-fix-totals"
+    assert {ref.kind for ref in lifecycle.publication_refs} == {"commit", "pull_request"}
+
+
+def test_work_item_migrates_source_fields_with_legacy_compatibility():
+    item = WorkItem.from_dict({
+        "schema_version": 1,
+        "source_key": "TASK-9",
+        "source_provider": "linear",
+        "source_url": "https://linear.example/TASK-9",
+        "title": "Provider neutral item",
+    })
+
+    payload = item.to_dict()
+
+    assert item.source_key == "TASK-9"
+    assert item.jira_key == "TASK-9"
+    assert item.source_provider == "linear"
+    assert payload["source_key"] == "TASK-9"
+    assert payload["jira_key"] == "TASK-9"
+    assert payload["source_provider"] == "linear"
+    assert payload["task_source_type"] == "linear"
+
+
+def test_jira_adapter_exposes_discovery_contract():
+    candidate = JiraCandidate(key="APP-1", summary="Fix totals", description="Round correctly.")
+    adapter = FakeJira([candidate])
+
+    # FakeJira deliberately implements the old protocol only; this documents
+    # that the real adapter owns lifecycle discovery conversion.
+    lifecycle = candidate.to_lifecycle_work()
+
+    assert lifecycle.source_ref == LifecycleSourceRef(
+        kind="discovery",
+        provider="jira",
+        key="APP-1",
+        url="",
+        metadata={},
+    )
+    assert lifecycle.title == "Fix totals"
+
+
 def test_run_workspace_cleanup_removes_git_worktree_metadata(temp_dir):
     repo = _git_repo(temp_dir)
     workspace = WorkspaceContext.from_root(repo).ensure_dirs()
@@ -291,6 +362,10 @@ def test_run_tasks_creates_pr_and_records_ticket(temp_dir):
     assert "## Internal review\npassed" in github.last_body
     assert item.internal_review.status == "passed"
     assert not os.path.exists(item.workspace_path)
+
+
+def test_coding_lifecycle_runner_aliases_work_loop_runner():
+    assert CodingLifecycleRunner is WorkLoopRunner
 
 
 def test_run_tasks_persists_matching_execution_profile(temp_dir):
@@ -687,6 +762,40 @@ def test_run_reviews_processes_only_new_actionable_comments(temp_dir):
     assert github.comments[0][0] == 9
 
 
+def test_github_adapter_exposes_followup_contract(temp_dir):
+    runner = FakeCommandRunner()
+    adapter = FakeGitHub()
+    adapter.payloads[9] = {
+        "comments": [
+            {"id": "c1", "body": "Please add a regression test for this case."},
+        ],
+        "reviews": [],
+    }
+    item = WorkItem(
+        jira_key="APP-9",
+        title="Fix review issue",
+        state="open-pr",
+        pr_number=9,
+        processed_review_comments=[],
+    )
+    from app.work_loop import GitHubAdapter
+
+    github = GitHubAdapter(runner)
+    github.view_pr = adapter.view_pr
+    github.comment = adapter.comment
+
+    followups = github.discover_followups(WorkLoopConfig(project="APP"), open_items=[item])
+    response = github.respond(
+        ReviewFeedbackRef(provider="github", pr_number=9, comment_id="c1", body="Please add a regression test."),
+        "Addressed in latest push.",
+    )
+
+    assert followups[0].phase == "responding-to-review"
+    assert followups[0].review_feedback[0].comment_id == "c1"
+    assert response.ok is True
+    assert adapter.comments == [(9, "Addressed in latest push.")]
+
+
 def test_run_reviews_uses_failing_github_checks_without_comments(temp_dir):
     workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
     config = WorkLoopConfig(project="APP", verification_commands=["python -m pytest"])
@@ -817,8 +926,8 @@ def test_in_app_work_loop_stop_pause_resume_control_files(temp_dir):
     assert control.status() == "running"
 
 
-def test_in_app_work_loop_tasks_starts_background_job(temp_dir, monkeypatch):
-    from cli.main import _resolve_work_loop_command
+def test_in_app_work_loop_tasks_starts_background_job(temp_dir):
+    from cli.main import CliDependencies, _resolve_work_loop_command
 
     workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
 
@@ -836,14 +945,13 @@ def test_in_app_work_loop_tasks_starts_background_job(temp_dir, monkeypatch):
                 {"job_id": "job-123", "state": "running", "pid": 99},
             )()
 
-    monkeypatch.setattr("cli.main.WorkLoopJobSupervisor", FakeSupervisor)
-
-    result = _resolve_work_loop_command(workspace, "tasks --project APP --limit 1")
+    deps = CliDependencies(work_loop_supervisor_factory=FakeSupervisor.for_workspace)
+    result = _resolve_work_loop_command(workspace, "tasks --project APP --limit 1", deps=deps)
 
     assert result == "Started work-loop job job-123 [running] pid:99 mode:tasks"
 
 
-def test_work_loop_job_supervisor_start_records_job_metadata(temp_dir, monkeypatch):
+def test_work_loop_job_supervisor_start_records_job_metadata(temp_dir):
     workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
     captured = []
 
@@ -857,10 +965,7 @@ def test_work_loop_job_supervisor_start_records_job_metadata(temp_dir, monkeypat
         def poll(self):
             return None
 
-    monkeypatch.setattr("app.work_loop.subprocess.Popen", FakePopen)
-    monkeypatch.setattr("app.work_loop.os.getpgid", lambda pid: pid)
-
-    supervisor = WorkLoopJobSupervisor.for_workspace(workspace)
+    supervisor = WorkLoopJobSupervisor(workspace, process_factory=FakePopen)
     job = supervisor.start("reviews", ["--workspace", temp_dir])
     loaded = supervisor.store.load(job.job_id)
 
@@ -872,7 +977,7 @@ def test_work_loop_job_supervisor_start_records_job_metadata(temp_dir, monkeypat
     assert captured[0].kwargs["env"]["SMOLCLAW_WORK_LOOP_JOB_ID"] == job.job_id
 
 
-def test_subprocess_runner_keeps_worker_children_in_job_process_group(monkeypatch):
+def test_subprocess_runner_keeps_worker_children_in_job_process_group():
     captured = []
 
     class FakePopen:
@@ -886,12 +991,12 @@ def test_subprocess_runner_keeps_worker_children_in_job_process_group(monkeypatc
         def communicate(self, input=None, timeout=None):
             return "ok\n", ""
 
-    monkeypatch.setattr("app.work_loop.subprocess.Popen", FakePopen)
-    monkeypatch.setenv("SMOLCLAW_WORK_LOOP_JOB_ID", "job-test")
+    from app.command_runner import SubprocessCommandRunner
 
-    from app.work_loop import SubprocessCommandRunner
-
-    result = SubprocessCommandRunner().run(["python", "--version"])
+    result = SubprocessCommandRunner(
+        process_factory=FakePopen,
+        environ={"SMOLCLAW_WORK_LOOP_JOB_ID": "job-test"},
+    ).run(["python", "--version"])
 
     assert result.ok
     assert captured[0].kwargs["start_new_session"] is False

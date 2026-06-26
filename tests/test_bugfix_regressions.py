@@ -1,6 +1,6 @@
 import os
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import numpy as np
 import pytest
@@ -175,9 +175,9 @@ class TestRuntimeRegressions:
             f.write("shared|old")
 
         rag = _build_rag(temp_dir=temp_dir, llm=mock_openai_llm, excerpt_fn=excerpt_fn)
+        rag.ingestion.document_source_provider = lambda _input_docs_dir: [doc_path]
 
-        with patch("app.ingestion.get_docs", return_value=[doc_path]):
-            await rag.import_documents()
+        await rag.import_documents()
 
         original_remove = rag.remove_document_by_id
 
@@ -188,9 +188,8 @@ class TestRuntimeRegressions:
         with open(doc_path, "w") as f:
             f.write("shared|new")
 
-        with patch.object(rag, "remove_document_by_id", new=AsyncMock(side_effect=delayed_remove)):
-            with patch("app.ingestion.get_docs", return_value=[doc_path]):
-                await rag.import_documents()
+        rag.remove_document_by_id = AsyncMock(side_effect=delayed_remove)
+        await rag.import_documents()
 
         doc_id = await rag.source_doc_map.get_right_single(doc_path)
         excerpt_ids = await rag.doc_excerpt_map.get_by_left(doc_id)

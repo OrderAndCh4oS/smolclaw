@@ -1,6 +1,6 @@
 import os
 from datetime import datetime
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, AsyncMock
 
 import pytest
 import yaml
@@ -70,10 +70,10 @@ class TestMemoryRecallTool:
             "content": "remembered",
             "excerpt_ids": ["exc-episode-1"],
         })
-        tool = MemoryRecallTool(mock_smol_rag)
+        mock_promote = AsyncMock()
+        tool = MemoryRecallTool(mock_smol_rag, promote_accessed_excerpts=mock_promote)
 
-        with patch("app.tools.memory_tools._promote_accessed_excerpts", new=AsyncMock()) as mock_promote:
-            result = await tool.execute(query="session summary", mode="topic")
+        result = await tool.execute(query="session summary", mode="topic")
 
         assert result == "remembered"
         mock_promote.assert_awaited_once_with(mock_smol_rag, ["exc-episode-1"])
@@ -100,8 +100,9 @@ class TestMemoryRecallTool:
         })
         tool = MemoryRecallTool(mock_smol_rag).bind(ToolRuntimeContext())
 
-        with patch("app.tools.memory_tools._promote_accessed_excerpts", new=AsyncMock()) as mock_promote:
-            result = await tool.execute(query="session summary", mode="topic")
+        mock_promote = AsyncMock()
+        tool.promote_accessed_excerpts = mock_promote
+        result = await tool.execute(query="session summary", mode="topic")
 
         assert isinstance(result, ToolResult)
         mock_promote.assert_not_awaited()
@@ -116,10 +117,10 @@ class TestMemoryRecallTool:
                 "summary": "shipped",
             },
         })
-        tool = MemoryRecallTool(mock_smol_rag)
+        mock_promote = AsyncMock()
+        tool = MemoryRecallTool(mock_smol_rag, promote_accessed_excerpts=mock_promote)
 
-        with patch("app.tools.memory_tools._promote_accessed_excerpts", new=AsyncMock()) as mock_promote:
-            result = await tool.execute(query="recent work", mode="temporal", days=7)
+        result = await tool.execute(query="recent work", mode="temporal", days=7)
 
         assert isinstance(result, str)
         assert "did the work" in result

@@ -35,6 +35,7 @@ def build_tool_registry(
     hook_runner=None,
     capability_names: Optional[List[str]] = None,
     enable_subagents: bool = False,
+    command_runner=None,
 ) -> ToolRegistry:
     """Build a tool registry with transport-specific providers for each capability."""
     registry = ToolRegistry()
@@ -133,15 +134,15 @@ def build_tool_registry(
                     RunCommandTool,
                 )
 
-                registry.register(GitStatusTool(workspace), capability_name=capability_name)
-                registry.register(GitDiffTool(workspace), capability_name=capability_name)
-                registry.register(GitBranchTool(workspace), capability_name=capability_name)
-                registry.register(GitCheckoutTool(workspace), capability_name=capability_name)
-                registry.register(GitPullTool(workspace), capability_name=capability_name)
-                registry.register(GitAddTool(workspace), capability_name=capability_name)
-                registry.register(GitCommitTool(workspace), capability_name=capability_name)
-                registry.register(GitPushTool(workspace), capability_name=capability_name)
-                registry.register(RunCommandTool(workspace), capability_name=capability_name)
+                registry.register(GitStatusTool(workspace, command_runner=command_runner), capability_name=capability_name)
+                registry.register(GitDiffTool(workspace, command_runner=command_runner), capability_name=capability_name)
+                registry.register(GitBranchTool(workspace, command_runner=command_runner), capability_name=capability_name)
+                registry.register(GitCheckoutTool(workspace, command_runner=command_runner), capability_name=capability_name)
+                registry.register(GitPullTool(workspace, command_runner=command_runner), capability_name=capability_name)
+                registry.register(GitAddTool(workspace, command_runner=command_runner), capability_name=capability_name)
+                registry.register(GitCommitTool(workspace, command_runner=command_runner), capability_name=capability_name)
+                registry.register(GitPushTool(workspace, command_runner=command_runner), capability_name=capability_name)
+                registry.register(RunCommandTool(workspace, command_runner=command_runner), capability_name=capability_name)
         elif capability_name == CAPABILITY_GOAL and session_manager:
             from app.tools.goal import (
                 GoalRecordEvidenceTool,

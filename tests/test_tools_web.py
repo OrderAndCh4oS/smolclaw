@@ -1,4 +1,4 @@
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -51,20 +51,21 @@ class TestWebSearchTool:
             }
         })
 
-        with patch("app.tools.web.httpx.AsyncClient", return_value=_FakeAsyncClient(mock_response)):
-            tool = WebSearchTool(api_key="test-key")
-            result = await tool.execute(query="python")
-            assert "Python" in result
-            assert "python.org" in result
+        tool = WebSearchTool(
+            api_key="test-key",
+            http_client_factory=lambda **_kwargs: _FakeAsyncClient(mock_response),
+        )
+        result = await tool.execute(query="python")
+        assert "Python" in result
+        assert "python.org" in result
 
     @pytest.mark.asyncio
-    async def test_web_search_no_api_key(self):
+    async def test_web_search_no_api_key(self, monkeypatch):
+        monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
         tool = WebSearchTool(api_key=None)
-        # Clear env var too
-        with patch.dict("os.environ", {}, clear=True):
-            tool.api_key = None
-            result = await tool.execute(query="test")
-            assert result.startswith("Error:")
+        tool.api_key = None
+        result = await tool.execute(query="test")
+        assert result.startswith("Error:")
 
 
 class TestWebFetchTool:
@@ -74,10 +75,9 @@ class TestWebFetchTool:
         mock_response.text = "<html><body><p>Hello World</p></body></html>"
         mock_response.raise_for_status = MagicMock()
 
-        with patch("app.tools.web.httpx.AsyncClient", return_value=_FakeAsyncClient(mock_response)):
-            tool = WebFetchTool()
-            result = await tool.execute(url="https://example.com")
-            assert "Hello World" in result
+        tool = WebFetchTool(http_client_factory=lambda **_kwargs: _FakeAsyncClient(mock_response))
+        result = await tool.execute(url="https://example.com")
+        assert "Hello World" in result
 
     @pytest.mark.asyncio
     async def test_web_fetch_bad_url(self):

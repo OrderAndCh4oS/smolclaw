@@ -6,7 +6,7 @@ Equivalent to OpenClaw's gateway.test.ts mock-tool-call flow.
 import json
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from app.gateway import Gateway
 from app.session import SessionManager
@@ -88,6 +88,11 @@ def _get_agent_texts(messages):
     ]
 
 
+def _install_session_agent(gateway: Gateway, session_key: str, agent):
+    gateway._session_agents[session_key] = agent
+    return agent
+
+
 class TestGatewayAgentFlow:
     @pytest.mark.asyncio
     async def test_gateway_chat_invokes_agent_with_correct_message(self, flow_gateway):
@@ -96,8 +101,8 @@ class TestGatewayAgentFlow:
         mock_agent.process = AsyncMock(return_value="Hi there!")
 
         ws = FakeWebSocket()
-        with patch.object(flow_gateway, "_get_or_create_agent", return_value=mock_agent):
-            await _run_chat(flow_gateway, ws, "hello")
+        _install_session_agent(flow_gateway, "test-session", mock_agent)
+        await _run_chat(flow_gateway, ws, "hello")
 
         mock_agent.process.assert_called_once()
         call_args = mock_agent.process.call_args
@@ -141,8 +146,8 @@ class TestGatewayAgentFlow:
             )
 
         ws = FakeWebSocket()
-        with patch.object(flow_gateway, "_get_or_create_agent", side_effect=make_agent):
-            msgs = await _run_chat(flow_gateway, ws, "do echo")
+        _install_session_agent(flow_gateway, "test-session", make_agent("test-session"))
+        msgs = await _run_chat(flow_gateway, ws, "do echo")
 
         phases = _get_lifecycle_phases(msgs)
         assert "start" in phases
@@ -193,8 +198,8 @@ class TestGatewayAgentFlow:
             )
 
         ws = FakeWebSocket()
-        with patch.object(flow_gateway, "_get_or_create_agent", side_effect=make_agent):
-            msgs = await _run_chat(flow_gateway, ws, "search memory for test")
+        _install_session_agent(flow_gateway, "test-session", make_agent("test-session"))
+        msgs = await _run_chat(flow_gateway, ws, "search memory for test")
 
         phases = _get_lifecycle_phases(msgs)
         assert "start" in phases
@@ -235,13 +240,13 @@ class TestGatewayAgentFlow:
 
         # First chat
         ws1 = FakeWebSocket()
-        with patch.object(flow_gateway, "_get_or_create_agent", side_effect=make_agent):
-            await _run_chat(flow_gateway, ws1, "first message", session_key="persist-key")
+        _install_session_agent(flow_gateway, "persist-key", make_agent("persist-key"))
+        await _run_chat(flow_gateway, ws1, "first message", session_key="persist-key")
 
         # Second chat — same session
         ws2 = FakeWebSocket()
-        with patch.object(flow_gateway, "_get_or_create_agent", side_effect=make_agent):
-            await _run_chat(flow_gateway, ws2, "second message", session_key="persist-key")
+        _install_session_agent(flow_gateway, "persist-key", make_agent("persist-key"))
+        await _run_chat(flow_gateway, ws2, "second message", session_key="persist-key")
 
         # The second LLM call should include history from the first conversation
         second_call_msgs = captured_messages[1]
@@ -280,13 +285,13 @@ class TestGatewayAgentFlow:
 
         # Chat on session-a
         ws1 = FakeWebSocket()
-        with patch.object(flow_gateway, "_get_or_create_agent", side_effect=make_agent):
-            await _run_chat(flow_gateway, ws1, "secret from session-a", session_key="session-a")
+        _install_session_agent(flow_gateway, "session-a", make_agent("session-a"))
+        await _run_chat(flow_gateway, ws1, "secret from session-a", session_key="session-a")
 
         # Chat on session-b
         ws2 = FakeWebSocket()
-        with patch.object(flow_gateway, "_get_or_create_agent", side_effect=make_agent):
-            await _run_chat(flow_gateway, ws2, "hello session-b", session_key="session-b")
+        _install_session_agent(flow_gateway, "session-b", make_agent("session-b"))
+        await _run_chat(flow_gateway, ws2, "hello session-b", session_key="session-b")
 
         # Session-b's LLM call should NOT include session-a's content
         session_b_msgs = captured_messages[1]
@@ -336,8 +341,8 @@ class TestGatewayAgentFlow:
             )
 
         ws = FakeWebSocket()
-        with patch.object(flow_gateway, "_get_or_create_agent", side_effect=make_agent):
-            msgs = await _run_chat(flow_gateway, ws, "forever loop")
+        _install_session_agent(flow_gateway, "test-session", make_agent("test-session"))
+        msgs = await _run_chat(flow_gateway, ws, "forever loop")
 
         phases = _get_lifecycle_phases(msgs)
         assert "start" in phases

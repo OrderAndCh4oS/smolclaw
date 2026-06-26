@@ -2,7 +2,9 @@ import os
 import re
 import shlex
 import subprocess
+from collections.abc import Callable
 
+from app.runtime_state import RuntimeSharedState
 from app.tools.base import Tool, ToolCallPolicy, ToolRuntimeContext
 from app.tools.permissions import COMMAND_EXECUTION, SHELL_READ, SHELL_WRITE
 from app.workspace import WorkspaceContext
@@ -31,18 +33,19 @@ def _coerce_bool(value) -> bool:
 
 
 class _WorkspaceCommandMixin:
-    def __init__(self, workspace: WorkspaceContext | str):
+    def __init__(self, workspace: WorkspaceContext | str, command_runner: Callable | None = None):
         if isinstance(workspace, WorkspaceContext):
             self.workspace = workspace
         else:
             self.workspace = WorkspaceContext.from_root(workspace)
+        self.command_runner = command_runner or subprocess.run
 
     def _resolve_cwd(self, cwd: str | None = None) -> tuple[str | None, str | None]:
         return self.workspace.resolve_contained_path(cwd or ".", label="cwd")
 
     def _run(self, args: list[str], cwd: str, timeout: int = 30, max_output_chars: int = 20000) -> str:
         try:
-            result = subprocess.run(
+            result = self.command_runner(
                 args,
                 cwd=cwd,
                 text=True,
@@ -443,12 +446,22 @@ class RunCommandTool(_WorkspaceCommandMixin, Tool):
         "switch",
     }
 
-    def __init__(self, workspace: WorkspaceContext | str, shared_state: dict | None = None):
-        super().__init__(workspace)
+    def __init__(
+        self,
+        workspace: WorkspaceContext | str,
+        shared_state: dict | None = None,
+        command_runner: Callable | None = None,
+    ):
+        super().__init__(workspace, command_runner=command_runner)
         self.shared_state = shared_state if shared_state is not None else {}
+        self.runtime_state = RuntimeSharedState(self.shared_state)
 
     def bind(self, runtime_ctx: ToolRuntimeContext) -> Tool:
-        return RunCommandTool(runtime_ctx.workspace or self.workspace, shared_state=runtime_ctx.shared_state)
+        return RunCommandTool(
+            runtime_ctx.workspace or self.workspace,
+            shared_state=runtime_ctx.shared_state,
+            command_runner=self.command_runner,
+        )
 
     @property
     def default_call_policy(self) -> ToolCallPolicy:
@@ -544,7 +557,7 @@ class RunCommandTool(_WorkspaceCommandMixin, Tool):
         return False, f"unsupported command family: {args[0]}"
 
     def _has_approved_bypass(self) -> bool:
-        return bool(self.shared_state.get("allow_denied_command_once"))
+        return self.runtime_state.allow_denied_command_once
 
     def _is_approval_bypassable(self, args: list[str]) -> bool:
         if args[0] in {"npm", "pnpm", "yarn", "bun"} and len(args) > 1:

@@ -5,15 +5,8 @@ from __future__ import annotations
 import shlex
 from typing import Any
 
-from app.tools.base import (
-    ACTIVE_TOOL_CALL_ID_STATE_KEY,
-    ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY,
-    TRACE_RECORDER_STATE_KEY,
-    Tool,
-    ToolOutcome,
-    normalize_tool_result,
-    tool_policy_effects,
-)
+from app.runtime_state import RuntimeSharedState
+from app.tools.base import Tool, ToolOutcome, normalize_tool_result, tool_policy_effects
 from app.tools.middleware import NextFn
 
 
@@ -26,6 +19,7 @@ class EvidenceMiddleware:
         session_key: str | None = None,
     ):
         self.shared_state = shared_state if shared_state is not None else {}
+        self.runtime_state = RuntimeSharedState(self.shared_state)
         self.goal_store = goal_store
         self.session_key = session_key
 
@@ -88,7 +82,7 @@ class EvidenceMiddleware:
             return
         status = self._command_status(result)
         summary = self._command_summary(command, status)
-        trace_recorder = self.shared_state.get(TRACE_RECORDER_STATE_KEY)
+        trace_recorder = self.runtime_state.trace_recorder
         trace_event = None
         tool_call_id, tool_trace_event_id = self._active_tool_ids()
         if self._is_verification_command(command):
@@ -152,7 +146,7 @@ class EvidenceMiddleware:
             )
         except ValueError:
             return
-        trace_recorder = self.shared_state.get(TRACE_RECORDER_STATE_KEY)
+        trace_recorder = self.runtime_state.trace_recorder
         if trace_recorder is not None:
             evidence_id = getattr(recorded, "evidence_id", None)
             ledger_path = getattr(recorded, "ledger_path", None)
@@ -213,10 +207,7 @@ class EvidenceMiddleware:
         return f"Command {status}: {command}"
 
     def _active_tool_ids(self) -> tuple[str | None, str | None]:
-        return (
-            self.shared_state.get(ACTIVE_TOOL_CALL_ID_STATE_KEY),
-            self.shared_state.get(ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY),
-        )
+        return self.runtime_state.active_tool_ids
 
     def _search_summary(self, tool_name: str, kwargs: dict[str, Any]) -> str:
         path = kwargs.get("path") or "."

@@ -45,6 +45,7 @@ class WorkspacePaths:
     memory_docs_dir: str
     log_dir: str
     cache_dir: str
+    work_loop_dir: str
     research_dir: str
     input_docs_dir: str
     prompt_history_path: str
@@ -68,6 +69,7 @@ def build_workspace_paths(
     data_dir = os.path.join(state_root_dir, "stores")
     sessions_dir = os.path.join(data_dir, "sessions")
     research_dir = os.path.join(state_root_dir, "research")
+    work_loop_dir = os.path.join(state_root_dir, "work-loop")
     return WorkspacePaths(
         root_dir=root_dir,
         state_root_dir=state_root_dir,
@@ -83,6 +85,7 @@ def build_workspace_paths(
         memory_docs_dir=os.path.join(state_root_dir, "memory"),
         log_dir=os.path.join(data_dir, "logs"),
         cache_dir=os.path.join(data_dir, "cache"),
+        work_loop_dir=work_loop_dir,
         research_dir=research_dir,
         input_docs_dir=research_dir,
         prompt_history_path=os.path.join(sessions_dir, "prompt_history.txt"),
@@ -103,6 +106,7 @@ def ensure_workspace_dirs(paths: WorkspacePaths) -> WorkspacePaths:
         paths.memory_docs_dir,
         paths.log_dir,
         paths.cache_dir,
+        paths.work_loop_dir,
         paths.research_dir,
     ):
         os.makedirs(dir_path, exist_ok=True)

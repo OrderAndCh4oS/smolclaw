@@ -1,6 +1,6 @@
 
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 from app.mcp_client import McpClient, McpDeniedException
 
@@ -41,80 +41,102 @@ def mcp_client():
 
 class TestMcpClient:
     @pytest.mark.asyncio
-    async def test_request_token_success(self, mcp_client):
+    async def test_request_token_success(self):
         mock_response = _FakeResponse({"result": {"token": "jwt-token-123"}})
+        mcp_client = McpClient(
+            token_issuer_url="http://localhost:9999/mcp-tokens",
+            gateway_url="http://localhost:9999/mcp",
+            http_client_factory=lambda **_kwargs: _FakeAsyncClient([mock_response]),
+        )
 
-        with patch("app.mcp_client.httpx.AsyncClient", return_value=_FakeAsyncClient([mock_response])):
-
-            token = await mcp_client.request_token("file-read", {"path": "/tmp/test"})
-            assert token == "jwt-token-123"
+        token = await mcp_client.request_token("file-read", {"path": "/tmp/test"})
+        assert token == "jwt-token-123"
 
     @pytest.mark.asyncio
-    async def test_request_token_denied(self, mcp_client):
+    async def test_request_token_denied(self):
         mock_response = _FakeResponse({
             "error": {"code": -32000, "message": "User denied the request"}
         })
+        mcp_client = McpClient(
+            token_issuer_url="http://localhost:9999/mcp-tokens",
+            gateway_url="http://localhost:9999/mcp",
+            http_client_factory=lambda **_kwargs: _FakeAsyncClient([mock_response]),
+        )
 
-        with patch("app.mcp_client.httpx.AsyncClient", return_value=_FakeAsyncClient([mock_response])):
-
-            with pytest.raises(McpDeniedException, match="User denied"):
-                await mcp_client.request_token("file-read", {"path": "/tmp/secret"})
+        with pytest.raises(McpDeniedException, match="User denied"):
+            await mcp_client.request_token("file-read", {"path": "/tmp/secret"})
 
     @pytest.mark.asyncio
-    async def test_call_tool_success(self, mcp_client):
+    async def test_call_tool_success(self):
         mock_response = _FakeResponse({
             "result": {
                 "content": [{"type": "text", "text": "file contents here"}]
             }
         })
+        mcp_client = McpClient(
+            token_issuer_url="http://localhost:9999/mcp-tokens",
+            gateway_url="http://localhost:9999/mcp",
+            http_client_factory=lambda **_kwargs: _FakeAsyncClient([mock_response]),
+        )
 
-        with patch("app.mcp_client.httpx.AsyncClient", return_value=_FakeAsyncClient([mock_response])):
-
-            result = await mcp_client.call_tool("file-read", {"path": "/tmp/test"}, "jwt-token")
-            assert "content" in result
+        result = await mcp_client.call_tool("file-read", {"path": "/tmp/test"}, "jwt-token")
+        assert "content" in result
 
     @pytest.mark.asyncio
-    async def test_call_tool_error(self, mcp_client):
+    async def test_call_tool_error(self):
         mock_response = _FakeResponse({
             "error": {"code": -32001, "message": "Tool execution failed"}
         })
+        mcp_client = McpClient(
+            token_issuer_url="http://localhost:9999/mcp-tokens",
+            gateway_url="http://localhost:9999/mcp",
+            http_client_factory=lambda **_kwargs: _FakeAsyncClient([mock_response]),
+        )
 
-        with patch("app.mcp_client.httpx.AsyncClient", return_value=_FakeAsyncClient([mock_response])):
-
-            with pytest.raises(McpDeniedException, match="Tool execution failed"):
-                await mcp_client.call_tool("file-read", {"path": "/tmp/test"}, "jwt-token")
+        with pytest.raises(McpDeniedException, match="Tool execution failed"):
+            await mcp_client.call_tool("file-read", {"path": "/tmp/test"}, "jwt-token")
 
     @pytest.mark.asyncio
-    async def test_execute_full_flow(self, mcp_client):
+    async def test_execute_full_flow(self):
         """Test the full request_token -> call_tool flow."""
         token_response = _FakeResponse({"result": {"token": "jwt-123"}})
         tool_response = _FakeResponse({
             "result": {"content": [{"type": "text", "text": "output"}]}
         })
+        fake_http_client = _FakeAsyncClient([token_response, tool_response])
+        mcp_client = McpClient(
+            token_issuer_url="http://localhost:9999/mcp-tokens",
+            gateway_url="http://localhost:9999/mcp",
+            http_client_factory=lambda **_kwargs: fake_http_client,
+        )
 
-        with patch("app.mcp_client.httpx.AsyncClient", return_value=_FakeAsyncClient([token_response, tool_response])):
-
-            result = await mcp_client.execute("file-read", {"path": "/tmp/test"})
-            assert "content" in result
+        result = await mcp_client.execute("file-read", {"path": "/tmp/test"})
+        assert "content" in result
 
     @pytest.mark.asyncio
-    async def test_execute_uses_direct_proxy_result_when_gateway_url_is_set(self, mcp_client):
+    async def test_execute_uses_direct_proxy_result_when_gateway_url_is_set(self):
         proxy_response = _FakeResponse({
             "result": {"content": [{"type": "text", "text": "proxied output"}]}
         })
+        mcp_client = McpClient(
+            token_issuer_url="http://localhost:9999/mcp-tokens",
+            gateway_url="http://localhost:9999/mcp",
+            http_client_factory=lambda **_kwargs: _FakeAsyncClient([proxy_response]),
+        )
 
-        with patch("app.mcp_client.httpx.AsyncClient", return_value=_FakeAsyncClient([proxy_response])):
-
-            result = await mcp_client.execute("file-read", {"path": "/tmp/test"})
-            assert result == {"content": [{"type": "text", "text": "proxied output"}]}
+        result = await mcp_client.execute("file-read", {"path": "/tmp/test"})
+        assert result == {"content": [{"type": "text", "text": "proxied output"}]}
 
     @pytest.mark.asyncio
-    async def test_request_token_rejects_direct_proxy_result(self, mcp_client):
+    async def test_request_token_rejects_direct_proxy_result(self):
         proxy_response = _FakeResponse({
             "result": {"content": [{"type": "text", "text": "proxied output"}]}
         })
+        mcp_client = McpClient(
+            token_issuer_url="http://localhost:9999/mcp-tokens",
+            gateway_url="http://localhost:9999/mcp",
+            http_client_factory=lambda **_kwargs: _FakeAsyncClient([proxy_response]),
+        )
 
-        with patch("app.mcp_client.httpx.AsyncClient", return_value=_FakeAsyncClient([proxy_response])):
-
-            with pytest.raises(RuntimeError, match="direct tool result instead of a token"):
-                await mcp_client.request_token("file-read", {"path": "/tmp/test"})
+        with pytest.raises(RuntimeError, match="direct tool result instead of a token"):
+            await mcp_client.request_token("file-read", {"path": "/tmp/test"})

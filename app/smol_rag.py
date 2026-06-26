@@ -56,6 +56,8 @@ class SmolRag:
             embedding_model=None,
             llm_provider=None,
             embedding_provider=None,
+            llm_factory=None,
+            document_source_provider=None,
     ):
         _db = db_path or SQLITE_DB_PATH
         set_logger("smolclaw-rag.log", log_dir=log_dir)
@@ -70,7 +72,8 @@ class SmolRag:
         self.memory_query_model = memory_query_model or MEMORY_QUERY_MODEL
         self.embedding_model = embedding_model or EMBEDDING_MODEL
 
-        self.llm = llm or create_llm(
+        llm_factory = llm_factory or create_llm
+        self.llm = llm or llm_factory(
             self.memory_extract_model,
             self.embedding_model,
             provider=llm_provider,
@@ -116,6 +119,7 @@ class SmolRag:
             overlap=self.overlap,
             ingest_concurrency=self.ingest_concurrency,
             input_docs_dir=self.input_docs_dir,
+            document_source_provider=document_source_provider,
         )
 
     async def __aenter__(self):

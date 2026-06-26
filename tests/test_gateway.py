@@ -3,7 +3,7 @@ import json
 import os
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from app.agent_config import AgentConfig
 from app.definitions import build_workspace_paths
@@ -46,6 +46,11 @@ def _chat_send_msg(message="Hello", session_key="test", req_id="2"):
         "method": "chat.send",
         "params": {"message": message, "sessionKey": session_key},
     })
+
+
+def _install_session_agent(gateway: Gateway, agent, session_key: str = "test"):
+    agent.close = AsyncMock()
+    gateway._session_agents[session_key] = agent
 
 
 class TestGatewayProtocol:
@@ -99,11 +104,11 @@ class TestGatewayProtocol:
     async def test_chat_send_emits_lifecycle_events(self, wired_gateway, fake_ws):
         mock_agent = MagicMock()
         mock_agent.process = AsyncMock(return_value="Hello back!")
+        _install_session_agent(wired_gateway, mock_agent)
 
-        with patch.object(wired_gateway, "_get_or_create_agent", return_value=mock_agent):
-            fake_ws._inbox.put_nowait(_auth_connect_msg())
-            fake_ws._inbox.put_nowait(_chat_send_msg())
-            await wired_gateway._handle_connection(fake_ws)
+        fake_ws._inbox.put_nowait(_auth_connect_msg())
+        fake_ws._inbox.put_nowait(_chat_send_msg())
+        await wired_gateway._handle_connection(fake_ws)
 
         lifecycle_events = [m for m in fake_ws._messages if m.get("event") == "agent"]
         assert any(e["payload"]["data"]["phase"] == "start" for e in lifecycle_events)
@@ -164,11 +169,11 @@ class TestGatewayProtocol:
     async def test_chat_send_agent_error_emits_error_phase(self, wired_gateway, fake_ws):
         mock_agent = MagicMock()
         mock_agent.process = AsyncMock(side_effect=RuntimeError("LLM exploded"))
+        _install_session_agent(wired_gateway, mock_agent)
 
-        with patch.object(wired_gateway, "_get_or_create_agent", return_value=mock_agent):
-            fake_ws._inbox.put_nowait(_auth_connect_msg())
-            fake_ws._inbox.put_nowait(_chat_send_msg())
-            await wired_gateway._handle_connection(fake_ws)
+        fake_ws._inbox.put_nowait(_auth_connect_msg())
+        fake_ws._inbox.put_nowait(_chat_send_msg())
+        await wired_gateway._handle_connection(fake_ws)
 
         lifecycle_events = [m for m in fake_ws._messages if m.get("event") == "agent"]
         phases = [e["payload"]["data"]["phase"] for e in lifecycle_events]
@@ -189,11 +194,11 @@ class TestGatewayProtocol:
 
         mock_agent = MagicMock()
         mock_agent.process = AsyncMock(side_effect=fake_process)
+        _install_session_agent(wired_gateway, mock_agent)
 
-        with patch.object(wired_gateway, "_get_or_create_agent", return_value=mock_agent):
-            fake_ws._inbox.put_nowait(_auth_connect_msg())
-            fake_ws._inbox.put_nowait(_chat_send_msg())
-            await wired_gateway._handle_connection(fake_ws)
+        fake_ws._inbox.put_nowait(_auth_connect_msg())
+        fake_ws._inbox.put_nowait(_chat_send_msg())
+        await wired_gateway._handle_connection(fake_ws)
 
         agent_msgs = [m for m in fake_ws._messages if m.get("event") == "agent.message"]
         # on_output called twice + final response = 3 agent.message events
@@ -218,12 +223,12 @@ class TestGatewayProtocol:
     async def test_multiple_chat_sends_sequential(self, wired_gateway, fake_ws):
         mock_agent = MagicMock()
         mock_agent.process = AsyncMock(side_effect=["Reply 1", "Reply 2"])
+        _install_session_agent(wired_gateway, mock_agent)
 
-        with patch.object(wired_gateway, "_get_or_create_agent", return_value=mock_agent):
-            fake_ws._inbox.put_nowait(_auth_connect_msg())
-            fake_ws._inbox.put_nowait(_chat_send_msg(message="msg1", req_id="2"))
-            fake_ws._inbox.put_nowait(_chat_send_msg(message="msg2", req_id="3"))
-            await wired_gateway._handle_connection(fake_ws)
+        fake_ws._inbox.put_nowait(_auth_connect_msg())
+        fake_ws._inbox.put_nowait(_chat_send_msg(message="msg1", req_id="2"))
+        fake_ws._inbox.put_nowait(_chat_send_msg(message="msg2", req_id="3"))
+        await wired_gateway._handle_connection(fake_ws)
 
         lifecycle_events = [m for m in fake_ws._messages if m.get("event") == "agent"]
         phases = [e["payload"]["data"]["phase"] for e in lifecycle_events]
@@ -234,11 +239,11 @@ class TestGatewayProtocol:
     async def test_chat_send_includes_run_id(self, wired_gateway, fake_ws):
         mock_agent = MagicMock()
         mock_agent.process = AsyncMock(return_value="ok")
+        _install_session_agent(wired_gateway, mock_agent)
 
-        with patch.object(wired_gateway, "_get_or_create_agent", return_value=mock_agent):
-            fake_ws._inbox.put_nowait(_auth_connect_msg())
-            fake_ws._inbox.put_nowait(_chat_send_msg())
-            await wired_gateway._handle_connection(fake_ws)
+        fake_ws._inbox.put_nowait(_auth_connect_msg())
+        fake_ws._inbox.put_nowait(_chat_send_msg())
+        await wired_gateway._handle_connection(fake_ws)
 
         # Collect all runIds from agent-related events
         run_ids = set()
@@ -254,11 +259,11 @@ class TestGatewayProtocol:
     async def test_chat_send_includes_session_key(self, wired_gateway, fake_ws):
         mock_agent = MagicMock()
         mock_agent.process = AsyncMock(return_value="ok")
+        _install_session_agent(wired_gateway, mock_agent, session_key="my-session")
 
-        with patch.object(wired_gateway, "_get_or_create_agent", return_value=mock_agent):
-            fake_ws._inbox.put_nowait(_auth_connect_msg())
-            fake_ws._inbox.put_nowait(_chat_send_msg(session_key="my-session"))
-            await wired_gateway._handle_connection(fake_ws)
+        fake_ws._inbox.put_nowait(_auth_connect_msg())
+        fake_ws._inbox.put_nowait(_chat_send_msg(session_key="my-session"))
+        await wired_gateway._handle_connection(fake_ws)
 
         lifecycle_events = [m for m in fake_ws._messages if m.get("event") == "agent"]
         for e in lifecycle_events:
@@ -278,9 +283,10 @@ class TestGatewayProtocol:
             capabilities=["filesystem"],
         )
 
-        with patch("app.gateway.AgentConfigLoader.load", return_value={"default": config}), \
-            patch("app.gateway.build_configured_agent", return_value=fake_agent):
-            agent = wired_gateway._get_or_create_agent("memoryless-session")
+        wired_gateway.config_loader = lambda _path: {"default": config}
+        wired_gateway.agent_builder = lambda **_kwargs: fake_agent
+
+        agent = wired_gateway._get_or_create_agent("memoryless-session")
 
         assert agent is fake_agent
         assert ON_SESSION_END in fake_agent.hook_runner.events
@@ -299,11 +305,17 @@ class TestGatewayProtocol:
             tools=["spawn_agent"],
         )
 
-        with patch("app.gateway.AgentConfigLoader.load", return_value={"default": config}), \
-            patch("app.gateway.build_configured_agent", return_value=fake_agent) as mock_build:
-            wired_gateway._get_or_create_agent("subagent-session")
+        build_calls = []
 
-        assert mock_build.call_args.kwargs["env"].enable_subagents is True
+        def agent_builder(**kwargs):
+            build_calls.append(kwargs)
+            return fake_agent
+
+        wired_gateway.config_loader = lambda _path: {"default": config}
+        wired_gateway.agent_builder = agent_builder
+        wired_gateway._get_or_create_agent("subagent-session")
+
+        assert build_calls[0]["env"].enable_subagents is True
 
     def test_get_or_create_agent_uses_workspace_scoped_runtime_env(self, mock_smol_rag, temp_dir):
         workspace_root = os.path.join(temp_dir, "topic-a")
@@ -328,12 +340,18 @@ class TestGatewayProtocol:
             tools=["read_file"],
         )
 
-        with patch("app.gateway.AgentConfigLoader.load", return_value={"default": config}), \
-            patch("app.gateway.build_configured_agent", return_value=fake_agent) as mock_build:
-            gateway._get_or_create_agent("workspace-session")
+        build_calls = []
+
+        def agent_builder(**kwargs):
+            build_calls.append(kwargs)
+            return fake_agent
+
+        gateway.config_loader = lambda _path: {"default": config}
+        gateway.agent_builder = agent_builder
+        gateway._get_or_create_agent("workspace-session")
 
         expected = build_workspace_paths(workspace_root)
-        env = mock_build.call_args.kwargs["env"]
+        env = build_calls[0]["env"]
         assert env.memory_docs_dir == expected.memory_docs_dir
         assert env.workspace.root_dir == os.path.realpath(expected.root_dir)
         assert env.llm_db_path == expected.sqlite_db_path

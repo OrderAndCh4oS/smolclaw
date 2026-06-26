@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Callable
 from typing import Any, Dict
 
 import httpx
@@ -22,10 +23,12 @@ class McpClient:
         token_issuer_url: str,
         gateway_url: str | None = None,
         timeout: float = 30.0,
+        http_client_factory: Callable[..., object] | None = None,
     ):
         self.token_issuer_url = token_issuer_url
         self.gateway_url = gateway_url
         self.timeout = timeout
+        self.http_client_factory = http_client_factory or httpx.AsyncClient
 
     async def _request_execution(self, tool: str, params: Dict[str, Any]) -> Dict[str, Any]:
         payload = {
@@ -34,7 +37,7 @@ class McpClient:
             "method": "request_token",
             "params": {"tool": tool, "arguments": params},
         }
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self.http_client_factory(timeout=self.timeout) as client:
             response = await client.post(
                 self.token_issuer_url,
                 json=payload,
@@ -68,7 +71,7 @@ class McpClient:
             "method": "tools/call",
             "params": {"name": tool, "arguments": params},
         }
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self.http_client_factory(timeout=self.timeout) as client:
             response = await client.post(
                 self.gateway_url,
                 json=payload,

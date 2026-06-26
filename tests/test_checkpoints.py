@@ -7,7 +7,7 @@ import pytest
 from app.checkpoints import CheckpointStore, MAX_SNAPSHOT_BYTES
 from app.goal_ledger import GoalLedgerStore
 from app.run_trace import RunTraceStore
-from app.tools.base import ACTIVE_TOOL_CALL_ID_STATE_KEY, ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY
+from app.tools.base import ACTIVE_TOOL_CALL_ID_STATE_KEY, ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY, TRACE_RECORDER_STATE_KEY
 from app.tools.checkpointing import CheckpointMiddleware
 from app.tools.filesystem import ApplyPatchTool, EditFileTool, WriteFileTool
 from app.tools.middleware import MiddlewareChain
@@ -307,14 +307,30 @@ class TestCheckpointUndo:
     async def test_undo_refuses_skipped_snapshot(self, temp_dir):
         workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
         store = CheckpointStore(os.path.join(temp_dir, "stores", "checkpoints"))
+        trace_store = RunTraceStore(os.path.join(temp_dir, "stores", "traces"))
+        recorder = trace_store.start_run("session-a")
         chain = MiddlewareChain([
-            CheckpointMiddleware(store, workspace=workspace, session_key="session-a"),
+            CheckpointMiddleware(
+                store,
+                workspace=workspace,
+                session_key="session-a",
+                shared_state={TRACE_RECORDER_STATE_KEY: recorder},
+            ),
         ])
 
         await chain.run(WriteFileTool(workspace=workspace), {
             "path": "large.txt",
             "content": "x" * (MAX_SNAPSHOT_BYTES + 1),
         })
+
+        record = store.latest(session_key="session-a")
+        assert record is not None
+        skipped = record.metadata["skipped_snapshots"]
+        assert skipped[0]["phase"] == "after"
+        assert skipped[0]["reason"] == f"larger than {MAX_SNAPSHOT_BYTES} bytes"
+        events = trace_store.load_events(recorder.session_key, recorder.run_id)
+        checkpoint_event = next(event for event in events if event.event == "checkpoint.created")
+        assert checkpoint_event.data["skipped_snapshots"][0]["path"] == "large.txt"
 
         undo = store.undo_last(session_key="session-a")
         assert undo.ok is False

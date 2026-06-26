@@ -12,14 +12,12 @@ from app.hooks import HookRunner, ON_SESSION_START, ON_BEFORE_TURN, ON_AFTER_TUR
 from app.logger import logger
 from app.session import Session, SessionManager
 from app.tools.base import (
-    ACTIVE_TOOL_CALL_ID_STATE_KEY,
-    ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY,
-    TRACE_RECORDER_STATE_KEY,
     ToolResult,
     normalize_tool_result,
 )
 from app.tools.registry import ToolRegistry
 from app.pricing import aggregate_cost
+from app.runtime_state import RuntimeSharedState
 from app.usage import UsageCollector, SessionUsage, TurnUsage
 
 
@@ -60,6 +58,7 @@ class AgentLoop:
         self.model_settings = model_settings
         self.trace_store = trace_store
         self.runtime_shared_state = runtime_shared_state if runtime_shared_state is not None else {}
+        self.runtime_state = RuntimeSharedState(self.runtime_shared_state)
         if not self.behaviors:
             legacy_behavior_names = []
             if planning:
@@ -225,7 +224,7 @@ class AgentLoop:
             },
         )
         self._trace_recorder = recorder
-        self.runtime_shared_state[TRACE_RECORDER_STATE_KEY] = recorder
+        self.runtime_state.trace_recorder = recorder
         return recorder
 
     def _finish_trace(self, status: str, stop_reason: str | None = None):
@@ -238,10 +237,10 @@ class AgentLoop:
             logger.warning("Failed to finish run trace: %s", exc)
         finally:
             self._trace_recorder = None
-            self.runtime_shared_state.pop(TRACE_RECORDER_STATE_KEY, None)
+            self.runtime_state.trace_recorder = None
 
     def _pending_approval_count(self) -> int:
-        approval_store = self.runtime_shared_state.get("approval_store")
+        approval_store = self.runtime_state.approval_store
         if approval_store is None:
             return 0
         list_fn = getattr(approval_store, "list", None)
@@ -537,32 +536,14 @@ class AgentLoop:
                 }, turn_index=current_turn_index, iteration=iteration)
 
                 started_at = time.perf_counter()
-                previous_tool_trace_event_id = self.runtime_shared_state.get(
-                    ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY,
-                )
-                previous_tool_call_id = self.runtime_shared_state.get(ACTIVE_TOOL_CALL_ID_STATE_KEY)
-                if tool_started_event is not None:
-                    self.runtime_shared_state[ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY] = (
-                        tool_started_event.event_id
-                    )
-                if tool_call.get("id"):
-                    self.runtime_shared_state[ACTIVE_TOOL_CALL_ID_STATE_KEY] = tool_call["id"]
-                try:
+                with self.runtime_state.scoped_tool_call(
+                    tool_call_id=tool_call.get("id"),
+                    tool_trace_event_id=(
+                        tool_started_event.event_id if tool_started_event is not None else None
+                    ),
+                ):
                     with self._usage_collector.category("context_retrieval"):
                         tool_result = await self._invoke_tool(name, arguments)
-                finally:
-                    if previous_tool_trace_event_id is None:
-                        self.runtime_shared_state.pop(ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY, None)
-                    else:
-                        self.runtime_shared_state[ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY] = (
-                            previous_tool_trace_event_id
-                        )
-                    if previous_tool_call_id is None:
-                        self.runtime_shared_state.pop(ACTIVE_TOOL_CALL_ID_STATE_KEY, None)
-                    else:
-                        self.runtime_shared_state[ACTIVE_TOOL_CALL_ID_STATE_KEY] = (
-                            previous_tool_call_id
-                        )
                 tool_duration_ms = int((time.perf_counter() - started_at) * 1000)
                 turn.tool_duration_ms += tool_duration_ms
                 ok = tool_result.ok

@@ -1,10 +1,15 @@
 import asyncio
 import os
+import tempfile
 from typing import Optional
 
 import networkx as nx
 
+from app import diagnostics
 from app.logger import logger
+
+
+GRAPH_STORE_SCHEMA_VERSION = 1
 
 
 class NetworkXGraphStore:
@@ -16,11 +21,33 @@ class NetworkXGraphStore:
                 self.graph = nx.read_graphml(file_path)
                 logger.info(f"Knowledge graph loaded from {file_path}")
             except Exception as e:
+                diagnostics.record_exception(e, boundary="graph_store.load", path=file_path)
                 logger.error(f"Error loading knowledge graph from {file_path}: {e}")
                 self.graph = nx.Graph()
         else:
             self.graph = nx.Graph()
             logger.info("No existing knowledge graph found; creating a new one.")
+        self._ensure_metadata()
+
+    def _ensure_metadata(self):
+        self.graph.graph.setdefault("schema_version", str(GRAPH_STORE_SCHEMA_VERSION))
+
+    def _write_graphml_atomic(self):
+        self._ensure_metadata()
+        directory = os.path.dirname(os.path.realpath(self.file_path)) or "."
+        os.makedirs(directory, exist_ok=True)
+        fd, temp_path = tempfile.mkstemp(
+            prefix=f".{os.path.basename(self.file_path)}.",
+            suffix=".tmp",
+            dir=directory,
+        )
+        os.close(fd)
+        try:
+            nx.write_graphml(self.graph, temp_path)
+            os.replace(temp_path, self.file_path)
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
 
     def get_node(self, name):
         logger.debug(f"Getting node {name}")
@@ -160,11 +187,10 @@ class NetworkXGraphStore:
             )
 
     def save(self):
-        # Note: This is synchronous and blocks. For production, should be async
-        nx.write_graphml(self.graph, self.file_path)
+        self._write_graphml_atomic()
 
     async def async_save(self):
-        """Async version that runs save in executor to avoid blocking."""
+        """Async version that runs atomic persistence in executor to avoid blocking."""
         async with self._lock:
-            await asyncio.to_thread(nx.write_graphml, self.graph, self.file_path)
+            await asyncio.to_thread(self._write_graphml_atomic)
             logger.info(f"Graph saved to {self.file_path}")

@@ -22,7 +22,7 @@ class IngestionPipeline:
     """Handles document ingestion: chunking, embedding, entity extraction, and provenance tracking."""
 
     def __init__(self, stores, llm_provider, doc_manager, excerpt_fn, excerpt_size=2000, overlap=200,
-                 ingest_concurrency=4, input_docs_dir=None):
+                 ingest_concurrency=4, input_docs_dir=None, document_source_provider=None):
         self.stores = stores
         self._llm_provider = llm_provider
         self.doc_manager = doc_manager
@@ -31,6 +31,7 @@ class IngestionPipeline:
         self.overlap = overlap
         self.ingest_concurrency = max(1, ingest_concurrency)
         self.input_docs_dir = input_docs_dir
+        self.document_source_provider = document_source_provider or get_docs
         self._current_ingest_source = "extraction"
 
     async def _get_completion(self, *args, **kwargs):
@@ -113,7 +114,7 @@ class IngestionPipeline:
             await self._save_stores()
 
     async def import_documents(self):
-        sources = get_docs(self.input_docs_dir)
+        sources = self.document_source_provider(self.input_docs_dir)
         semaphore = asyncio.Semaphore(self.ingest_concurrency)
         await asyncio.gather(*(self._process_source(source, semaphore) for source in sources))
         await self._save_stores()
@@ -123,8 +124,8 @@ class IngestionPipeline:
             self.stores.embeddings_db.save(),
             self.stores.entities_db.save(),
             self.stores.relationships_db.save(),
+            self.stores.graph.async_save(),
         )
-        self.stores.graph.save()
 
     async def _process_source(self, source, semaphore):
         async with semaphore:

@@ -264,24 +264,23 @@ class TestPolicyPermissionMiddleware:
         assert normalize_tool_result(result).status == "denied"
 
     @pytest.mark.asyncio
-    async def test_approved_install_command_bypasses_intrinsic_allowlist_once(self, temp_dir, monkeypatch):
+    async def test_approved_install_command_bypasses_intrinsic_allowlist_once(self, temp_dir):
         workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
         approval_store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
         shared_state = {
             "approval_store": approval_store,
             "session_key": "session-a",
         }
-        tool = RunCommandTool(workspace, shared_state=shared_state)
-        chain = MiddlewareChain([
-            PolicyPermissionMiddleware("execute", policy=PermissionPolicy(), shared_state=shared_state),
-        ])
         calls = []
 
         def fake_run(args, **kwargs):
             calls.append(args)
             return subprocess.CompletedProcess(args=args, returncode=0, stdout="installed\n", stderr="")
 
-        monkeypatch.setattr("app.tools.command.subprocess.run", fake_run)
+        tool = RunCommandTool(workspace, shared_state=shared_state, command_runner=fake_run)
+        chain = MiddlewareChain([
+            PolicyPermissionMiddleware("execute", policy=PermissionPolicy(), shared_state=shared_state),
+        ])
 
         first = await chain.run(tool, {"command": "npm install left-pad"})
         pending = approval_store.list("session-a", status="pending")

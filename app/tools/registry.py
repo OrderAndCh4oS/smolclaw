@@ -1,3 +1,4 @@
+import re
 from typing import Any, Dict, List, Optional, Set
 
 from app import diagnostics
@@ -52,15 +53,19 @@ class ToolRegistry:
         ]
 
     def search_tools(self, query: str) -> List[dict]:
-        """Search deferred tools by case-insensitive substring match on name and description."""
-        query_lower = query.lower()
+        """Search deferred tools with deterministic lexical ranking."""
+        query_lower = query.lower().strip()
+        terms = _search_terms(query_lower)
+        if not terms:
+            return []
         matches = []
         for tool in self._tools.values():
             if not tool.deferred or tool.name in self._exposed:
                 continue
-            if query_lower in tool.name.lower() or query_lower in tool.description.lower():
-                matches.append(tool.to_schema())
-        return matches
+            score = _tool_search_score(tool, query_lower, terms)
+            if score > 0:
+                matches.append((score, tool.name, tool.to_schema()))
+        return [schema for _score, _name, schema in sorted(matches, key=lambda item: (-item[0], item[1]))]
 
     def expose_tool(self, name: str):
         """Mark a deferred tool as visible in get_definitions()."""
@@ -181,3 +186,37 @@ class ToolRegistry:
                 )
 
         return projected
+
+
+def _search_terms(query: str) -> list[str]:
+    return [term for term in re.split(r"[^a-z0-9_]+", query.lower()) if term]
+
+
+def _tool_tokens(value: str) -> set[str]:
+    return set(_search_terms(value.replace("_", " ")))
+
+
+def _tool_search_score(tool: Tool, query: str, terms: list[str]) -> int:
+    name = tool.name.lower()
+    description = tool.description.lower()
+    name_tokens = _tool_tokens(name)
+    description_tokens = _tool_tokens(description)
+    score = 0
+    if query == name:
+        score += 200
+    if name.startswith(query):
+        score += 100
+    if query in name:
+        score += 60
+    if query in description:
+        score += 15
+    for term in terms:
+        if term in name_tokens:
+            score += 35
+        elif term in name:
+            score += 20
+        if term in description_tokens:
+            score += 10
+        elif term in description:
+            score += 4
+    return score

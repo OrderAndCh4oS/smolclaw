@@ -182,6 +182,31 @@ class DeferredDummyTool(Tool):
         return "deferred result"
 
 
+class DeferredNamedTool(Tool):
+    def __init__(self, name: str, description: str):
+        self._name = name
+        self._description = description
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def description(self) -> str:
+        return self._description
+
+    @property
+    def parameters(self) -> dict:
+        return {"type": "object", "properties": {}}
+
+    @property
+    def deferred(self) -> bool:
+        return True
+
+    async def execute(self, **kwargs) -> str:
+        return "deferred result"
+
+
 class SearchTool(Tool):
     @property
     def name(self) -> str:
@@ -238,6 +263,15 @@ class TestDeferredTools:
         registry.expose_tool("deferred_dummy")
         matches = registry.search_tools("deferred")
         assert len(matches) == 0
+
+    def test_search_tools_ranks_exact_name_before_description_match(self):
+        registry = ToolRegistry()
+        registry.register(DeferredNamedTool("alpha_exact", "mentions beta"))
+        registry.register(DeferredNamedTool("beta", "less specific"))
+
+        matches = registry.search_tools("beta")
+
+        assert [match["function"]["name"] for match in matches] == ["beta", "alpha_exact"]
 
     def test_expose_tool_makes_deferred_visible(self):
         registry = ToolRegistry()

@@ -1,4 +1,6 @@
 import asyncio
+import contextlib
+import contextvars
 import inspect
 import json
 import logging
@@ -8,6 +10,8 @@ import shlex
 import sys
 import threading
 import uuid
+from dataclasses import dataclass, replace
+from collections.abc import Callable
 from typing import Optional
 
 import typer
@@ -23,6 +27,7 @@ from app.agent_loop import AgentLoop
 from app.approvals import ApprovalRequestStore
 from app.bootstrap import init_project_guidance
 from app.checkpoints import CheckpointStore
+from app.command_adapters import build_command_adapter_bundle
 from app.definitions import (
     AGENT_MODEL, WORKSPACE_DIR, build_workspace_paths,
 )
@@ -154,6 +159,75 @@ console = Console()
 DEFAULT_AGENTS_CONFIG = os.path.join(os.path.dirname(os.path.dirname(__file__)), "agents.yaml")
 
 
+@dataclass
+class CliDependencies:
+    console: Console = console
+    prompt_session_factory: Callable = PromptSession
+    async_runner: Callable = asyncio.run
+    runtime_builder: Callable = build_runtime_services
+    agent_builder: Callable = build_configured_agent
+    tool_registry_builder: Callable = build_master_registry
+    worktree_runner_factory: Callable = WorktreeRunner
+    default_chat_agent_builder: Callable | None = None
+    multiagent_builder: Callable | None = None
+    memory_store_tool_factory: Callable = MemoryStoreTool
+    session_export_hook_factory: Callable = SessionExportHook
+    goal_store_factory: Callable = GoalLedgerStore
+    checkpoint_store_factory: Callable = CheckpointStore
+    approval_store_factory: Callable = ApprovalRequestStore
+    tui_factory: Callable | None = None
+    run_once_runner: Callable | None = None
+    tui_chat_loop_runner: Callable | None = None
+    research_loop_runner: Callable | None = None
+    work_loop_supervisor_factory: Callable = WorkLoopJobSupervisor.for_workspace
+    work_loop_runner_factory: Callable = WorkLoopRunner
+    research_stop_controller_factory: Callable | None = None
+
+
+_CLI_DEPENDENCIES: contextvars.ContextVar[CliDependencies | None] = contextvars.ContextVar(
+    "smolclaw_cli_dependencies",
+    default=None,
+)
+
+
+def get_cli_dependencies(deps: CliDependencies | None = None) -> CliDependencies:
+    return deps or _CLI_DEPENDENCIES.get() or CliDependencies()
+
+
+@contextlib.contextmanager
+def override_cli_dependencies(**overrides):
+    token = _CLI_DEPENDENCIES.set(replace(get_cli_dependencies(), **overrides))
+    try:
+        yield _CLI_DEPENDENCIES.get()
+    finally:
+        _CLI_DEPENDENCIES.reset(token)
+
+
+def _accepts_deps(func: Callable) -> bool:
+    try:
+        params = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return False
+    return "deps" in params or any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values())
+
+
+def _call_with_optional_deps(func: Callable, *args, deps: CliDependencies, **kwargs):
+    if _accepts_deps(func):
+        return func(*args, deps=deps, **kwargs)
+    return func(*args, **kwargs)
+
+
+def _call_factory_with_supported_kwargs(factory: Callable, **kwargs):
+    try:
+        params = inspect.signature(factory).parameters
+    except (TypeError, ValueError):
+        return factory(**kwargs)
+    if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()):
+        return factory(**kwargs)
+    supported = {name: value for name, value in kwargs.items() if name in params}
+    return factory(**supported)
+
+
 @app.callback(invoke_without_command=True)
 def main(ctx: typer.Context):
     from app.tracing import init_tracing
@@ -239,6 +313,23 @@ def _workspace_context(workspace_root: str) -> WorkspaceContext:
     return WorkspaceContext.from_root(workspace_root).ensure_dirs()
 
 
+def _workspace_for_config(workspace: str | WorkspaceContext) -> WorkspaceContext:
+    return workspace if isinstance(workspace, WorkspaceContext) else WorkspaceContext.from_root(workspace)
+
+
+def _command_adapters_for_workspace(workspace: str | WorkspaceContext):
+    adapter_config = load_runtime_config(_workspace_for_config(workspace))
+    return build_command_adapter_bundle(adapter_config.command)
+
+
+def _build_worktree_runner(workspace: str | WorkspaceContext, deps: CliDependencies):
+    command_adapters = _command_adapters_for_workspace(workspace)
+    return _call_factory_with_supported_kwargs(
+        deps.worktree_runner_factory,
+        command_runner=command_adapters.infrastructure_runner,
+    )
+
+
 def _state_root_for_workspace(workspace_root: str) -> str:
     return build_workspace_paths(workspace_root).state_root_dir
 
@@ -265,8 +356,10 @@ def _build_cli_runtime(
     llm=None,
     smol_rag=None,
     session_manager=None,
+    deps: CliDependencies | None = None,
 ):
-    return build_runtime_services(
+    deps = get_cli_dependencies(deps)
+    return deps.runtime_builder(
         workspace,
         transport="direct",
         agent_configs=agent_configs,
@@ -427,7 +520,9 @@ def _format_research_loop_exit(
 
 
 def _build_cli_tool_registry(smol_rag: SmolRag, workspace: str | WorkspaceContext, llm=None,
-                              agent_configs=None, session_manager=None, enable_subagents: bool = False):
+                              agent_configs=None, session_manager=None, enable_subagents: bool = False,
+                              deps: CliDependencies | None = None):
+    deps = get_cli_dependencies(deps)
     runtime = _build_cli_runtime(
         workspace,
         agent_configs=agent_configs,
@@ -435,8 +530,9 @@ def _build_cli_tool_registry(smol_rag: SmolRag, workspace: str | WorkspaceContex
         llm=llm,
         smol_rag=smol_rag,
         session_manager=session_manager,
+        deps=deps,
     )
-    return build_master_registry(runtime.env)
+    return deps.tool_registry_builder(runtime.env)
 
 
 def _build_multiagent(
@@ -449,7 +545,9 @@ def _build_multiagent(
     auto_export: bool,
     child_loop_registrar=None,
     model_override: Optional[str] = None,
+    deps: CliDependencies | None = None,
 ) -> AgentLoop:
+    deps = get_cli_dependencies(deps)
     from app.agent_config import AgentConfigLoader
 
     configs = AgentConfigLoader.load(agents_config_path)
@@ -463,8 +561,9 @@ def _build_multiagent(
         enable_subagents=True,
         smol_rag=smol_rag,
         session_manager=session_manager,
+        deps=deps,
     ).env
-    return build_configured_agent(
+    return deps.agent_builder(
         config=configs[agent_name],
         env=env,
         session_key_prefix=session_key,
@@ -481,7 +580,9 @@ def _build_default_chat_agent(
     workspace: str | WorkspaceContext,
     session_manager: SessionManager,
     child_loop_registrar=None,
+    deps: CliDependencies | None = None,
 ) -> AgentLoop:
+    deps = get_cli_dependencies(deps)
     from app.agent_config import AgentConfigLoader
 
     configs = AgentConfigLoader.load(agents_config_path)
@@ -496,8 +597,9 @@ def _build_default_chat_agent(
         enable_subagents=True,
         smol_rag=smol_rag,
         session_manager=session_manager,
+        deps=deps,
     ).env
-    return build_configured_agent(
+    return deps.agent_builder(
         config=configs["default"],
         env=env,
         session_key=session_key,
@@ -520,7 +622,10 @@ def chat(
     keep_worktree: bool = typer.Option(False, "--keep-worktree", help="Keep the isolated worktree after chat exits"),
 ):
     """Start an interactive chat session."""
-    asyncio.run(_tui_chat_loop(
+    deps = get_cli_dependencies()
+    runner = deps.tui_chat_loop_runner or _tui_chat_loop
+    deps.async_runner(_call_with_optional_deps(
+        runner,
         session_key,
         workspace,
         model,
@@ -531,6 +636,7 @@ def chat(
         worktree=worktree,
         copy_dirty_worktree=copy_dirty_worktree,
         keep_worktree=keep_worktree,
+        deps=deps,
     ))
 
 
@@ -552,7 +658,10 @@ def run_once(
     """Run one non-interactive agent prompt and print a JSON result."""
     if max_turns < 1:
         raise typer.BadParameter("--max-turns must be greater than 0")
-    result = asyncio.run(_run_once(
+    deps = get_cli_dependencies()
+    runner = deps.run_once_runner or _run_once
+    result = deps.async_runner(_call_with_optional_deps(
+        runner,
         prompt=prompt,
         session_key=session_key,
         workspace=workspace,
@@ -565,8 +674,9 @@ def run_once(
         worktree=worktree,
         copy_dirty_worktree=copy_dirty_worktree,
         keep_worktree=keep_worktree,
+        deps=deps,
     ))
-    console.print(json.dumps(result, indent=2, sort_keys=True))
+    deps.console.print(json.dumps(result, indent=2, sort_keys=True))
 
 
 def _load_work_loop_config(
@@ -617,7 +727,9 @@ def _build_work_loop_runner(
     config_path: str,
     project: str = "",
     max_concurrency: int | None = None,
+    deps: CliDependencies | None = None,
 ) -> WorkLoopRunner:
+    deps = get_cli_dependencies(deps)
     workspace_ctx = _workspace_context(workspace)
     adapter_config = load_runtime_config(workspace_ctx)
     config = _load_work_loop_config(
@@ -626,7 +738,13 @@ def _build_work_loop_runner(
         max_concurrency=max_concurrency,
         adapter_config=adapter_config,
     )
-    return WorkLoopRunner(workspace=workspace_ctx, config=config)
+    command_adapters = build_command_adapter_bundle(adapter_config.command)
+    return _call_factory_with_supported_kwargs(
+        deps.work_loop_runner_factory,
+        workspace=workspace_ctx,
+        config=config,
+        command_runner=command_adapters.infrastructure_runner,
+    )
 
 
 def _work_loop_worker_args(
@@ -655,9 +773,11 @@ def _start_work_loop_job(
     workspace: str,
     mode: str,
     worker_args: list[str],
+    deps: CliDependencies | None = None,
 ) -> str:
+    deps = get_cli_dependencies(deps)
     workspace_ctx = _workspace_context(workspace)
-    job = WorkLoopJobSupervisor.for_workspace(workspace_ctx).start(mode, worker_args)
+    job = deps.work_loop_supervisor_factory(workspace_ctx).start(mode, worker_args)
     return f"Started work-loop job {job.job_id} [{job.state}] pid:{job.pid or '<none>'} mode:{mode}"
 
 
@@ -671,7 +791,9 @@ def _run_work_loop_mode(
     max_concurrency: int | None = None,
     dry_run: bool = False,
     job_id: str | None = None,
+    deps: CliDependencies | None = None,
 ) -> str:
+    deps = get_cli_dependencies(deps)
     workspace_ctx = _workspace_context(workspace)
     adapter_config = load_runtime_config(workspace_ctx)
     config = _load_work_loop_config(
@@ -680,14 +802,20 @@ def _run_work_loop_mode(
         max_concurrency=max_concurrency,
         adapter_config=adapter_config,
     )
-    runner = WorkLoopRunner(workspace=workspace_ctx, config=config, job_id=job_id)
+    command_adapters = build_command_adapter_bundle(adapter_config.command)
+    runner = _call_factory_with_supported_kwargs(
+        deps.work_loop_runner_factory,
+        workspace=workspace_ctx,
+        config=config,
+        job_id=job_id,
+        command_runner=command_adapters.infrastructure_runner,
+    )
     if mode == "tasks":
         return format_work_items(runner.run_tasks(limit=limit, dry_run=dry_run))
     if mode == "reviews":
         return format_work_items(runner.run_reviews(dry_run=dry_run))
     if mode == "run":
-        review_items = runner.run_reviews(dry_run=dry_run)
-        task_items = runner.run_tasks(limit=limit, dry_run=dry_run)
+        review_items, task_items = runner.run_all(limit=limit, dry_run=dry_run)
         return "\n\n".join([
             "Review follow-up:",
             format_work_items(review_items),
@@ -731,7 +859,13 @@ def _int_option(value: str | None, *, label: str) -> int | None:
     return parsed
 
 
-def _resolve_work_loop_command(workspace: WorkspaceContext, command_arg: str) -> str:
+def _resolve_work_loop_command(
+    workspace: WorkspaceContext,
+    command_arg: str,
+    *,
+    deps: CliDependencies | None = None,
+) -> str:
+    deps = get_cli_dependencies(deps)
     try:
         parts = shlex.split(command_arg)
     except ValueError as exc:
@@ -759,7 +893,7 @@ def _resolve_work_loop_command(workspace: WorkspaceContext, command_arg: str) ->
             if target == "all":
                 control.stop(reason)
                 terminate_active_work_loop_processes()
-            jobs = WorkLoopJobSupervisor.for_workspace(workspace).stop(target, reason=reason)
+            jobs = deps.work_loop_supervisor_factory(workspace).stop(target, reason=reason)
             suffix = f" ({len(jobs)} job(s))" if jobs else ""
             return f"Work-loop stop requested for {target}: {reason}{suffix}"
         if subcommand == "pause":
@@ -767,7 +901,7 @@ def _resolve_work_loop_command(workspace: WorkspaceContext, command_arg: str) ->
             reason = " ".join(parts).strip() or "User requested pause."
             if target == "all":
                 control.pause(reason)
-            jobs = WorkLoopJobSupervisor.for_workspace(workspace).pause(target, reason=reason)
+            jobs = deps.work_loop_supervisor_factory(workspace).pause(target, reason=reason)
             suffix = f" ({len(jobs)} job(s))" if jobs else ""
             return f"Work-loop pause requested for {target}: {reason}{suffix}"
         if subcommand == "resume":
@@ -776,7 +910,7 @@ def _resolve_work_loop_command(workspace: WorkspaceContext, command_arg: str) ->
                 return f"Error: unexpected arguments for /work-loop resume: {' '.join(parts)}"
             if target == "all":
                 control.resume()
-            jobs = WorkLoopJobSupervisor.for_workspace(workspace).resume(target)
+            jobs = deps.work_loop_supervisor_factory(workspace).resume(target)
             suffix = f" ({len(jobs)} job(s))" if jobs else ""
             return f"Work-loop resumed for {target}; stop and pause files cleared.{suffix}"
         if subcommand in {"state", "control"}:
@@ -827,7 +961,7 @@ def _resolve_work_loop_command(workspace: WorkspaceContext, command_arg: str) ->
                 dry_run=dry_run,
             )
             if not foreground:
-                return _start_work_loop_job(workspace=workspace.root_dir, mode=subcommand, worker_args=worker_args)
+                return _start_work_loop_job(workspace=workspace.root_dir, mode=subcommand, worker_args=worker_args, deps=deps)
             return _run_work_loop_mode(
                 mode=subcommand,
                 workspace=workspace.root_dir,
@@ -836,6 +970,7 @@ def _resolve_work_loop_command(workspace: WorkspaceContext, command_arg: str) ->
                 limit=limit,
                 max_concurrency=max_concurrency,
                 dry_run=dry_run,
+                deps=deps,
             )
         if subcommand == "reviews":
             if parts:
@@ -846,12 +981,13 @@ def _resolve_work_loop_command(workspace: WorkspaceContext, command_arg: str) ->
                 dry_run=dry_run,
             )
             if not foreground:
-                return _start_work_loop_job(workspace=workspace.root_dir, mode="reviews", worker_args=worker_args)
+                return _start_work_loop_job(workspace=workspace.root_dir, mode="reviews", worker_args=worker_args, deps=deps)
             return _run_work_loop_mode(
                 mode="reviews",
                 workspace=workspace.root_dir,
                 config_path=config_path,
                 dry_run=dry_run,
+                deps=deps,
             )
     except RuntimeError as exc:
         return f"Error: {exc}"
@@ -1200,11 +1336,13 @@ async def _run_once(
     worktree: bool = False,
     copy_dirty_worktree: bool = False,
     keep_worktree: bool = False,
+    deps: CliDependencies | None = None,
 ) -> dict:
+    deps = get_cli_dependencies(deps)
     worktree_ctx = None
     active_workspace: str | WorkspaceContext = workspace
     if worktree:
-        worktree_ctx = WorktreeRunner().create(
+        worktree_ctx = _build_worktree_runner(workspace, deps).create(
             workspace,
             f"smolclaw-{uuid.uuid4().hex[:12]}",
             copy_dirty=copy_dirty_worktree,
@@ -1214,14 +1352,16 @@ async def _run_once(
     smol_rag = None
     responses: list[str] = []
     try:
-        runtime = _build_cli_runtime(active_workspace)
+        runtime = _build_cli_runtime(active_workspace, deps=deps)
         workspace_ctx = runtime.workspace
         paths = workspace_ctx.paths
         smol_rag = runtime.smol_rag
         session_manager = runtime.session_manager
-        goal_store = GoalLedgerStore(paths.ledgers_dir)
+        goal_store = deps.goal_store_factory(paths.ledgers_dir)
         if agent_name:
-            agent = _build_multiagent(
+            builder = deps.multiagent_builder or _build_multiagent
+            agent = _call_with_optional_deps(
+                builder,
                 agent_name,
                 agents_config,
                 session_key,
@@ -1230,15 +1370,19 @@ async def _run_once(
                 session_manager,
                 auto_export,
                 model_override=model,
+                deps=deps,
             )
         else:
-            agent = _build_default_chat_agent(
+            builder = deps.default_chat_agent_builder or _build_default_chat_agent
+            agent = _call_with_optional_deps(
+                builder,
                 agents_config_path=agents_config,
                 session_key=session_key,
                 model=model,
                 smol_rag=smol_rag,
                 workspace=active_workspace,
                 session_manager=session_manager,
+                deps=deps,
             )
         if goal:
             current_goal = goal_store.load(agent.session.key)
@@ -1298,11 +1442,14 @@ async def _tui_chat_loop(
     worktree: bool = False,
     copy_dirty_worktree: bool = False,
     keep_worktree: bool = False,
+    deps: CliDependencies | None = None,
 ):
+    deps = get_cli_dependencies(deps)
+    console = deps.console
     worktree_state: _InteractiveWorktreeState | None = None
     active_workspace: str | WorkspaceContext = workspace
     if worktree:
-        worktree_ctx = WorktreeRunner().create(
+        worktree_ctx = _build_worktree_runner(workspace, deps).create(
             workspace,
             f"smolclaw-{uuid.uuid4().hex[:12]}",
             copy_dirty=copy_dirty_worktree,
@@ -1313,19 +1460,21 @@ async def _tui_chat_loop(
             state_root=_state_root_for_workspace(workspace),
             keep_on_exit=keep_worktree,
         )
-    runtime = _build_cli_runtime(active_workspace)
+    runtime = _build_cli_runtime(active_workspace, deps=deps)
     workspace_ctx = runtime.workspace
     paths = workspace_ctx.paths
     smol_rag = runtime.smol_rag
     session_manager = runtime.session_manager
-    goal_store = GoalLedgerStore(paths.ledgers_dir)
-    checkpoint_store = CheckpointStore(paths.checkpoints_dir)
-    approval_store = ApprovalRequestStore(paths.approvals_dir)
+    goal_store = deps.goal_store_factory(paths.ledgers_dir)
+    checkpoint_store = deps.checkpoint_store_factory(paths.checkpoints_dir)
+    approval_store = deps.approval_store_factory(paths.approvals_dir)
     memory_dir = ensure_dir(paths.memory_docs_dir)
     register_session_end_hooks = _make_session_end_hook_registrar(paths, memory_dir, auto_export)
 
     if agent_name:
-        agent = _build_multiagent(
+        builder = deps.multiagent_builder or _build_multiagent
+        agent = _call_with_optional_deps(
+            builder,
             agent_name,
             agents_config,
             session_key,
@@ -1335,10 +1484,13 @@ async def _tui_chat_loop(
             auto_export,
             child_loop_registrar=register_session_end_hooks,
             model_override=model,
+            deps=deps,
         )
         label = display_label or agent_name.capitalize()
     else:
-        agent = _build_default_chat_agent(
+        builder = deps.default_chat_agent_builder or _build_default_chat_agent
+        agent = _call_with_optional_deps(
+            builder,
             agents_config_path=agents_config,
             session_key=session_key,
             model=model,
@@ -1346,25 +1498,40 @@ async def _tui_chat_loop(
             workspace=active_workspace,
             session_manager=session_manager,
             child_loop_registrar=register_session_end_hooks,
+            deps=deps,
         )
         label = display_label or "SmolClaw"
 
     register_session_end_hooks(agent)
 
-    memory_store_tool = MemoryStoreTool(
+    memory_store_tool = deps.memory_store_tool_factory(
         smol_rag=smol_rag,
         memory_docs_dir=memory_dir,
         llm=agent.llm,
     )
-    session_export_hook = SessionExportHook(
+    session_export_hook = deps.session_export_hook_factory(
         smol_rag=smol_rag,
         llm=agent.llm,
         memory_dir=memory_dir,
     )
 
-    from cli.tui import CoderTui
+    if deps.tui_factory is None:
+        from cli.tui import CoderTui, _git_state
+        tui_factory = CoderTui
+        git_command_runner = getattr(runtime.env, "agent_command_runner", None)
+        tui_extra_kwargs = {
+            "git_state_provider": lambda cwd: _git_state(
+                cwd,
+                command_runner=git_command_runner,
+            ) if git_command_runner is not None else _git_state(
+                cwd,
+            )
+        }
+    else:
+        tui_factory = deps.tui_factory
+        tui_extra_kwargs = {}
 
-    tui = CoderTui(
+    tui = tui_factory(
         agent=agent,
         goal_store=goal_store,
         session_manager=session_manager,
@@ -1392,10 +1559,11 @@ async def _tui_chat_loop(
         resolve_approval_command=lambda session_key, arg: _resolve_approval_command(approval_store, session_key, arg),
         resolve_memory_command=lambda arg: _resolve_memory_command(smol_rag, arg),
         resolve_worktree_command=lambda arg: _resolve_worktree_command(worktree_state, arg),
-        resolve_work_loop_command=lambda arg: _resolve_work_loop_command(workspace_ctx, arg),
+        resolve_work_loop_command=lambda arg: _resolve_work_loop_command(workspace_ctx, arg, deps=deps),
         initialize_project=lambda: _format_bootstrap_result(init_project_guidance(workspace_ctx)),
         format_action_event=_format_action_event,
         label=label,
+        **tui_extra_kwargs,
     )
     try:
         await tui.run()
@@ -1416,11 +1584,14 @@ async def _chat_loop(
     worktree: bool = False,
     copy_dirty_worktree: bool = False,
     keep_worktree: bool = False,
+    deps: CliDependencies | None = None,
 ):
+    deps = get_cli_dependencies(deps)
+    console = deps.console
     worktree_state: _InteractiveWorktreeState | None = None
     active_workspace: str | WorkspaceContext = workspace
     if worktree:
-        worktree_ctx = WorktreeRunner().create(
+        worktree_ctx = _build_worktree_runner(workspace, deps).create(
             workspace,
             f"smolclaw-{uuid.uuid4().hex[:12]}",
             copy_dirty=copy_dirty_worktree,
@@ -1431,19 +1602,21 @@ async def _chat_loop(
             state_root=_state_root_for_workspace(workspace),
             keep_on_exit=keep_worktree,
         )
-    runtime = _build_cli_runtime(active_workspace)
+    runtime = _build_cli_runtime(active_workspace, deps=deps)
     workspace_ctx = runtime.workspace
     paths = workspace_ctx.paths
     smol_rag = runtime.smol_rag
     session_manager = runtime.session_manager
-    goal_store = GoalLedgerStore(paths.ledgers_dir)
-    checkpoint_store = CheckpointStore(paths.checkpoints_dir)
-    approval_store = ApprovalRequestStore(paths.approvals_dir)
+    goal_store = deps.goal_store_factory(paths.ledgers_dir)
+    checkpoint_store = deps.checkpoint_store_factory(paths.checkpoints_dir)
+    approval_store = deps.approval_store_factory(paths.approvals_dir)
     memory_dir = ensure_dir(paths.memory_docs_dir)
     register_session_end_hooks = _make_session_end_hook_registrar(paths, memory_dir, auto_export)
 
     if agent_name:
-        agent = _build_multiagent(
+        builder = deps.multiagent_builder or _build_multiagent
+        agent = _call_with_optional_deps(
+            builder,
             agent_name,
             agents_config,
             session_key,
@@ -1453,10 +1626,13 @@ async def _chat_loop(
             auto_export,
             child_loop_registrar=register_session_end_hooks,
             model_override=model,
+            deps=deps,
         )
         label = display_label or agent_name.capitalize()
     else:
-        agent = _build_default_chat_agent(
+        builder = deps.default_chat_agent_builder or _build_default_chat_agent
+        agent = _call_with_optional_deps(
+            builder,
             agents_config_path=agents_config,
             session_key=session_key,
             model=model,
@@ -1464,24 +1640,25 @@ async def _chat_loop(
             workspace=active_workspace,
             session_manager=session_manager,
             child_loop_registrar=register_session_end_hooks,
+            deps=deps,
         )
         label = display_label or "SmolClaw"
 
     register_session_end_hooks(agent)
 
-    memory_store_tool = MemoryStoreTool(
+    memory_store_tool = deps.memory_store_tool_factory(
         smol_rag=smol_rag,
         memory_docs_dir=memory_dir,
         llm=agent.llm,
     )
-    session_export_hook = SessionExportHook(
+    session_export_hook = deps.session_export_hook_factory(
         smol_rag=smol_rag,
         llm=agent.llm,
         memory_dir=memory_dir,
     )
 
     history_file = paths.prompt_history_path
-    prompt_session = PromptSession(history=FileHistory(history_file))
+    prompt_session = deps.prompt_session_factory(history=FileHistory(history_file))
 
     console.print(f"[bold green]{label}[/bold green] ready. Type /help for commands, /quit to exit.\n")
 
@@ -1608,7 +1785,7 @@ async def _chat_loop(
                 continue
             if command == "/work-loop":
                 console.print(
-                    _resolve_work_loop_command(workspace_ctx, command_arg),
+                    _resolve_work_loop_command(workspace_ctx, command_arg, deps=deps),
                     markup=False,
                 )
                 continue
@@ -1782,8 +1959,11 @@ def research_loop(
         raise typer.BadParameter("--interval must be greater than 0")
     if max_runs is not None and max_runs <= 0:
         raise typer.BadParameter("--max-runs must be greater than 0")
-    asyncio.run(
-        _research_loop(
+    deps = get_cli_dependencies()
+    runner = deps.research_loop_runner or _research_loop
+    deps.async_runner(
+        _call_with_optional_deps(
+            runner,
             goal=goal,
             workspace=workspace,
             agent_name=agent,
@@ -1793,6 +1973,7 @@ def research_loop(
             max_runs=max_runs,
             auto_export=auto_export,
             show_actions=show_actions,
+            deps=deps,
         )
     )
 
@@ -1807,8 +1988,11 @@ async def _research_loop(
     max_runs: Optional[int] = None,
     auto_export: bool = False,
     show_actions: bool = True,
+    deps: CliDependencies | None = None,
 ):
-    runtime = _build_cli_runtime(workspace)
+    deps = get_cli_dependencies(deps)
+    console = deps.console
+    runtime = _build_cli_runtime(workspace, deps=deps)
     workspace_ctx = runtime.workspace
     paths = workspace_ctx.paths
     smol_rag = runtime.smol_rag
@@ -1816,7 +2000,9 @@ async def _research_loop(
     memory_dir = ensure_dir(paths.memory_docs_dir)
     register_session_end_hooks = _make_session_end_hook_registrar(paths, memory_dir, auto_export)
 
-    agent = _build_multiagent(
+    builder = deps.multiagent_builder or _build_multiagent
+    agent = _call_with_optional_deps(
+        builder,
         agent_name,
         agents_config,
         session_key,
@@ -1825,10 +2011,12 @@ async def _research_loop(
         session_manager,
         auto_export,
         child_loop_registrar=register_session_end_hooks,
+        deps=deps,
     )
     register_session_end_hooks(agent)
 
-    stop_controller, esc_watcher = _create_research_loop_stop_controller()
+    stop_factory = deps.research_stop_controller_factory or _create_research_loop_stop_controller
+    stop_controller, esc_watcher = stop_factory()
     esc_hint = " Press Esc or Ctrl+C to stop." if getattr(esc_watcher, "active", False) else " Press Ctrl+C to stop."
     console.print(f"[bold green]{agent_name.capitalize()}[/bold green] research loop ready.{esc_hint}\n")
     exit_reason: str | None = None
@@ -2197,8 +2385,11 @@ def _smolclaw_main(
     show_actions: bool = typer.Option(False, "--show-actions/--hide-actions", help="Show recent tool activity details while the agent works"),
 ):
     """Start SmolClaw's coding harness in the current workspace."""
-    asyncio.run(
-        _tui_chat_loop(
+    deps = get_cli_dependencies()
+    runner = deps.tui_chat_loop_runner or _tui_chat_loop
+    deps.async_runner(
+        _call_with_optional_deps(
+            runner,
             session_key=session_key,
             workspace=workspace,
             model=model,
@@ -2207,6 +2398,7 @@ def _smolclaw_main(
             auto_export=auto_export,
             show_actions=show_actions,
             display_label="SmolClaw",
+            deps=deps,
         )
     )
 

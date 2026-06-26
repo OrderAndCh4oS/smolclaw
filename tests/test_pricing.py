@@ -43,6 +43,7 @@ def test_aggregate_tracks_unknown_models_without_costing_them():
         _record(model="custom-model", prompt=1000, completion=1000),
     ])
 
+    assert costs["pricing_table_version"] == "2026-06-23"
     assert costs["totals"]["credits"] == 0.0625
     assert costs["unknown_calls"] == 1
     assert costs["unknown_models"] == ["custom-model"]

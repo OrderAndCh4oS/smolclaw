@@ -1,5 +1,5 @@
 import os
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -36,14 +36,13 @@ async def test_import_documents_skips_unchanged_source(temp_dir, mock_openai_llm
         f.write("original content")
 
     async with _build_rag(temp_dir=temp_dir, llm=mock_openai_llm) as rag:
-        with patch("app.ingestion.get_docs", return_value=[doc_path]):
-            await rag.import_documents()
+        rag.ingestion.document_source_provider = lambda _input_docs_dir: [doc_path]
+        await rag.import_documents()
 
         rag.ingestion._embed_document = AsyncMock()
         rag.ingestion._extract_entities = AsyncMock()
 
-        with patch("app.ingestion.get_docs", return_value=[doc_path]):
-            await rag.import_documents()
+        await rag.import_documents()
 
         rag.ingestion._embed_document.assert_not_called()
         rag.ingestion._extract_entities.assert_not_called()
@@ -56,8 +55,8 @@ async def test_import_documents_reprocesses_changed_source(temp_dir, mock_openai
         f.write("v1")
 
     async with _build_rag(temp_dir=temp_dir, llm=mock_openai_llm) as rag:
-        with patch("app.ingestion.get_docs", return_value=[doc_path]):
-            await rag.import_documents()
+        rag.ingestion.document_source_provider = lambda _input_docs_dir: [doc_path]
+        await rag.import_documents()
 
         rag.ingestion.doc_manager.remove_document_by_id = AsyncMock()
         rag.ingestion._embed_document = AsyncMock()
@@ -66,10 +65,8 @@ async def test_import_documents_reprocesses_changed_source(temp_dir, mock_openai
         with open(doc_path, "w") as f:
             f.write("v2")
 
-        with patch("app.ingestion.get_docs", return_value=[doc_path]):
-            await rag.import_documents()
+        await rag.import_documents()
 
         rag.ingestion.doc_manager.remove_document_by_id.assert_awaited_once()
         rag.ingestion._embed_document.assert_awaited_once()
         rag.ingestion._extract_entities.assert_awaited_once()
-

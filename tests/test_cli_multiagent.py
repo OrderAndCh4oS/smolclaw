@@ -6,17 +6,25 @@ import typer
 from typer.testing import CliRunner
 
 from app.agent_config import AgentConfigLoader
+from app.context_builder import ContextBuilder
 from app.definitions import build_workspace_paths
 from app.agent_loop import AgentLoop
 from app.approvals import ApprovalRequestStore
 from app.model_settings import RuntimeModelSettings
 from app.run_trace import RunTraceStore
+from app.runtime import RuntimeEnvironment
 from app.tools.registry import ToolRegistry
-from cli.main import _build_cli_tool_registry, _build_default_chat_agent, _build_multiagent
+from cli.main import (
+    CliDependencies,
+    _build_cli_tool_registry,
+    _build_default_chat_agent,
+    _build_multiagent,
+    override_cli_dependencies,
+)
 from app.hooks import ON_SESSION_END, HookRunner
 from app.session import SessionManager
 from app.workspace import WorkspaceContext
-from unittest.mock import ANY, AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 
 @pytest.fixture
@@ -56,7 +64,70 @@ def _fake_runtime(workspace_root: str | WorkspaceContext, smol_rag, session_mana
         runtime.workspace = WorkspaceContext.from_root(workspace_root).ensure_dirs()
     runtime.smol_rag = smol_rag
     runtime.session_manager = session_manager
+    runtime.env = RuntimeEnvironment(
+        smol_rag=smol_rag,
+        session_manager=session_manager,
+        workspace=runtime.workspace,
+    )
     return runtime
+
+
+def _minimal_agent_builder(calls=None):
+    def _build(config, env, session_key_prefix="default", session_key=None, model_override=None, **kwargs):
+        if calls is not None:
+            calls.append({
+                "config": config,
+                "env": env,
+                "session_key_prefix": session_key_prefix,
+                "session_key": session_key,
+                "model_override": model_override,
+                **kwargs,
+            })
+        llm = MagicMock()
+        llm.completion_model = model_override or config.model
+        key = session_key or f"{config.name}-{session_key_prefix}"
+        session = env.session_manager.get_or_create(key)
+        return AgentLoop(
+            llm=llm,
+            tool_registry=ToolRegistry(),
+            context_builder=ContextBuilder(persona=config.persona),
+            session=session,
+            session_manager=env.session_manager,
+        )
+
+    return _build
+
+
+def _chat_loop_deps(
+    *,
+    workspace="/tmp",
+    smol_rag,
+    session_manager,
+    agent,
+    prompt_session_factory,
+    console,
+    memory_store_tool=None,
+    default_calls=None,
+    multiagent_calls=None,
+):
+    def default_builder(**kwargs):
+        if default_calls is not None:
+            default_calls.append(kwargs)
+        return agent
+
+    def multiagent_builder(*args, **kwargs):
+        if multiagent_calls is not None:
+            multiagent_calls.append((args, kwargs))
+        return agent
+
+    return CliDependencies(
+        console=console,
+        prompt_session_factory=prompt_session_factory,
+        runtime_builder=lambda *args, **kwargs: _fake_runtime(workspace, smol_rag, session_manager),
+        default_chat_agent_builder=default_builder,
+        multiagent_builder=multiagent_builder,
+        memory_store_tool_factory=(lambda **kwargs: memory_store_tool) if memory_store_tool is not None else CliDependencies().memory_store_tool_factory,
+    )
 
 
 class TestCliMultiagent:
@@ -97,15 +168,18 @@ class TestCliMultiagent:
         smol_rag.close = AsyncMock()
         session_manager = MagicMock()
 
-        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime(temp_dir, smol_rag, session_manager)), \
-            patch("cli.main._build_default_chat_agent", return_value=fake_agent):
-            payload = await _run_once(
-                prompt="hello",
-                session_key="default",
-                workspace=temp_dir,
-                model="model",
-                agents_config=DEFAULT_AGENTS_CONFIG,
-            )
+        deps = CliDependencies(
+            runtime_builder=lambda *args, **kwargs: _fake_runtime(temp_dir, smol_rag, session_manager),
+            default_chat_agent_builder=lambda **kwargs: fake_agent,
+        )
+        payload = await _run_once(
+            prompt="hello",
+            session_key="default",
+            workspace=temp_dir,
+            model="model",
+            agents_config=DEFAULT_AGENTS_CONFIG,
+            deps=deps,
+        )
 
         assert payload["status"] == "complete"
         assert payload["response"] == "response to hello"
@@ -145,21 +219,31 @@ class TestCliMultiagent:
             assert workspace_root.state_root_dir == os.path.realpath(build_workspace_paths(temp_dir).state_root_dir)
             return _fake_runtime(workspace_root, smol_rag, session_manager)
 
-        with patch("cli.main.WorktreeRunner") as mock_runner_cls, \
-            patch("cli.main._build_cli_runtime", side_effect=fake_runtime), \
-            patch("cli.main._build_default_chat_agent", return_value=fake_agent) as mock_build:
-            mock_runner_cls.return_value.create.return_value = fake_ctx
-            payload = await _run_once(
-                prompt="hello",
-                session_key="default",
-                workspace=temp_dir,
-                model="model",
-                agents_config=DEFAULT_AGENTS_CONFIG,
-                worktree=True,
-            )
+        runner = MagicMock()
+        runner.create.return_value = fake_ctx
+        build_calls = []
 
-        mock_runner_cls.return_value.create.assert_called_once()
-        built_workspace = mock_build.call_args.kwargs["workspace"]
+        def default_chat_agent_builder(**kwargs):
+            build_calls.append(kwargs)
+            return fake_agent
+
+        deps = CliDependencies(
+            worktree_runner_factory=lambda: runner,
+            runtime_builder=fake_runtime,
+            default_chat_agent_builder=default_chat_agent_builder,
+        )
+        payload = await _run_once(
+            prompt="hello",
+            session_key="default",
+            workspace=temp_dir,
+            model="model",
+            agents_config=DEFAULT_AGENTS_CONFIG,
+            worktree=True,
+            deps=deps,
+        )
+
+        runner.create.assert_called_once()
+        built_workspace = build_calls[0]["workspace"]
         assert isinstance(built_workspace, WorkspaceContext)
         assert built_workspace.root_dir == os.path.realpath(worktree_path)
         assert built_workspace.state_root_dir == os.path.realpath(build_workspace_paths(temp_dir).state_root_dir)
@@ -198,25 +282,40 @@ class TestCliMultiagent:
             assert workspace_root.state_root_dir == os.path.realpath(build_workspace_paths(temp_dir).state_root_dir)
             return _fake_runtime(workspace_root, smol_rag, session_manager)
 
-        with patch("cli.main.WorktreeRunner") as mock_runner_cls, \
-            patch("cli.main._build_cli_runtime", side_effect=fake_runtime), \
-            patch("cli.main._build_default_chat_agent", return_value=fake_agent) as mock_build, \
-            patch("cli.tui.CoderTui", return_value=fake_tui) as mock_tui_cls:
-            mock_runner_cls.return_value.create.return_value = fake_ctx
-            await _tui_chat_loop(
-                "default",
-                temp_dir,
-                "model",
-                agents_config=DEFAULT_AGENTS_CONFIG,
-                worktree=True,
-            )
+        runner = MagicMock()
+        runner.create.return_value = fake_ctx
+        build_calls = []
+        tui_calls = []
 
-        built_workspace = mock_build.call_args.kwargs["workspace"]
+        def default_chat_agent_builder(**kwargs):
+            build_calls.append(kwargs)
+            return fake_agent
+
+        def tui_factory(**kwargs):
+            tui_calls.append(kwargs)
+            return fake_tui
+
+        deps = CliDependencies(
+            worktree_runner_factory=lambda: runner,
+            runtime_builder=fake_runtime,
+            default_chat_agent_builder=default_chat_agent_builder,
+            tui_factory=tui_factory,
+        )
+        await _tui_chat_loop(
+            "default",
+            temp_dir,
+            "model",
+            agents_config=DEFAULT_AGENTS_CONFIG,
+            worktree=True,
+            deps=deps,
+        )
+
+        built_workspace = build_calls[0]["workspace"]
         assert isinstance(built_workspace, WorkspaceContext)
         assert built_workspace.root_dir == os.path.realpath(worktree_path)
         assert built_workspace.state_root_dir == os.path.realpath(build_workspace_paths(temp_dir).state_root_dir)
-        assert mock_tui_cls.call_args.kwargs["workspace_root"] == os.path.realpath(worktree_path)
-        assert mock_tui_cls.call_args.kwargs["resolve_worktree_command"]("status").startswith("Worktree: active")
+        assert tui_calls[0]["workspace_root"] == os.path.realpath(worktree_path)
+        assert tui_calls[0]["resolve_worktree_command"]("status").startswith("Worktree: active")
         fake_tui.run.assert_awaited_once()
         fake_ctx.cleanup.assert_called_once()
 
@@ -411,7 +510,7 @@ class TestCliMultiagent:
                 "stop_reason": "assistant_final",
             }
 
-        with patch("cli.main._run_once", side_effect=fake_run_once):
+        with override_cli_dependencies(run_once_runner=fake_run_once):
             result = CliRunner().invoke(app, ["run", "hello", "--workspace", temp_dir])
 
         assert result.exit_code == 0
@@ -439,7 +538,7 @@ class TestCliMultiagent:
                 "worktree_diff": "",
             }
 
-        with patch("cli.main._run_once", side_effect=fake_run_once):
+        with override_cli_dependencies(run_once_runner=fake_run_once):
             result = CliRunner().invoke(
                 app,
                 [
@@ -464,7 +563,7 @@ class TestCliMultiagent:
             assert kwargs["copy_dirty_worktree"] is True
             assert kwargs["keep_worktree"] is True
 
-        with patch("cli.main._tui_chat_loop", side_effect=fake_tui_chat_loop):
+        with override_cli_dependencies(tui_chat_loop_runner=fake_tui_chat_loop):
             result = CliRunner().invoke(
                 app,
                 [
@@ -524,8 +623,8 @@ class TestCliMultiagent:
 
         coro = fake_coro()
         mock_tui = MagicMock(return_value=coro)
-        with patch("cli.main._tui_chat_loop", new=mock_tui), \
-            patch("cli.main.asyncio.run") as mock_run:
+        mock_run = MagicMock()
+        with override_cli_dependencies(tui_chat_loop_runner=mock_tui, async_runner=mock_run):
             _smolclaw_main(
                 session_key="default",
                 workspace=".",
@@ -544,6 +643,7 @@ class TestCliMultiagent:
             auto_export=True,
             show_actions=True,
             display_label="SmolClaw",
+            deps=ANY,
         )
         mock_run.assert_called_once_with(coro)
         coro.close()
@@ -556,8 +656,8 @@ class TestCliMultiagent:
 
         coro = fake_coro()
         mock_tui = MagicMock(return_value=coro)
-        with patch("cli.main._tui_chat_loop", new=mock_tui), \
-            patch("cli.main.asyncio.run") as mock_run:
+        mock_run = MagicMock()
+        with override_cli_dependencies(tui_chat_loop_runner=mock_tui, async_runner=mock_run):
             result = CliRunner().invoke(app, ["chat", "--session", "s", "--workspace", ".", "--model", "m"])
 
         assert result.exit_code == 0
@@ -566,6 +666,7 @@ class TestCliMultiagent:
             "worktree": False,
             "copy_dirty_worktree": False,
             "keep_worktree": False,
+            "deps": ANY,
         }
         assert mock_tui.call_args.args[:4] == ("s", ".", "m", None)
         assert mock_tui.call_args.args[5] is False
@@ -586,57 +687,54 @@ class TestCliMultiagent:
 
     def test_chat_with_agent_flag_loads_config(self, agents_yaml, mock_smol_rag, sessions_dir):
         sm = SessionManager(sessions_dir)
-        from app.tools.registry import ToolRegistry
-        registry = ToolRegistry()
-        with patch("cli.main._build_cli_tool_registry", return_value=registry):
+        deps = CliDependencies(agent_builder=_minimal_agent_builder())
 
-            agent = _build_multiagent(
-                agent_name="researcher",
-                agents_config_path=agents_yaml,
-                session_key="default",
-                smol_rag=mock_smol_rag,
-                workspace="/tmp",
-                session_manager=sm,
-                auto_export=True,
-            )
-            assert isinstance(agent, AgentLoop)
-            assert agent.llm.completion_model == "gpt-5.2-instant"
-            assert "researcher" in agent.session.key
+        agent = _build_multiagent(
+            agent_name="researcher",
+            agents_config_path=agents_yaml,
+            session_key="default",
+            smol_rag=mock_smol_rag,
+            workspace="/tmp",
+            session_manager=sm,
+            auto_export=True,
+            deps=deps,
+        )
+        assert isinstance(agent, AgentLoop)
+        assert agent.llm.completion_model == "gpt-5.2-instant"
+        assert "researcher" in agent.session.key
 
     def test_build_multiagent_honors_model_override(self, agents_yaml, mock_smol_rag, sessions_dir):
         sm = SessionManager(sessions_dir)
-        from app.tools.registry import ToolRegistry
-        registry = ToolRegistry()
-        with patch("cli.main._build_cli_tool_registry", return_value=registry):
+        deps = CliDependencies(agent_builder=_minimal_agent_builder())
 
-            agent = _build_multiagent(
-                agent_name="researcher",
-                agents_config_path=agents_yaml,
-                session_key="default",
-                smol_rag=mock_smol_rag,
-                workspace="/tmp",
-                session_manager=sm,
-                auto_export=True,
-                model_override="claude-sonnet-4-20250514",
-            )
-            assert agent.llm.completion_model == "claude-sonnet-4-20250514"
+        agent = _build_multiagent(
+            agent_name="researcher",
+            agents_config_path=agents_yaml,
+            session_key="default",
+            smol_rag=mock_smol_rag,
+            workspace="/tmp",
+            session_manager=sm,
+            auto_export=True,
+            model_override="claude-sonnet-4-20250514",
+            deps=deps,
+        )
+        assert agent.llm.completion_model == "claude-sonnet-4-20250514"
 
     def test_build_default_chat_agent_uses_exact_session_key_and_model_override(
         self, agents_yaml, mock_smol_rag, sessions_dir
     ):
         sm = SessionManager(sessions_dir)
-        from app.tools.registry import ToolRegistry
-        registry = ToolRegistry()
-        with patch("cli.main._build_cli_tool_registry", return_value=registry):
+        deps = CliDependencies(agent_builder=_minimal_agent_builder())
 
-            agent = _build_default_chat_agent(
-                agents_config_path=agents_yaml,
-                session_key="plain-session",
-                model="gpt-5.2-pro",
-                smol_rag=mock_smol_rag,
-                workspace="/tmp",
-                session_manager=sm,
-            )
+        agent = _build_default_chat_agent(
+            agents_config_path=agents_yaml,
+            session_key="plain-session",
+            model="gpt-5.2-pro",
+            smol_rag=mock_smol_rag,
+            workspace="/tmp",
+            session_manager=sm,
+            deps=deps,
+        )
 
         assert isinstance(agent, AgentLoop)
         assert agent.llm.completion_model == "gpt-5.2-pro"
@@ -647,19 +745,21 @@ class TestCliMultiagent:
     ):
         sm = SessionManager(sessions_dir)
         fake_agent = MagicMock()
+        calls = []
+        deps = CliDependencies(agent_builder=lambda **kwargs: calls.append(kwargs) or fake_agent)
 
-        with patch("cli.main.build_configured_agent", return_value=fake_agent) as mock_build_configured_agent:
-            agent = _build_default_chat_agent(
-                agents_config_path=agents_yaml,
-                session_key="plain-session",
-                model="gpt-5.2-pro",
-                smol_rag=mock_smol_rag,
-                workspace="/tmp",
-                session_manager=sm,
-            )
+        agent = _build_default_chat_agent(
+            agents_config_path=agents_yaml,
+            session_key="plain-session",
+            model="gpt-5.2-pro",
+            smol_rag=mock_smol_rag,
+            workspace="/tmp",
+            session_manager=sm,
+            deps=deps,
+        )
 
         assert agent is fake_agent
-        env = mock_build_configured_agent.call_args.kwargs["env"]
+        env = calls[0]["env"]
         assert set(env.agent_configs) == {"default", "researcher", "writer"}
         assert env.enable_subagents is True
         assert env.memory_docs_dir == build_workspace_paths("/tmp").memory_docs_dir
@@ -723,40 +823,44 @@ class TestCliMultiagent:
         sm = SessionManager(sessions_dir)
         fake_agent = MagicMock()
         registrar = MagicMock()
+        calls = []
+        deps = CliDependencies(agent_builder=lambda **kwargs: calls.append(kwargs) or fake_agent)
 
-        with patch("cli.main.build_configured_agent", return_value=fake_agent) as mock_build_configured_agent:
-            agent = _build_multiagent(
-                agent_name="researcher",
-                agents_config_path=agents_yaml,
-                session_key="default",
-                smol_rag=mock_smol_rag,
-                workspace="/tmp",
-                session_manager=sm,
-                auto_export=True,
-                child_loop_registrar=registrar,
-            )
+        agent = _build_multiagent(
+            agent_name="researcher",
+            agents_config_path=agents_yaml,
+            session_key="default",
+            smol_rag=mock_smol_rag,
+            workspace="/tmp",
+            session_manager=sm,
+            auto_export=True,
+            child_loop_registrar=registrar,
+            deps=deps,
+        )
 
         assert agent is fake_agent
-        assert mock_build_configured_agent.call_args.kwargs["child_loop_registrar"] is registrar
-        assert mock_build_configured_agent.call_args.kwargs["env"].enable_subagents is True
+        assert calls[0]["child_loop_registrar"] is registrar
+        assert calls[0]["env"].enable_subagents is True
 
     def test_build_multiagent_defaults_child_loop_registrar_to_none(self, agents_yaml, mock_smol_rag, sessions_dir):
         sm = SessionManager(sessions_dir)
         fake_agent = MagicMock()
+        calls = []
+        deps = CliDependencies(agent_builder=lambda **kwargs: calls.append(kwargs) or fake_agent)
 
-        with patch("cli.main.build_configured_agent", return_value=fake_agent) as mock_build_configured_agent:
-            agent = _build_multiagent(
-                agent_name="researcher",
-                agents_config_path=agents_yaml,
-                session_key="default",
-                smol_rag=mock_smol_rag,
-                workspace="/tmp",
-                session_manager=sm,
-                auto_export=False,
-            )
+        agent = _build_multiagent(
+            agent_name="researcher",
+            agents_config_path=agents_yaml,
+            session_key="default",
+            smol_rag=mock_smol_rag,
+            workspace="/tmp",
+            session_manager=sm,
+            auto_export=False,
+            deps=deps,
+        )
 
         assert agent is fake_agent
-        assert mock_build_configured_agent.call_args.kwargs["child_loop_registrar"] is None
+        assert calls[0]["child_loop_registrar"] is None
 
     @pytest.mark.asyncio
     async def test_chat_loop_registers_export_hook_for_multiagent(self):
@@ -785,14 +889,17 @@ class TestCliMultiagent:
         smol_rag.contradiction_detector = None
 
         session_manager = MagicMock()
+        build_calls = []
+        deps = CliDependencies(
+            console=FakeConsole(),
+            prompt_session_factory=FakePromptSession,
+            runtime_builder=lambda *args, **kwargs: _fake_runtime("/tmp", smol_rag, session_manager),
+            multiagent_builder=lambda *args, **kwargs: build_calls.append((args, kwargs)) or fake_agent,
+        )
 
-        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
-            patch("cli.main.PromptSession", FakePromptSession), \
-            patch("cli.main._build_multiagent", return_value=fake_agent) as mock_build_multiagent, \
-            patch("cli.main.console", FakeConsole()):
-            await _chat_loop("default", "/tmp", "model", agent_name="researcher", auto_export=True)
+        await _chat_loop("default", "/tmp", "model", agent_name="researcher", auto_export=True, deps=deps)
 
-        mock_build_multiagent.assert_called_once_with(
+        assert build_calls[0][0] == (
             "researcher",
             DEFAULT_AGENTS_CONFIG,
             "default",
@@ -800,9 +907,9 @@ class TestCliMultiagent:
             "/tmp",
             session_manager,
             True,
-            child_loop_registrar=ANY,
-            model_override="model",
         )
+        assert build_calls[0][1]["child_loop_registrar"] is not None
+        assert build_calls[0][1]["model_override"] == "model"
         assert ON_SESSION_END in fake_agent.hook_runner.events
         assert len(fake_agent.hook_runner._hooks[ON_SESSION_END]) == 2
         fake_agent.close.assert_awaited_once()
@@ -836,11 +943,13 @@ class TestCliMultiagent:
         smol_rag.contradiction_detector = None
         session_manager = MagicMock()
 
-        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
-            patch("cli.main.PromptSession", FakePromptSession), \
-            patch("cli.main._build_multiagent", return_value=fake_agent), \
-            patch("cli.main.console", FakeConsole()):
-            await _chat_loop("default", "/tmp", "model", agent_name="researcher", auto_export=True)
+        deps = CliDependencies(
+            console=FakeConsole(),
+            prompt_session_factory=FakePromptSession,
+            runtime_builder=lambda *args, **kwargs: _fake_runtime("/tmp", smol_rag, session_manager),
+            multiagent_builder=lambda *args, **kwargs: fake_agent,
+        )
+        await _chat_loop("default", "/tmp", "model", agent_name="researcher", auto_export=True, deps=deps)
 
         assert ON_SESSION_END in fake_agent.hook_runner.events
         assert len(fake_agent.hook_runner._hooks[ON_SESSION_END]) == 1
@@ -873,13 +982,16 @@ class TestCliMultiagent:
         smol_rag.contradiction_detector = None
         session_manager = MagicMock()
 
-        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
-            patch("cli.main.PromptSession", FakePromptSession), \
-            patch("cli.main._build_multiagent", return_value=fake_agent) as mock_build_multiagent, \
-            patch("cli.main.console", FakeConsole()):
-            await _chat_loop("default", "/tmp", "model", agent_name="researcher", auto_export=False)
+        build_calls = []
+        deps = CliDependencies(
+            console=FakeConsole(),
+            prompt_session_factory=FakePromptSession,
+            runtime_builder=lambda *args, **kwargs: _fake_runtime("/tmp", smol_rag, session_manager),
+            multiagent_builder=lambda *args, **kwargs: build_calls.append((args, kwargs)) or fake_agent,
+        )
+        await _chat_loop("default", "/tmp", "model", agent_name="researcher", auto_export=False, deps=deps)
 
-        mock_build_multiagent.assert_called_once_with(
+        assert build_calls[0][0] == (
             "researcher",
             DEFAULT_AGENTS_CONFIG,
             "default",
@@ -887,9 +999,9 @@ class TestCliMultiagent:
             "/tmp",
             session_manager,
             False,
-            child_loop_registrar=ANY,
-            model_override="model",
         )
+        assert build_calls[0][1]["child_loop_registrar"] is not None
+        assert build_calls[0][1]["model_override"] == "model"
         # Usage persist hook is always registered; export hooks only when auto_export=True
         assert ON_SESSION_END in fake_agent.hook_runner.events
         # Only 1 hook (UsagePersistHook), not the export/decay/contradiction hooks
@@ -923,21 +1035,22 @@ class TestCliMultiagent:
         smol_rag.contradiction_detector = None
         session_manager = MagicMock()
 
-        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
-            patch("cli.main.PromptSession", FakePromptSession), \
-            patch("cli.main._build_default_chat_agent", return_value=fake_agent) as mock_default_builder, \
-            patch("cli.main.console", FakeConsole()):
-            await _chat_loop("plain-session", "/tmp", "gpt-5.2-pro", agent_name=None, auto_export=True)
-
-        mock_default_builder.assert_called_once_with(
-            agents_config_path=DEFAULT_AGENTS_CONFIG,
-            session_key="plain-session",
-            model="gpt-5.2-pro",
-            smol_rag=smol_rag,
-            workspace="/tmp",
-            session_manager=session_manager,
-            child_loop_registrar=ANY,
+        build_calls = []
+        deps = CliDependencies(
+            console=FakeConsole(),
+            prompt_session_factory=FakePromptSession,
+            runtime_builder=lambda *args, **kwargs: _fake_runtime("/tmp", smol_rag, session_manager),
+            default_chat_agent_builder=lambda **kwargs: build_calls.append(kwargs) or fake_agent,
         )
+        await _chat_loop("plain-session", "/tmp", "gpt-5.2-pro", agent_name=None, auto_export=True, deps=deps)
+
+        assert build_calls[0]["agents_config_path"] == DEFAULT_AGENTS_CONFIG
+        assert build_calls[0]["session_key"] == "plain-session"
+        assert build_calls[0]["model"] == "gpt-5.2-pro"
+        assert build_calls[0]["smol_rag"] is smol_rag
+        assert build_calls[0]["workspace"] == "/tmp"
+        assert build_calls[0]["session_manager"] is session_manager
+        assert build_calls[0]["child_loop_registrar"] is not None
         assert ON_SESSION_END in fake_agent.hook_runner.events
         assert len(fake_agent.hook_runner._hooks[ON_SESSION_END]) == 2
         fake_agent.close.assert_awaited_once()
@@ -971,14 +1084,18 @@ class TestCliMultiagent:
         smol_rag.contradiction_detector = None
         session_manager = MagicMock()
 
-        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime(workspace_root, smol_rag, session_manager)) as mock_build_runtime, \
-            patch("cli.main.PromptSession", FakePromptSession), \
-            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
-            patch("cli.main.console", FakeConsole()):
-            await _chat_loop("default", workspace_root, "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+        runtime = _fake_runtime(workspace_root, smol_rag, session_manager)
+        deps = _chat_loop_deps(
+            workspace=workspace_root,
+            smol_rag=smol_rag,
+            session_manager=session_manager,
+            agent=fake_agent,
+            prompt_session_factory=FakePromptSession,
+            console=FakeConsole(),
+        )
+        deps.runtime_builder = lambda *args, **kwargs: runtime
+        await _chat_loop("default", workspace_root, "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True, deps=deps)
 
-        mock_build_runtime.assert_called_once()
-        runtime = mock_build_runtime.return_value
         assert runtime.workspace.paths.sqlite_db_path == expected.sqlite_db_path
         assert runtime.workspace.paths.kg_db_path == expected.kg_db_path
         assert runtime.workspace.paths.research_dir == expected.research_dir
@@ -1018,14 +1135,19 @@ class TestCliMultiagent:
         smol_rag = MagicMock()
         session_manager = MagicMock()
 
-        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
-            patch("cli.main.PromptSession", FakePromptSession), \
-            patch("cli.main.MemoryStoreTool", return_value=memory_tool), \
-            patch("cli.main._build_default_chat_agent", return_value=fake_agent) as mock_build_default_chat_agent, \
-            patch("cli.main.console", FakeConsole()):
-            await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+        default_calls = []
+        deps = _chat_loop_deps(
+            smol_rag=smol_rag,
+            session_manager=session_manager,
+            agent=fake_agent,
+            prompt_session_factory=FakePromptSession,
+            console=FakeConsole(),
+            memory_store_tool=memory_tool,
+            default_calls=default_calls,
+        )
+        await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True, deps=deps)
 
-        mock_build_default_chat_agent.assert_called_once()
+        assert len(default_calls) == 1
         memory_tool.execute.assert_awaited_once_with(content="save this detail")
         fake_agent.process.assert_not_called()
         fake_agent.close.assert_awaited_once()
@@ -1077,11 +1199,14 @@ class TestCliMultiagent:
         smol_rag.contradiction_detector = detector
         session_manager = MagicMock()
 
-        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
-            patch("cli.main.PromptSession", FakePromptSession), \
-            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
-            patch("cli.main.console", fake_console):
-            await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+        deps = _chat_loop_deps(
+            smol_rag=smol_rag,
+            session_manager=session_manager,
+            agent=fake_agent,
+            prompt_session_factory=FakePromptSession,
+            console=fake_console,
+        )
+        await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True, deps=deps)
 
         output = "\n".join(fake_console.lines)
         assert "ctr-1" in output
@@ -1124,11 +1249,14 @@ class TestCliMultiagent:
         smol_rag.contradiction_detector = MagicMock()
         session_manager = MagicMock()
 
-        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
-            patch("cli.main.PromptSession", FakePromptSession), \
-            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
-            patch("cli.main.console", FakeConsole()):
-            await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+        deps = _chat_loop_deps(
+            smol_rag=smol_rag,
+            session_manager=session_manager,
+            agent=fake_agent,
+            prompt_session_factory=FakePromptSession,
+            console=FakeConsole(),
+        )
+        await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True, deps=deps)
 
         prompt = fake_agent.process.await_args.args[0]
         assert "Review pending memory contradictions conversationally" in prompt
@@ -1172,11 +1300,14 @@ class TestCliMultiagent:
         smol_rag.contradiction_detector = MagicMock()
         session_manager = MagicMock()
 
-        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
-            patch("cli.main.PromptSession", FakePromptSession), \
-            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
-            patch("cli.main.console", FakeConsole()):
-            await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+        deps = _chat_loop_deps(
+            smol_rag=smol_rag,
+            session_manager=session_manager,
+            agent=fake_agent,
+            prompt_session_factory=FakePromptSession,
+            console=FakeConsole(),
+        )
+        await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True, deps=deps)
 
         prompt = fake_agent.process.await_args.args[0]
         assert "Review pending memory contradictions conversationally" in prompt
@@ -1215,14 +1346,16 @@ class TestCliMultiagent:
         smol_rag = MagicMock()
         session_manager = MagicMock()
 
-        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
-            patch("cli.main.PromptSession", FakePromptSession), \
-            patch("cli.main.SessionExportHook") as mock_export_hook_cls, \
-            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
-            patch("cli.main.console", FakeConsole()):
-            hook_instance = AsyncMock()
-            mock_export_hook_cls.return_value = hook_instance
-            await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+        hook_instance = AsyncMock()
+        deps = _chat_loop_deps(
+            smol_rag=smol_rag,
+            session_manager=session_manager,
+            agent=fake_agent,
+            prompt_session_factory=FakePromptSession,
+            console=FakeConsole(),
+        )
+        deps.session_export_hook_factory = lambda **kwargs: hook_instance
+        await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True, deps=deps)
 
         hook_instance.assert_awaited_once_with({
             "session_key": "default",
@@ -1266,11 +1399,14 @@ class TestCliMultiagent:
         smol_rag = MagicMock()
         session_manager = MagicMock()
 
-        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
-            patch("cli.main.PromptSession", FakePromptSession), \
-            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
-            patch("cli.main.console", fake_console):
-            await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+        deps = _chat_loop_deps(
+            smol_rag=smol_rag,
+            session_manager=session_manager,
+            agent=fake_agent,
+            prompt_session_factory=FakePromptSession,
+            console=fake_console,
+        )
+        await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True, deps=deps)
 
         help_output = "\n".join(fake_console.lines)
         assert "Slash commands:" in help_output
@@ -1320,11 +1456,15 @@ class TestCliMultiagent:
         smol_rag = MagicMock()
         session_manager = MagicMock()
 
-        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime(temp_dir, smol_rag, session_manager)), \
-            patch("cli.main.PromptSession", FakePromptSession), \
-            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
-            patch("cli.main.console", fake_console):
-            await _chat_loop("default", temp_dir, "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+        deps = _chat_loop_deps(
+            workspace=temp_dir,
+            smol_rag=smol_rag,
+            session_manager=session_manager,
+            agent=fake_agent,
+            prompt_session_factory=FakePromptSession,
+            console=fake_console,
+        )
+        await _chat_loop("default", temp_dir, "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True, deps=deps)
 
         output = "\n".join(fake_console.lines)
         assert "Created" in output
@@ -1371,11 +1511,15 @@ class TestCliMultiagent:
         smol_rag = MagicMock()
         session_manager = MagicMock()
 
-        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime(temp_dir, smol_rag, session_manager)), \
-            patch("cli.main.PromptSession", FakePromptSession), \
-            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
-            patch("cli.main.console", fake_console):
-            await _chat_loop("default", temp_dir, "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+        deps = _chat_loop_deps(
+            workspace=temp_dir,
+            smol_rag=smol_rag,
+            session_manager=session_manager,
+            agent=fake_agent,
+            prompt_session_factory=FakePromptSession,
+            console=fake_console,
+        )
+        await _chat_loop("default", temp_dir, "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True, deps=deps)
 
         output = "\n".join(fake_console.lines)
         assert f"Trace: {recorder.run_id}" in output
@@ -1427,12 +1571,15 @@ class TestCliMultiagent:
         smol_rag = MagicMock()
         session_manager = MagicMock()
 
-        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
-            patch("cli.main.PromptSession", FakePromptSession), \
-            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
-            patch("cli.main.CheckpointStore", return_value=checkpoint_store), \
-            patch("cli.main.console", fake_console):
-            await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+        deps = _chat_loop_deps(
+            smol_rag=smol_rag,
+            session_manager=session_manager,
+            agent=fake_agent,
+            prompt_session_factory=FakePromptSession,
+            console=fake_console,
+        )
+        deps.checkpoint_store_factory = lambda _path: checkpoint_store
+        await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True, deps=deps)
 
         checkpoint_store.undo_last.assert_called_once_with(session_key="default")
         output = "\n".join(fake_console.lines)
@@ -1480,11 +1627,14 @@ class TestCliMultiagent:
         smol_rag = MagicMock()
         session_manager = MagicMock()
 
-        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
-            patch("cli.main.PromptSession", FakePromptSession), \
-            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
-            patch("cli.main.console", fake_console):
-            await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+        deps = _chat_loop_deps(
+            smol_rag=smol_rag,
+            session_manager=session_manager,
+            agent=fake_agent,
+            prompt_session_factory=FakePromptSession,
+            console=fake_console,
+        )
+        await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True, deps=deps)
 
         selection = fake_agent.model_settings.resolve("fallback", subagent=True)
         assert selection.model == "gpt-5.4-pro"
@@ -1527,11 +1677,14 @@ class TestCliMultiagent:
         smol_rag = MagicMock()
         smol_rag.close = AsyncMock()
 
-        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
-            patch("cli.main.PromptSession", FakePromptSession), \
-            patch("cli.main._build_default_chat_agent", return_value=agent), \
-            patch("cli.main.console", FakeConsole()):
-            await _chat_loop("close-test", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True)
+        deps = _chat_loop_deps(
+            smol_rag=smol_rag,
+            session_manager=session_manager,
+            agent=agent,
+            prompt_session_factory=FakePromptSession,
+            console=FakeConsole(),
+        )
+        await _chat_loop("close-test", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True, deps=deps)
 
         llm.close.assert_awaited_once()
         smol_rag.close.assert_awaited_once()
@@ -1588,11 +1741,14 @@ class TestCliMultiagent:
         smol_rag = MagicMock()
         session_manager = MagicMock()
 
-        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
-            patch("cli.main.PromptSession", FakePromptSession), \
-            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
-            patch("cli.main.console", fake_console):
-            await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True, show_actions=True)
+        deps = _chat_loop_deps(
+            smol_rag=smol_rag,
+            session_manager=session_manager,
+            agent=fake_agent,
+            prompt_session_factory=FakePromptSession,
+            console=fake_console,
+        )
+        await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True, show_actions=True, deps=deps)
 
         output = "\n".join(fake_console.lines)
         assert "action: web_fetch url=https://example.com/docs" in output
@@ -1648,12 +1804,15 @@ class TestCliMultiagent:
         smol_rag.contradiction_detector = None
         session_manager = MagicMock()
 
-        with patch("cli.main._build_cli_runtime", return_value=_fake_runtime("/tmp", smol_rag, session_manager)), \
-            patch("cli.main.PromptSession", FakePromptSession), \
-            patch("cli.main._build_default_chat_agent", return_value=fake_agent), \
-            patch("cli.main.GoalLedgerStore", return_value=goal_store), \
-            patch("cli.main.console", fake_console):
-            await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True, show_actions=True)
+        deps = _chat_loop_deps(
+            smol_rag=smol_rag,
+            session_manager=session_manager,
+            agent=fake_agent,
+            prompt_session_factory=FakePromptSession,
+            console=fake_console,
+        )
+        deps.goal_store_factory = lambda _path: goal_store
+        await _chat_loop("default", "/tmp", "model", agents_config=DEFAULT_AGENTS_CONFIG, auto_export=True, show_actions=True, deps=deps)
 
         assert len(prompt_outputs) == 2
         assert prompt_outputs[0] == _build_goal_loop_prompt()

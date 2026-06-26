@@ -6,7 +6,7 @@ import asyncio
 import os
 import time
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 import numpy as np
 
 pytest.importorskip("nltk")
@@ -81,11 +81,11 @@ class TestSmolRagModelRouting:
             created["kwargs"] = kwargs
             return fake_llm
 
-        with patch("app.smol_rag.create_llm", side_effect=fake_create_llm):
-            rag = SmolRag(
-                db_path=os.path.join(temp_dir, "test.db"),
-                graph_path=os.path.join(temp_dir, "graph.graphml"),
-            )
+        rag = SmolRag(
+            db_path=os.path.join(temp_dir, "test.db"),
+            graph_path=os.path.join(temp_dir, "graph.graphml"),
+            llm_factory=fake_create_llm,
+        )
 
         assert created["completion_model"] == "gpt-5.4-mini"
         assert created["embedding_model"] == "text-embedding-3-small"
@@ -259,11 +259,9 @@ class TestSmolRagModelRouting:
         }
         """)
 
-        # Mock get_docs to return our test document
         try:
-            with patch("app.ingestion.get_docs", return_value=[doc_path]):
-                # Import documents (uses get_docs internally)
-                await rag.import_documents()
+            rag.ingestion.document_source_provider = lambda _input_docs_dir: [doc_path]
+            await rag.import_documents()
 
             # Verify document was processed
             doc_id = await rag.source_doc_map.get_right_single(doc_path)
@@ -648,8 +646,8 @@ class TestSmolRagEdgeCases:
         )
 
         try:
-            with patch("app.ingestion.get_docs", return_value=[doc_path]):
-                await rag.import_documents()
+            rag.ingestion.document_source_provider = lambda _input_docs_dir: [doc_path]
+            await rag.import_documents()
 
             doc_id = await rag.source_doc_map.get_right_single(doc_path)
             assert doc_id is not None

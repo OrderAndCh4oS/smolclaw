@@ -38,6 +38,9 @@ class Gateway:
         allow_remote: bool = False,
         agents_config: str = DEFAULT_AGENTS_CONFIG,
         workspace: str = WORKSPACE_DIR,
+        config_loader=None,
+        runtime_builder=None,
+        agent_builder=None,
     ):
         self.port = port
         self.host = host
@@ -54,6 +57,9 @@ class Gateway:
         self._smol_rag: Optional[SmolRag] = None
         self._session_manager = None
         self._workspace_ctx = WorkspaceContext.from_root(workspace).ensure_dirs()
+        self.config_loader = config_loader or AgentConfigLoader.load
+        self.runtime_builder = runtime_builder or build_runtime_services
+        self.agent_builder = agent_builder or build_configured_agent
         diagnostics.configure(self._workspace_ctx.paths.log_dir)
 
     def _default_validate_token(self, token: str) -> bool:
@@ -273,7 +279,7 @@ class Gateway:
         if session_key in self._session_agents:
             return self._session_agents[session_key]
 
-        configs = AgentConfigLoader.load(self.agents_config)
+        configs = self.config_loader(self.agents_config)
         config = configs["default"]
         paths = self._workspace_ctx.paths
 
@@ -290,7 +296,7 @@ class Gateway:
                     ContradictionExpiryHook(rag.contradiction_detector),
                 )
 
-        env = build_runtime_services(
+        env = self.runtime_builder(
             self._workspace_ctx,
             transport="mcp",
             token_issuer_url=self.token_issuer_url,
@@ -300,7 +306,7 @@ class Gateway:
             smol_rag=self._smol_rag,
             session_manager=self._session_manager,
         ).env
-        agent = build_configured_agent(
+        agent = self.agent_builder(
             config=config,
             env=env,
             session_key=session_key,
@@ -314,7 +320,7 @@ class Gateway:
         from app.tracing import init_tracing
         self._validate_startup_security()
         init_tracing()
-        runtime = build_runtime_services(
+        runtime = self.runtime_builder(
             self._workspace_ctx,
             transport="mcp",
             token_issuer_url=self.token_issuer_url,

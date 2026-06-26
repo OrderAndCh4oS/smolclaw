@@ -11,7 +11,12 @@ from cli.tui import ActivityEntry, CoderTui, DETAILS_HEIGHT, TranscriptEntry, Ui
 from app.model_settings import RuntimeModelSettings
 
 
-def _fake_tui(show_actions=False, resolve_work_loop_command=None):
+def _fake_tui(
+    show_actions=False,
+    resolve_work_loop_command=None,
+    terminal_size_provider=None,
+    shutdown_phase_timeout=8.0,
+):
     agent = MagicMock()
     agent.llm.completion_model = "gpt-test"
     agent.llm.reasoning_effort = None
@@ -49,6 +54,8 @@ def _fake_tui(show_actions=False, resolve_work_loop_command=None):
         resolve_memory_command=lambda arg: f"Memory {arg}".strip(),
         resolve_worktree_command=lambda arg: f"Worktree {arg}".strip(),
         resolve_work_loop_command=resolve_work_loop_command or (lambda arg: f"Work loop {arg}".strip()),
+        terminal_size_provider=terminal_size_provider,
+        shutdown_phase_timeout=shutdown_phase_timeout,
         initialize_project=lambda: "Created AGENTS.md",
         format_action_event=lambda event: event.get("line"),
         label="SmolClaw",
@@ -99,9 +106,8 @@ def test_tui_top_bar_shows_reasoning_effort_when_set():
     assert "effort:high" in top
 
 
-def test_tui_status_bars_pad_to_terminal_width(monkeypatch):
-    tui = _fake_tui()
-    monkeypatch.setattr("cli.tui.shutil.get_terminal_size", lambda fallback: os.terminal_size((80, 10)))
+def test_tui_status_bars_pad_to_terminal_width():
+    tui = _fake_tui(terminal_size_provider=lambda fallback: os.terminal_size((80, 10)))
 
     long_bottom = "".join(text for _, text in tui._render_bottom_bar())
     tui.state.active_tool = "idle"
@@ -207,9 +213,8 @@ async def test_tui_shutdown_stops_running_agent_turn():
 
 
 @pytest.mark.asyncio
-async def test_tui_shutdown_times_out_hung_agent_close(monkeypatch):
-    tui = _fake_tui()
-    monkeypatch.setattr("cli.tui.SHUTDOWN_PHASE_TIMEOUT", 0.01)
+async def test_tui_shutdown_times_out_hung_agent_close():
+    tui = _fake_tui(shutdown_phase_timeout=0.01)
 
     async def never_closes():
         await asyncio.sleep(60)
@@ -443,9 +448,8 @@ async def test_tui_undo_command_uses_checkpoint_store():
     assert "/tmp/file.txt" in rendered
 
 
-def test_tui_transcript_clips_to_available_terminal_height(monkeypatch):
-    tui = _fake_tui()
-    monkeypatch.setattr("cli.tui.shutil.get_terminal_size", lambda fallback: os.terminal_size((40, 9)))
+def test_tui_transcript_clips_to_available_terminal_height():
+    tui = _fake_tui(terminal_size_provider=lambda fallback: os.terminal_size((40, 9)))
     tui.state.transcript = [
         TranscriptEntry(kind="system", text=f"line {index}")
         for index in range(20)
@@ -573,9 +577,8 @@ def test_tui_details_pane_renders_recent_activity_without_transcript():
     assert "action: grep_search query=hello" not in transcript
 
 
-def test_tui_transcript_height_accounts_for_details_pane(monkeypatch):
-    tui = _fake_tui()
-    monkeypatch.setattr("cli.tui.shutil.get_terminal_size", lambda fallback: os.terminal_size((40, 12)))
+def test_tui_transcript_height_accounts_for_details_pane():
+    tui = _fake_tui(terminal_size_provider=lambda fallback: os.terminal_size((40, 12)))
 
     tui.state.details_visible = False
     hidden_height = tui._transcript_height()
@@ -586,9 +589,8 @@ def test_tui_transcript_height_accounts_for_details_pane(monkeypatch):
     assert visible_height == 3
 
 
-def test_tui_transcript_scrolls_and_clamps(monkeypatch):
-    tui = _fake_tui()
-    monkeypatch.setattr("cli.tui.shutil.get_terminal_size", lambda fallback: os.terminal_size((40, 9)))
+def test_tui_transcript_scrolls_and_clamps():
+    tui = _fake_tui(terminal_size_provider=lambda fallback: os.terminal_size((40, 9)))
     tui.state.transcript = [
         TranscriptEntry(kind="system", text=f"line {index}")
         for index in range(20)

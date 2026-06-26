@@ -1,6 +1,7 @@
 """Tool wrappers for orchestration patterns."""
 
 import json
+from collections.abc import Callable
 from typing import Dict
 
 from app.agent_config import AgentConfig
@@ -51,12 +52,14 @@ class SequentialPipelineTool(Tool):
         smol_rag,
         session_manager: SessionManager,
         child_agent_factory: ChildAgentFactory | None = None,
+        runner: Callable | None = None,
     ):
         self.configs = configs
         self.master_registry = master_registry
         self.smol_rag = smol_rag
         self.session_manager = session_manager
         self.child_agent_factory = child_agent_factory
+        self.runner = runner
 
     def bind(self, runtime_ctx: ToolRuntimeContext) -> Tool:
         return SequentialPipelineTool(
@@ -65,11 +68,13 @@ class SequentialPipelineTool(Tool):
             smol_rag=self.smol_rag,
             session_manager=self.session_manager,
             child_agent_factory=runtime_ctx.child_agent_factory or self.child_agent_factory,
+            runner=self.runner,
         )
 
     async def execute(self, **kwargs) -> str:
         from app.orchestration import sequential_pipeline
-        return await sequential_pipeline(
+        runner = self.runner or sequential_pipeline
+        return await runner(
             agent_names=kwargs["agent_names"],
             initial_input=kwargs["input"],
             configs=self.configs,
@@ -121,12 +126,14 @@ class FanoutPipelineTool(Tool):
         smol_rag,
         session_manager: SessionManager,
         child_agent_factory: ChildAgentFactory | None = None,
+        runner: Callable | None = None,
     ):
         self.configs = configs
         self.master_registry = master_registry
         self.smol_rag = smol_rag
         self.session_manager = session_manager
         self.child_agent_factory = child_agent_factory
+        self.runner = runner
 
     def bind(self, runtime_ctx: ToolRuntimeContext) -> Tool:
         return FanoutPipelineTool(
@@ -135,11 +142,13 @@ class FanoutPipelineTool(Tool):
             smol_rag=self.smol_rag,
             session_manager=self.session_manager,
             child_agent_factory=runtime_ctx.child_agent_factory or self.child_agent_factory,
+            runner=self.runner,
         )
 
     async def execute(self, **kwargs) -> str:
         from app.orchestration import fanout_pipeline
-        results = await fanout_pipeline(
+        runner = self.runner or fanout_pipeline
+        results = await runner(
             agent_names=kwargs["agent_names"],
             input_text=kwargs["input"],
             configs=self.configs,
@@ -193,6 +202,7 @@ class RouteTool(Tool):
         session_manager: SessionManager,
         child_agent_factory: ChildAgentFactory | None = None,
         llm=None,
+        runner: Callable | None = None,
     ):
         self.configs = configs
         self.master_registry = master_registry
@@ -200,6 +210,7 @@ class RouteTool(Tool):
         self.session_manager = session_manager
         self.child_agent_factory = child_agent_factory
         self.llm = llm
+        self.runner = runner
 
     def bind(self, runtime_ctx: ToolRuntimeContext) -> Tool:
         return RouteTool(
@@ -209,11 +220,13 @@ class RouteTool(Tool):
             session_manager=self.session_manager,
             child_agent_factory=runtime_ctx.child_agent_factory or self.child_agent_factory,
             llm=runtime_ctx.llm or self.llm,
+            runner=self.runner,
         )
 
     async def execute(self, **kwargs) -> str:
         from app.orchestration import route
-        return await route(
+        runner = self.runner or route
+        return await runner(
             input_text=kwargs["input"],
             routes=kwargs["routes"],
             configs=self.configs,

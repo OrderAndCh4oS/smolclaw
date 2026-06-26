@@ -11,6 +11,9 @@ from app.model_defaults import (
 )
 
 
+PRICING_TABLE_VERSION = "2026-06-23"
+
+
 @dataclass(frozen=True)
 class ModelPrice:
     unit: str
@@ -18,7 +21,7 @@ class ModelPrice:
     output_per_1m: Decimal = Decimal("0")
     cached_input_per_1m: Decimal | None = None
     source: str = ""
-    effective_date: str = "2026-06-23"
+    effective_date: str = PRICING_TABLE_VERSION
 
 
 @dataclass(frozen=True)
@@ -121,6 +124,7 @@ def aggregate_cost(records: Iterable) -> dict:
             continue
         totals[estimate.unit] = totals.get(estimate.unit, Decimal("0")) + estimate.amount
     return {
+        "pricing_table_version": PRICING_TABLE_VERSION,
         "totals": {unit: float(value) for unit, value in sorted(totals.items())},
         "unknown_calls": unknown_calls,
         "unknown_models": sorted(unknown_models),

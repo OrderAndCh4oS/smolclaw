@@ -12,13 +12,15 @@ def test_format_doctor_report_marks_warnings_and_nltk_fix():
     assert "nltk.download('stopwords')" in report
 
 
-def test_run_doctor_checks_workspace_and_environment(temp_dir, monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "openai")
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.setenv("SMOLCLAW_GATEWAY_TOKEN", "gateway")
-    monkeypatch.setattr("app.doctor.check_nltk_resource", lambda _resource: True)
-
-    checks = {check.name: check for check in run_doctor(temp_dir)}
+def test_run_doctor_checks_workspace_and_environment(temp_dir):
+    checks = {
+        check.name: check
+        for check in run_doctor(
+            temp_dir,
+            env={"OPENAI_API_KEY": "openai", "SMOLCLAW_GATEWAY_TOKEN": "gateway"},
+            nltk_resource_checker=lambda _resource: True,
+        )
+    }
 
     assert checks["state_root"].ok is True
     assert checks["openai_key"].ok is True

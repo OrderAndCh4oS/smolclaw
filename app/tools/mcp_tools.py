@@ -1,4 +1,5 @@
 import json
+from collections.abc import Callable
 from typing import Any, Dict
 
 from app.mcp_client import McpClient, McpDeniedException
@@ -9,8 +10,15 @@ from app.tools.permissions import COMMAND_EXECUTION, FILESYSTEM_READ, FILESYSTEM
 class McpToolBase(Tool):
     """Base class for MCP-delegating tools."""
 
-    def __init__(self, token_issuer_url: str, gateway_url: str | None = None):
-        self._client = McpClient(token_issuer_url, gateway_url=gateway_url)
+    def __init__(
+        self,
+        token_issuer_url: str,
+        gateway_url: str | None = None,
+        *,
+        client: McpClient | None = None,
+        client_factory: Callable[..., McpClient] | None = None,
+    ):
+        self._client = client or (client_factory or McpClient)(token_issuer_url, gateway_url=gateway_url)
 
     @property
     def _mcp_tool_name(self) -> str:

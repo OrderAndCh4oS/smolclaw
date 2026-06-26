@@ -315,16 +315,18 @@ class MemoryStoreTool(Tool):
             "required": ["content"],
         }
 
-    def __init__(self, smol_rag, memory_docs_dir: str, llm=None):
+    def __init__(self, smol_rag, memory_docs_dir: str, llm=None, classifier=None):
         self.smol_rag = smol_rag
         self.memory_docs_dir = memory_docs_dir
         self.llm = llm
+        self.classifier = classifier
 
     def bind(self, runtime_ctx: ToolRuntimeContext) -> Tool:
         return MemoryStoreTool(
             self.smol_rag,
             self.memory_docs_dir,
             llm=runtime_ctx.llm or self.llm,
+            classifier=self.classifier,
         )
 
     async def execute(self, **kwargs) -> str:
@@ -337,7 +339,8 @@ class MemoryStoreTool(Tool):
         # Auto-classify if no memory_type provided and LLM is available
         if not memory_type and self.llm:
             from app.taxonomy import classify_chunk
-            classified_type, confidence = await classify_chunk(content, self.llm)
+            classifier = self.classifier or classify_chunk
+            classified_type, confidence = await classifier(content, self.llm)
             memory_type = classified_type.value
 
         service = MemoryDocumentService(
@@ -560,14 +563,16 @@ class MemoryRecallTool(Tool):
             "required": ["query", "mode"],
         }
 
-    def __init__(self, smol_rag, return_tool_result: bool = False):
+    def __init__(self, smol_rag, return_tool_result: bool = False, promote_accessed_excerpts=None):
         self.smol_rag = smol_rag
         self.return_tool_result = return_tool_result
+        self.promote_accessed_excerpts = promote_accessed_excerpts or _promote_accessed_excerpts
 
     def bind(self, runtime_ctx: ToolRuntimeContext) -> Tool:
         return MemoryRecallTool(
             self.smol_rag,
             return_tool_result=True,
+            promote_accessed_excerpts=self.promote_accessed_excerpts,
         )
 
     async def _format_return(self, result: ToolResult) -> ToolResult | str:
@@ -575,7 +580,7 @@ class MemoryRecallTool(Tool):
             return result
         excerpt_ids = result.metadata.get("accessed_excerpt_ids") or []
         if excerpt_ids:
-            await _promote_accessed_excerpts(self.smol_rag, excerpt_ids)
+            await self.promote_accessed_excerpts(self.smol_rag, excerpt_ids)
         return result.content
 
     async def execute(self, **kwargs) -> ToolResult | str:

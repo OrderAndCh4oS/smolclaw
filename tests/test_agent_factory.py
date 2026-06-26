@@ -1,10 +1,10 @@
 import os
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.agent_config import AgentConfig
-from app.agent_factory import ChildAgentFactory, build_agent_loop
+from app.agent_factory import ChildAgentFactory, build_agent_loop as _build_agent_loop
 from app.agent_loop import AgentLoop
 from app.model_settings import RuntimeModelSettings
 from app.session import SessionManager
@@ -176,26 +176,28 @@ def _mock_create_llm(completion_model=None, **kwargs):
     return mock
 
 
+def build_agent_loop(*args, **kwargs):
+    kwargs.setdefault("llm_factory", _mock_create_llm)
+    return _build_agent_loop(*args, **kwargs)
+
+
 class TestAgentFactory:
-    @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     def test_build_agent_loop_returns_agent_loop(
-        self, _mock_create, researcher_config, master_registry, mock_smol_rag, sessions_dir
+        self, researcher_config, master_registry, mock_smol_rag, sessions_dir
     ):
         sm = SessionManager(sessions_dir)
         loop = build_agent_loop(researcher_config, master_registry, mock_smol_rag, sm)
         assert isinstance(loop, AgentLoop)
 
-    @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     def test_build_agent_loop_uses_config_model(
-        self, _mock_create, researcher_config, master_registry, mock_smol_rag, sessions_dir
+        self, researcher_config, master_registry, mock_smol_rag, sessions_dir
     ):
         sm = SessionManager(sessions_dir)
         loop = build_agent_loop(researcher_config, master_registry, mock_smol_rag, sm)
         assert loop.llm.completion_model == "gpt-5.2-instant"
 
-    @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     def test_build_agent_loop_uses_subagent_model_default_for_children(
-        self, _mock_create, researcher_config, master_registry, mock_smol_rag, sessions_dir
+        self, researcher_config, master_registry, mock_smol_rag, sessions_dir
     ):
         sm = SessionManager(sessions_dir)
         settings = RuntimeModelSettings()
@@ -212,9 +214,8 @@ class TestAgentFactory:
         assert loop.llm.completion_model == "gpt-5.5"
         assert loop.llm.reasoning_effort == "medium"
 
-    @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     def test_build_agent_loop_filters_tools(
-        self, _mock_create, researcher_config, master_registry, mock_smol_rag, sessions_dir
+        self, researcher_config, master_registry, mock_smol_rag, sessions_dir
     ):
         sm = SessionManager(sessions_dir)
         loop = build_agent_loop(researcher_config, master_registry, mock_smol_rag, sm)
@@ -223,9 +224,8 @@ class TestAgentFactory:
         assert names == ["tool_a", "tool_b"]
 
     @pytest.mark.asyncio
-    @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     async def test_build_agent_loop_checkpoints_filesystem_mutations(
-        self, _mock_create, mock_smol_rag, sessions_dir, temp_dir
+        self, mock_smol_rag, sessions_dir, temp_dir
     ):
         workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
         master = build_tool_registry(
@@ -256,9 +256,8 @@ class TestAgentFactory:
         assert len(checkpoint_files) == 1
 
     @pytest.mark.asyncio
-    @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     async def test_build_agent_loop_loads_workspace_permission_policy(
-        self, _mock_create, mock_smol_rag, sessions_dir, temp_dir, monkeypatch
+        self, mock_smol_rag, sessions_dir, temp_dir, monkeypatch
     ):
         monkeypatch.setenv("HOME", os.path.join(temp_dir, "home"))
         monkeypatch.delenv("SMOLCLAW_PERMISSION_POLICY", raising=False)
@@ -289,17 +288,15 @@ class TestAgentFactory:
         assert result.startswith("Error: tool 'tool_a' denied by permission policy")
         assert "workspace policy blocks this tool" in result
 
-    @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     def test_build_agent_loop_uses_persona(
-        self, _mock_create, researcher_config, master_registry, mock_smol_rag, sessions_dir
+        self, researcher_config, master_registry, mock_smol_rag, sessions_dir
     ):
         sm = SessionManager(sessions_dir)
         loop = build_agent_loop(researcher_config, master_registry, mock_smol_rag, sm)
         assert loop.context_builder.persona == "You are Researcher."
 
-    @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     def test_build_agent_loop_session_key_isolation(
-        self, _mock_create, researcher_config, writer_config, master_registry, mock_smol_rag, sessions_dir
+        self, researcher_config, writer_config, master_registry, mock_smol_rag, sessions_dir
     ):
         sm = SessionManager(sessions_dir)
         loop_r = build_agent_loop(researcher_config, master_registry, mock_smol_rag, sm)
@@ -308,18 +305,16 @@ class TestAgentFactory:
         assert "researcher" in loop_r.session.key
         assert "writer" in loop_w.session.key
 
-    @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     def test_build_agent_loop_shared_smol_rag(
-        self, _mock_create, researcher_config, writer_config, master_registry, mock_smol_rag, sessions_dir
+        self, researcher_config, writer_config, master_registry, mock_smol_rag, sessions_dir
     ):
         sm = SessionManager(sessions_dir)
         loop_r = build_agent_loop(researcher_config, master_registry, mock_smol_rag, sm)
         loop_w = build_agent_loop(writer_config, master_registry, mock_smol_rag, sm)
         assert loop_r.smol_rag is loop_w.smol_rag
 
-    @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     def test_build_agent_loop_uses_exact_session_key_when_provided(
-        self, _mock_create, researcher_config, master_registry, mock_smol_rag, sessions_dir
+        self, researcher_config, master_registry, mock_smol_rag, sessions_dir
     ):
         sm = SessionManager(sessions_dir)
         loop = build_agent_loop(
@@ -380,22 +375,21 @@ class TestAgentFactory:
             tools=["tool_search"],
         )
 
-        with patch("app.agent_factory.create_llm", return_value=llm):
-            loop = build_agent_loop(
-                config,
-                registry,
-                mock_smol_rag,
-                SessionManager(sessions_dir),
-            )
-            result = await loop.process("find the hidden tool")
+        loop = build_agent_loop(
+            config,
+            registry,
+            mock_smol_rag,
+            SessionManager(sessions_dir),
+            llm_factory=lambda **_kwargs: llm,
+        )
+        result = await loop.process("find the hidden tool")
 
         assert result == "done"
         assert seen_tool_names[0] == ["tool_search"]
         assert seen_tool_names[1] == ["hidden_tool", "tool_search"]
 
-    @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     def test_child_agent_factory_uses_registry_factory_for_child_config(
-        self, _mock_create, master_registry, mock_smol_rag, sessions_dir
+        self, master_registry, mock_smol_rag, sessions_dir
     ):
         child_registry = ToolRegistry()
         child_registry.register(StubToolC())
@@ -413,6 +407,7 @@ class TestAgentFactory:
             workspace=None,
             session_manager=SessionManager(sessions_dir),
             parent_session_key="parent",
+            llm_factory=_mock_create_llm,
         )
 
         loop = factory.build(child_config, purpose="spawn")
@@ -421,9 +416,8 @@ class TestAgentFactory:
         names = [d["function"]["name"] for d in defs]
         assert names == ["tool_c"]
 
-    @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     def test_child_agent_factory_forwards_registry_factory_to_grandchildren(
-        self, _mock_create, mock_smol_rag, sessions_dir
+        self, mock_smol_rag, sessions_dir
     ):
         root_registry = ToolRegistry()
         root_registry.register(CaptureChildFactoryTool())
@@ -451,6 +445,7 @@ class TestAgentFactory:
             workspace=None,
             session_manager=SessionManager(sessions_dir),
             parent_session_key="parent",
+            llm_factory=_mock_create_llm,
         )
 
         child_loop = factory.build(
@@ -480,9 +475,8 @@ class TestAgentFactory:
         names = [d["function"]["name"] for d in defs]
         assert names == ["tool_c"]
 
-    @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     def test_build_agent_loop_auto_exposes_tool_search_for_hidden_deferred_tools(
-        self, _mock_create, mock_smol_rag, sessions_dir, temp_dir
+        self, mock_smol_rag, sessions_dir, temp_dir
     ):
         registry = build_tool_registry(
             smol_rag=mock_smol_rag,
@@ -578,15 +572,15 @@ class TestAgentFactory:
         runner.on(ON_BEFORE_TOOL, lambda ctx: events.append(("before", ctx["tool_name"])))
         runner.on(ON_AFTER_TOOL, lambda ctx: events.append(("after", ctx["tool_name"])))
 
-        with patch("app.agent_factory.create_llm", return_value=llm):
-            loop = build_agent_loop(
-                config,
-                registry,
-                mock_smol_rag,
-                SessionManager(sessions_dir),
-                hook_runner=runner,
-            )
-            result = await loop.process("echo hello")
+        loop = build_agent_loop(
+            config,
+            registry,
+            mock_smol_rag,
+            SessionManager(sessions_dir),
+            hook_runner=runner,
+            llm_factory=lambda **_kwargs: llm,
+        )
+        result = await loop.process("echo hello")
 
         assert result == "done"
         assert events == [("before", "echo"), ("after", "echo")]
@@ -637,15 +631,16 @@ class TestAgentFactory:
             tools=["memory_search", "memory_recall"],
         )
 
-        with patch("app.agent_factory.create_llm", return_value=llm), \
-            patch("app.agent_factory._promote_accessed_excerpts", new=AsyncMock()) as mock_promote:
-            loop = build_agent_loop(
-                config,
-                registry,
-                mock_smol_rag,
-                SessionManager(sessions_dir),
-            )
-            result = await loop.process("use memory")
+        mock_promote = AsyncMock()
+        loop = build_agent_loop(
+            config,
+            registry,
+            mock_smol_rag,
+            SessionManager(sessions_dir),
+            llm_factory=lambda **_kwargs: llm,
+            promote_accessed_excerpts=mock_promote,
+        )
+        result = await loop.process("use memory")
 
         assert result == "done"
         mock_promote.assert_awaited_once_with(mock_smol_rag, ["exc-1", "exc-2"])
@@ -692,15 +687,16 @@ class TestAgentFactory:
             tools=["memory_recall"],
         )
 
-        with patch("app.agent_factory.create_llm", return_value=llm), \
-            patch("app.agent_factory._promote_accessed_excerpts", new=AsyncMock()) as mock_promote:
-            loop = build_agent_loop(
-                config,
-                registry,
-                mock_smol_rag,
-                SessionManager(sessions_dir),
-            )
-            result = await loop.process("use memory")
+        mock_promote = AsyncMock()
+        loop = build_agent_loop(
+            config,
+            registry,
+            mock_smol_rag,
+            SessionManager(sessions_dir),
+            llm_factory=lambda **_kwargs: llm,
+            promote_accessed_excerpts=mock_promote,
+        )
+        result = await loop.process("use memory")
 
         assert result == "done"
         mock_promote.assert_awaited_once_with(mock_smol_rag, ["exc-1"])
@@ -730,12 +726,15 @@ class TestAgentFactory:
             },
         ])
 
-        registry = build_tool_registry(
-            smol_rag=mock_smol_rag,
-            workspace=WorkspaceContext.from_root(temp_dir),
-            llm=None,
-            transport="direct",
-        )
+        from app.tools.memory_tools import MemoryStoreTool
+
+        mock_classify = AsyncMock(return_value=(MemoryType.FACT, 0.9))
+        registry = ToolRegistry()
+        registry.register(MemoryStoreTool(
+            mock_smol_rag,
+            WorkspaceContext.from_root(temp_dir).ensure_dirs().paths.memory_docs_dir,
+            classifier=mock_classify,
+        ))
         config = AgentConfig(
             name="researcher",
             model="gpt-test",
@@ -743,15 +742,14 @@ class TestAgentFactory:
             tools=["memory_store"],
         )
 
-        with patch("app.agent_factory.create_llm", return_value=llm), \
-            patch("app.taxonomy.classify_chunk", new=AsyncMock(return_value=(MemoryType.FACT, 0.9))) as mock_classify:
-            loop = build_agent_loop(
-                config,
-                registry,
-                mock_smol_rag,
-                SessionManager(sessions_dir),
-            )
-            result = await loop.process("store this without a type")
+        loop = build_agent_loop(
+            config,
+            registry,
+            mock_smol_rag,
+            SessionManager(sessions_dir),
+            llm_factory=lambda **_kwargs: llm,
+        )
+        result = await loop.process("store this without a type")
 
         assert result == "done"
         mock_classify.assert_awaited_once()
@@ -778,9 +776,8 @@ class TestAgentFactory:
             assert ch not in first
             assert ch not in second
 
-    @patch("app.agent_factory.create_llm", side_effect=_mock_create_llm)
     def test_child_agent_factory_resolves_memory_per_child_config(
-        self, _mock_create, master_registry, mock_smol_rag, sessions_dir
+        self, master_registry, mock_smol_rag, sessions_dir
     ):
         from app.hooks import ON_AFTER_TOOL
 
@@ -807,6 +804,7 @@ class TestAgentFactory:
             parent_session_key="parent",
             smol_rag_resolver=resolve_smol_rag,
             hook_runner_configurers_resolver=resolve_hook_runner_configurers,
+            llm_factory=_mock_create_llm,
         )
 
         memoryless = factory.build(

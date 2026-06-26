@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock, AsyncMock
 
 import pytest
 
@@ -26,12 +26,16 @@ class TestDetectProvider:
 
 
 class TestCreateLlm:
-    @patch("app.llm.OpenAiLlm")
-    def test_returns_openai_for_gpt(self, MockOpenAi):
+    def test_returns_openai_for_gpt(self):
+        MockOpenAi = MagicMock()
         mock_instance = MagicMock()
         MockOpenAi.side_effect = lambda **kwargs: mock_instance
 
-        result = create_llm(completion_model="gpt-4o", embedding_model="text-embedding-3-small")
+        result = create_llm(
+            completion_model="gpt-4o",
+            embedding_model="text-embedding-3-small",
+            openai_factory=MockOpenAi,
+        )
         assert result is mock_instance
         MockOpenAi.assert_called_once_with(
             completion_model="gpt-4o",
@@ -42,22 +46,27 @@ class TestCreateLlm:
             db_path=None,
         )
 
-    @patch("app.llm.OpenAiLlm")
-    @patch("app.llm.AnthropicLlm")
-    def test_returns_composite_for_claude_with_embedding(self, MockAnthropic, MockOpenAi):
+    def test_returns_composite_for_claude_with_embedding(self):
+        MockAnthropic = MagicMock()
+        MockOpenAi = MagicMock()
         mock_anthropic = MagicMock()
         mock_openai = MagicMock()
         MockAnthropic.side_effect = lambda **kwargs: mock_anthropic
         MockOpenAi.side_effect = lambda **kwargs: mock_openai
 
-        result = create_llm(completion_model="claude-sonnet-4-20250514", embedding_model="text-embedding-3-small")
+        result = create_llm(
+            completion_model="claude-sonnet-4-20250514",
+            embedding_model="text-embedding-3-small",
+            anthropic_factory=MockAnthropic,
+            openai_factory=MockOpenAi,
+        )
         assert isinstance(result, CompositeLlm)
         assert result.completion_provider is mock_anthropic
         assert result.embedding_provider is mock_openai
 
-    @patch("app.llm.VoyageEmbeddingLlm")
-    @patch("app.llm.AnthropicLlm")
-    def test_returns_composite_for_claude_with_voyage_embedding(self, MockAnthropic, MockVoyage):
+    def test_returns_composite_for_claude_with_voyage_embedding(self):
+        MockAnthropic = MagicMock()
+        MockVoyage = MagicMock()
         mock_anthropic = MagicMock()
         mock_voyage = MagicMock()
         MockAnthropic.side_effect = lambda **kwargs: mock_anthropic
@@ -67,6 +76,8 @@ class TestCreateLlm:
             completion_model="claude-sonnet-4-20250514",
             embedding_model="voyage-4",
             embedding_provider="voyage",
+            anthropic_factory=MockAnthropic,
+            voyage_factory=MockVoyage,
         )
         assert isinstance(result, CompositeLlm)
         assert result.completion_provider is mock_anthropic
@@ -78,20 +89,20 @@ class TestCreateLlm:
             db_path=None,
         )
 
-    @patch("app.llm.AnthropicLlm")
-    def test_returns_bare_anthropic_without_embedding(self, MockAnthropic):
+    def test_returns_bare_anthropic_without_embedding(self):
+        MockAnthropic = MagicMock()
         mock_anthropic = MagicMock()
         MockAnthropic.side_effect = lambda **kwargs: mock_anthropic
 
-        result = create_llm(completion_model="claude-sonnet-4-20250514")
+        result = create_llm(completion_model="claude-sonnet-4-20250514", anthropic_factory=MockAnthropic)
         assert result is mock_anthropic
 
-    @patch("app.llm.OpenAiLlm")
-    def test_returns_openai_for_none_model_default(self, MockOpenAi):
+    def test_returns_openai_for_none_model_default(self):
+        MockOpenAi = MagicMock()
         mock_instance = MagicMock()
         MockOpenAi.side_effect = lambda **kwargs: mock_instance
 
-        result = create_llm()
+        result = create_llm(openai_factory=MockOpenAi)
         assert result is mock_instance
         MockOpenAi.assert_called_once_with(
             completion_model="gpt-5.5",
@@ -102,12 +113,12 @@ class TestCreateLlm:
             db_path=None,
         )
 
-    @patch("app.llm.OpenAiLlm")
-    def test_passes_db_path_to_default_provider(self, MockOpenAi):
+    def test_passes_db_path_to_default_provider(self):
+        MockOpenAi = MagicMock()
         mock_instance = MagicMock()
         MockOpenAi.side_effect = lambda **kwargs: mock_instance
 
-        result = create_llm(db_path="/tmp/workspace/stores/smolclaw.db")
+        result = create_llm(db_path="/tmp/workspace/stores/smolclaw.db", openai_factory=MockOpenAi)
 
         assert result is mock_instance
         MockOpenAi.assert_called_once_with(

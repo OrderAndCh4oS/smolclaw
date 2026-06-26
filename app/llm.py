@@ -86,6 +86,9 @@ def create_llm(
     provider: str | None = None,
     embedding_provider: str | None = None,
     require_embeddings: bool = False,
+    openai_factory=None,
+    anthropic_factory=None,
+    voyage_factory=None,
     **kwargs,
 ) -> LlmAdapter | CompletionAdapter:
     completion_model = completion_model or COMPLETION_MODEL
@@ -98,7 +101,8 @@ def create_llm(
     ) if embedding_model else provider
 
     if provider == "anthropic":
-        anthropic_llm = AnthropicLlm(
+        anthropic_factory = anthropic_factory or AnthropicLlm
+        anthropic_llm = anthropic_factory(
             completion_model=completion_model,
             query_cache_kv=kwargs.get("query_cache_kv"),
             db_path=kwargs.get("db_path"),
@@ -113,6 +117,8 @@ def create_llm(
                 openai_api_key=kwargs.get("openai_api_key"),
                 voyage_api_key=kwargs.get("voyage_api_key"),
                 db_path=kwargs.get("db_path"),
+                openai_factory=openai_factory,
+                voyage_factory=voyage_factory,
             )
             return CompositeLlm(
                 completion_provider=anthropic_llm,
@@ -124,7 +130,8 @@ def create_llm(
     if provider != "openai":
         raise ValueError(f"Unsupported LLM provider: {provider}")
 
-    openai_llm = OpenAiLlm(
+    openai_factory = openai_factory or OpenAiLlm
+    openai_llm = openai_factory(
         completion_model=completion_model,
         embedding_model=embedding_model if embedding_provider == "openai" else None,
         query_cache_kv=kwargs.get("query_cache_kv"),
@@ -143,6 +150,8 @@ def create_llm(
                 openai_api_key=kwargs.get("openai_api_key"),
                 voyage_api_key=kwargs.get("voyage_api_key"),
                 db_path=kwargs.get("db_path"),
+                openai_factory=openai_factory,
+                voyage_factory=voyage_factory,
             ),
         )
     return openai_llm
@@ -150,7 +159,8 @@ def create_llm(
 
 def _provider_for_embedding(provider: str, embedding_model: str, **kwargs):
     if provider == "openai":
-        return OpenAiLlm(
+        openai_factory = kwargs.get("openai_factory") or OpenAiLlm
+        return openai_factory(
             embedding_model=embedding_model,
             query_cache_kv=kwargs.get("query_cache_kv"),
             embedding_cache_kv=kwargs.get("embedding_cache_kv"),
@@ -158,7 +168,8 @@ def _provider_for_embedding(provider: str, embedding_model: str, **kwargs):
             db_path=kwargs.get("db_path"),
         )
     if provider == "voyage":
-        return VoyageEmbeddingLlm(
+        voyage_factory = kwargs.get("voyage_factory") or VoyageEmbeddingLlm
+        return voyage_factory(
             embedding_model=embedding_model,
             embedding_cache_kv=kwargs.get("embedding_cache_kv"),
             voyage_api_key=kwargs.get("voyage_api_key"),

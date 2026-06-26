@@ -1,5 +1,6 @@
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -37,9 +38,10 @@ class WebSearchTool(Tool):
             "required": ["query"],
         }
 
-    def __init__(self, api_key: str = None):
+    def __init__(self, api_key: str = None, http_client_factory: Callable[..., object] | None = None):
         _load_web_env()
         self.api_key = api_key or os.getenv("BRAVE_SEARCH_API_KEY")
+        self.http_client_factory = http_client_factory or httpx.AsyncClient
 
     async def execute(self, **kwargs) -> str:
         if not self.api_key:
@@ -47,7 +49,7 @@ class WebSearchTool(Tool):
 
         query = kwargs["query"]
         try:
-            async with httpx.AsyncClient() as client:
+            async with self.http_client_factory() as client:
                 resp = await client.get(
                     "https://api.search.brave.com/res/v1/web/search",
                     params={"q": query, "count": 5},
@@ -73,6 +75,9 @@ class WebSearchTool(Tool):
 
 
 class WebFetchTool(Tool):
+    def __init__(self, http_client_factory: Callable[..., object] | None = None):
+        self.http_client_factory = http_client_factory or httpx.AsyncClient
+
     @property
     def name(self) -> str:
         return "web_fetch"
@@ -101,7 +106,7 @@ class WebFetchTool(Tool):
             return f"Error: invalid URL: {url}"
 
         try:
-            async with httpx.AsyncClient(follow_redirects=True) as client:
+            async with self.http_client_factory(follow_redirects=True) as client:
                 resp = await client.get(url, timeout=10.0)
                 resp.raise_for_status()
                 content = resp.text

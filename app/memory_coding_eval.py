@@ -114,8 +114,9 @@ def load_memory_coding_eval_task(task_dir: str) -> MemoryCodingEvalTask:
 
 
 class MemoryCodingEvalRunner:
-    def __init__(self, *, keep_workspaces: bool = False):
+    def __init__(self, *, keep_workspaces: bool = False, command_runner=None):
         self.keep_workspaces = keep_workspaces
+        self.command_runner = command_runner or subprocess.run
 
     def run(self, task_dir: str) -> MemoryCodingEvalReport:
         task = load_memory_coding_eval_task(task_dir)
@@ -180,7 +181,7 @@ class MemoryCodingEvalRunner:
         parts = shlex.split(command)
         if parts and parts[0] == "python":
             parts[0] = sys.executable
-        result = subprocess.run(
+        result = self.command_runner(
             parts,
             cwd=workspace,
             text=True,

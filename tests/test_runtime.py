@@ -1,6 +1,6 @@
 import json
 import os
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -9,7 +9,8 @@ from app.context_assembly import ContextAssembler
 from app.context_builder import ContextBuilder
 from app.hooks import ON_AFTER_TOOL
 from app.runtime_config import RuntimeAdapterConfig
-from app.runtime import RuntimeEnvironment, build_configured_agent
+from app.runtime import RuntimeEnvironment, build_configured_agent, build_master_registry
+from app.runtime_builder import build_runtime_services
 from app.session import SessionManager
 from app.workspace import WorkspaceContext
 
@@ -36,6 +37,7 @@ class TestRuntimeMemoryCapabilities:
             smol_rag=mock_smol_rag,
             session_manager=SessionManager(sessions_dir),
             workspace=WorkspaceContext.from_root(temp_dir),
+            llm=llm,
         )
         config = AgentConfig(
             name="reader",
@@ -46,8 +48,7 @@ class TestRuntimeMemoryCapabilities:
             memory_window=20,
         )
 
-        with patch("app.agent_factory.create_llm", return_value=llm):
-            loop = build_configured_agent(config, env)
+        loop = build_configured_agent(config, env)
 
         assert loop.smol_rag is None
         assert isinstance(loop.context_builder, ContextBuilder)
@@ -70,6 +71,7 @@ class TestRuntimeMemoryCapabilities:
             smol_rag=mock_smol_rag,
             session_manager=SessionManager(sessions_dir),
             workspace=WorkspaceContext.from_root(temp_dir),
+            llm=llm,
         )
         config = AgentConfig(
             name="researcher",
@@ -80,8 +82,7 @@ class TestRuntimeMemoryCapabilities:
             memory_window=20,
         )
 
-        with patch("app.agent_factory.create_llm", return_value=llm):
-            loop = build_configured_agent(config, env)
+        loop = build_configured_agent(config, env)
 
         assert loop.smol_rag is mock_smol_rag
         assert isinstance(loop.context_builder, ContextAssembler)
@@ -118,6 +119,7 @@ class TestRuntimeMemoryCapabilities:
             smol_rag=mock_smol_rag,
             session_manager=SessionManager(sessions_dir),
             workspace=workspace,
+            llm=llm,
         )
         config = AgentConfig(
             name="reader",
@@ -127,8 +129,7 @@ class TestRuntimeMemoryCapabilities:
             capabilities=["filesystem"],
         )
 
-        with patch("app.agent_factory.create_llm", return_value=llm):
-            loop = build_configured_agent(config, env)
+        loop = build_configured_agent(config, env)
 
         prompt = loop.context_builder.build_system_prompt()
         assert "Memory Eval Status" in prompt
@@ -136,15 +137,51 @@ class TestRuntimeMemoryCapabilities:
 
 
 class TestRuntimeProviders:
+    def test_runtime_services_reject_unsupported_command_adapter(self, temp_dir):
+        adapter_config = RuntimeAdapterConfig.from_dict({
+            "adapters": {"command": {"provider": "remote"}}
+        })
+
+        with pytest.raises(ValueError, match="Unsupported command adapter provider 'remote'"):
+            build_runtime_services(temp_dir, adapter_config=adapter_config)
+
+    @pytest.mark.asyncio
+    async def test_master_registry_uses_agent_command_runner(self, mock_smol_rag, sessions_dir, temp_dir):
+        calls = []
+
+        def fake_runner(args, **kwargs):
+            calls.append((args, kwargs))
+            return MagicMock(returncode=0, stdout="clean", stderr="")
+
+        env = RuntimeEnvironment(
+            smol_rag=mock_smol_rag,
+            session_manager=SessionManager(sessions_dir),
+            workspace=WorkspaceContext.from_root(temp_dir),
+            agent_command_runner=fake_runner,
+        )
+        registry = build_master_registry(env, capability_names=["command"])
+
+        result = await registry.execute("git_status", {"cwd": "."})
+
+        assert result == "exit code 0\nclean"
+        assert calls[0][0] == ["git", "status", "--short", "--branch"]
+
     def test_build_configured_agent_uses_project_default_for_default_agent_model(
         self, mock_smol_rag, sessions_dir, temp_dir
     ):
         llm = _make_loop_llm()
         workspace = WorkspaceContext.from_root(temp_dir)
+        create_calls = []
+
+        def llm_factory(**kwargs):
+            create_calls.append(kwargs)
+            return llm
+
         env = RuntimeEnvironment(
             smol_rag=mock_smol_rag,
             session_manager=SessionManager(sessions_dir),
             workspace=workspace,
+            llm_factory=llm_factory,
             adapter_config=RuntimeAdapterConfig.from_dict({
                 "adapters": {
                     "llm": {
@@ -164,22 +201,28 @@ class TestRuntimeProviders:
             capabilities=["filesystem"],
         )
 
-        with patch("app.agent_factory.create_llm", return_value=llm) as mock_create:
-            build_configured_agent(config, env)
+        build_configured_agent(config, env)
 
-        mock_create.assert_called_once()
-        assert mock_create.call_args.kwargs["completion_model"] == "gpt-5.4-pro"
-        assert mock_create.call_args.kwargs["provider"] == "openai"
+        assert len(create_calls) == 1
+        assert create_calls[0]["completion_model"] == "gpt-5.4-pro"
+        assert create_calls[0]["provider"] == "openai"
 
     def test_build_configured_agent_passes_anthropic_provider_from_project_default(
         self, mock_smol_rag, sessions_dir, temp_dir
     ):
         llm = _make_loop_llm()
         llm.completion_model = "claude-sonnet-4-20250514"
+        create_calls = []
+
+        def llm_factory(**kwargs):
+            create_calls.append(kwargs)
+            return llm
+
         env = RuntimeEnvironment(
             smol_rag=mock_smol_rag,
             session_manager=SessionManager(sessions_dir),
             workspace=WorkspaceContext.from_root(temp_dir),
+            llm_factory=llm_factory,
             adapter_config=RuntimeAdapterConfig.from_dict({
                 "adapters": {
                     "llm": {
@@ -199,20 +242,26 @@ class TestRuntimeProviders:
             capabilities=["filesystem"],
         )
 
-        with patch("app.agent_factory.create_llm", return_value=llm) as mock_create:
-            build_configured_agent(config, env)
+        build_configured_agent(config, env)
 
-        assert mock_create.call_args.kwargs["completion_model"] == "claude-sonnet-4-20250514"
-        assert mock_create.call_args.kwargs["provider"] == "anthropic"
+        assert create_calls[0]["completion_model"] == "claude-sonnet-4-20250514"
+        assert create_calls[0]["provider"] == "anthropic"
 
     def test_build_configured_agent_keeps_explicit_agent_model(
         self, mock_smol_rag, sessions_dir, temp_dir
     ):
         llm = _make_loop_llm()
+        create_calls = []
+
+        def llm_factory(**kwargs):
+            create_calls.append(kwargs)
+            return llm
+
         env = RuntimeEnvironment(
             smol_rag=mock_smol_rag,
             session_manager=SessionManager(sessions_dir),
             workspace=WorkspaceContext.from_root(temp_dir),
+            llm_factory=llm_factory,
             adapter_config=RuntimeAdapterConfig.from_dict({
                 "adapters": {
                     "llm": {
@@ -232,10 +281,9 @@ class TestRuntimeProviders:
             capabilities=["filesystem"],
         )
 
-        with patch("app.agent_factory.create_llm", return_value=llm) as mock_create:
-            build_configured_agent(config, env)
+        build_configured_agent(config, env)
 
-        assert mock_create.call_args.kwargs["completion_model"] == "gpt-custom"
+        assert create_calls[0]["completion_model"] == "gpt-custom"
 
     @pytest.mark.asyncio
     async def test_build_configured_agent_uses_mcp_wrappers_for_gateway_transport(
@@ -246,6 +294,7 @@ class TestRuntimeProviders:
             smol_rag=mock_smol_rag,
             session_manager=SessionManager(sessions_dir),
             workspace=WorkspaceContext.from_root(temp_dir),
+            llm=llm,
             transport="mcp",
             token_issuer_url="http://issuer",
             gateway_url="http://gateway",
@@ -258,8 +307,7 @@ class TestRuntimeProviders:
             capabilities=["filesystem", "web"],
         )
 
-        with patch("app.agent_factory.create_llm", return_value=llm):
-            loop = build_configured_agent(config, env)
+        loop = build_configured_agent(config, env)
 
         assert loop.tool_registry._tools["read_file"].__class__.__name__ == "McpFileReadTool"
         assert loop.tool_registry._tools["web_fetch"].__class__.__name__ == "McpHttpFetchTool"
@@ -271,6 +319,7 @@ class TestRuntimeProviders:
             smol_rag=mock_smol_rag,
             session_manager=SessionManager(sessions_dir),
             workspace=WorkspaceContext.from_root(temp_dir),
+            llm=_make_loop_llm(),
             transport="mcp",
             token_issuer_url="http://issuer",
             gateway_url="http://gateway",
@@ -283,8 +332,7 @@ class TestRuntimeProviders:
             capabilities=["filesystem"],
         )
 
-        with patch("app.agent_factory.create_llm", return_value=_make_loop_llm()):
-            with pytest.raises(ValueError) as exc_info:
-                build_configured_agent(config, env)
+        with pytest.raises(ValueError) as exc_info:
+            build_configured_agent(config, env)
 
         assert "unavailable for transport 'mcp'" in str(exc_info.value)

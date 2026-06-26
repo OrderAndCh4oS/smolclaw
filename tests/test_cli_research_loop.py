@@ -1,6 +1,6 @@
 import os
 from contextlib import nullcontext
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from typer.testing import CliRunner
@@ -100,15 +100,15 @@ def test_research_loop_help_renders():
 
 
 def test_research_loop_command_defaults_auto_export_off():
-    from cli.main import app
+    from cli.main import app, override_cli_dependencies
 
     async def fake_coro():
         return None
 
     coro = fake_coro()
     mock_research_loop = MagicMock(return_value=coro)
-    with patch("cli.main._research_loop", new=mock_research_loop), \
-        patch("cli.main.asyncio.run") as mock_run:
+    mock_run = MagicMock()
+    with override_cli_dependencies(research_loop_runner=mock_research_loop, async_runner=mock_run):
         result = CliRunner().invoke(app, ["research-loop", "Track model releases"])
 
     assert result.exit_code == 0
@@ -132,7 +132,7 @@ def test_build_research_loop_prompt_emphasizes_delta_after_first_run():
 
 @pytest.mark.asyncio
 async def test_research_loop_runs_until_max_runs(temp_dir):
-    from cli.main import _research_loop
+    from cli.main import CliDependencies, _research_loop
 
     workspace_root = os.path.join(temp_dir, "workspace")
     fake_console = FakeConsole()
@@ -152,20 +152,23 @@ async def test_research_loop_runs_until_max_runs(temp_dir):
 
     fake_agent = _make_agent(fake_process, smol_rag)
 
-    with patch("cli.main._build_cli_runtime", return_value=_fake_runtime(workspace_root, smol_rag, session_manager)), \
-        patch("cli.main._build_multiagent", return_value=fake_agent), \
-        patch("cli.main._create_research_loop_stop_controller", return_value=(stop_controller, esc_watcher)), \
-        patch("cli.main.console", fake_console):
-        await _research_loop(
-            goal="Track UK AI regulation updates.",
-            workspace=workspace_root,
-            agent_name="researcher",
-            session_key="research-loop",
-            interval=0.01,
-            max_runs=2,
-            auto_export=True,
-            show_actions=False,
-        )
+    deps = CliDependencies(
+        console=fake_console,
+        runtime_builder=lambda *args, **kwargs: _fake_runtime(workspace_root, smol_rag, session_manager),
+        agent_builder=lambda **kwargs: fake_agent,
+        research_stop_controller_factory=lambda: (stop_controller, esc_watcher),
+    )
+    await _research_loop(
+        goal="Track UK AI regulation updates.",
+        workspace=workspace_root,
+        agent_name="researcher",
+        session_key="research-loop",
+        interval=0.01,
+        max_runs=2,
+        auto_export=True,
+        show_actions=False,
+        deps=deps,
+    )
 
     assert len(prompts) == 2
     assert "Run number: 1" in prompts[0]
@@ -180,7 +183,7 @@ async def test_research_loop_runs_until_max_runs(temp_dir):
 
 @pytest.mark.asyncio
 async def test_research_loop_stops_cleanly_between_cycles(temp_dir):
-    from cli.main import _research_loop
+    from cli.main import CliDependencies, _research_loop
 
     workspace_root = os.path.join(temp_dir, "workspace")
     fake_console = FakeConsole()
@@ -197,20 +200,23 @@ async def test_research_loop_stops_cleanly_between_cycles(temp_dir):
 
     fake_agent = _make_agent(fake_process, smol_rag)
 
-    with patch("cli.main._build_cli_runtime", return_value=_fake_runtime(workspace_root, smol_rag, session_manager)), \
-        patch("cli.main._build_multiagent", return_value=fake_agent), \
-        patch("cli.main._create_research_loop_stop_controller", return_value=(stop_controller, esc_watcher)), \
-        patch("cli.main.console", fake_console):
-        await _research_loop(
-            goal="Track UK AI regulation updates.",
-            workspace=workspace_root,
-            agent_name="researcher",
-            session_key="research-loop",
-            interval=0.01,
-            max_runs=None,
-            auto_export=False,
-            show_actions=False,
-        )
+    deps = CliDependencies(
+        console=fake_console,
+        runtime_builder=lambda *args, **kwargs: _fake_runtime(workspace_root, smol_rag, session_manager),
+        agent_builder=lambda **kwargs: fake_agent,
+        research_stop_controller_factory=lambda: (stop_controller, esc_watcher),
+    )
+    await _research_loop(
+        goal="Track UK AI regulation updates.",
+        workspace=workspace_root,
+        agent_name="researcher",
+        session_key="research-loop",
+        interval=0.01,
+        max_runs=None,
+        auto_export=False,
+        show_actions=False,
+        deps=deps,
+    )
 
     fake_agent.process.assert_awaited_once()
     fake_agent.request_stop.assert_not_called()
@@ -219,7 +225,7 @@ async def test_research_loop_stops_cleanly_between_cycles(temp_dir):
 
 @pytest.mark.asyncio
 async def test_research_loop_requests_agent_stop_when_signaled_mid_cycle(temp_dir):
-    from cli.main import _research_loop
+    from cli.main import CliDependencies, _research_loop
 
     workspace_root = os.path.join(temp_dir, "workspace")
     fake_console = FakeConsole()
@@ -239,20 +245,23 @@ async def test_research_loop_requests_agent_stop_when_signaled_mid_cycle(temp_di
 
     fake_agent = _make_agent(fake_process, smol_rag)
 
-    with patch("cli.main._build_cli_runtime", return_value=_fake_runtime(workspace_root, smol_rag, session_manager)), \
-        patch("cli.main._build_multiagent", return_value=fake_agent), \
-        patch("cli.main._create_research_loop_stop_controller", return_value=(stop_controller, esc_watcher)), \
-        patch("cli.main.console", fake_console):
-        await _research_loop(
-            goal="Track UK AI regulation updates.",
-            workspace=workspace_root,
-            agent_name="researcher",
-            session_key="research-loop",
-            interval=0.01,
-            max_runs=None,
-            auto_export=False,
-            show_actions=False,
-        )
+    deps = CliDependencies(
+        console=fake_console,
+        runtime_builder=lambda *args, **kwargs: _fake_runtime(workspace_root, smol_rag, session_manager),
+        agent_builder=lambda **kwargs: fake_agent,
+        research_stop_controller_factory=lambda: (stop_controller, esc_watcher),
+    )
+    await _research_loop(
+        goal="Track UK AI regulation updates.",
+        workspace=workspace_root,
+        agent_name="researcher",
+        session_key="research-loop",
+        interval=0.01,
+        max_runs=None,
+        auto_export=False,
+        show_actions=False,
+        deps=deps,
+    )
 
     fake_agent.process.assert_awaited_once()
     fake_agent.request_stop.assert_called_once()

@@ -163,9 +163,8 @@ class TestRunCommandTool:
         assert "exit code 0" in result
         assert "pytest" in result
 
-    def test_timeout_output_bytes_are_formatted(self, temp_dir, monkeypatch):
+    def test_timeout_output_bytes_are_formatted(self, temp_dir):
         workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
-        tool = RunCommandTool(workspace)
 
         def fake_run(*args, **kwargs):
             raise subprocess.TimeoutExpired(
@@ -175,7 +174,7 @@ class TestRunCommandTool:
                 stderr=b"stderr bytes\n",
             )
 
-        monkeypatch.setattr("app.tools.command.subprocess.run", fake_run)
+        tool = RunCommandTool(workspace, command_runner=fake_run)
 
         result = tool._run(["npm", "test"], workspace.root_dir, timeout=1)
 

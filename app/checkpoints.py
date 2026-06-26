@@ -244,6 +244,10 @@ class CheckpointStore:
             return None
         created_at = time.time()
         checkpoint_id = self._checkpoint_id(created_at, session_key, tool_name, arguments, changed_paths)
+        record_metadata = dict(metadata or {})
+        skipped_snapshots = self._skipped_snapshots(before, after, changed_paths)
+        if skipped_snapshots:
+            record_metadata["skipped_snapshots"] = skipped_snapshots
         return CheckpointRecord(
             id=checkpoint_id,
             created_at=created_at,
@@ -256,7 +260,7 @@ class CheckpointStore:
             run_id=run_id,
             prompt_id=prompt_id,
             tool_call_id=tool_call_id,
-            metadata=metadata or {},
+            metadata=record_metadata,
         )
 
     def _checkpoint_id(
@@ -286,6 +290,26 @@ class CheckpointStore:
             snapshot.size,
             snapshot.skipped,
         )
+
+    def _skipped_snapshots(
+        self,
+        before: dict[str, FileSnapshot],
+        after: dict[str, FileSnapshot],
+        changed_paths: list[str],
+    ) -> list[dict[str, Any]]:
+        skipped: list[dict[str, Any]] = []
+        for path in changed_paths:
+            for phase, snapshot in (("before", before.get(path)), ("after", after.get(path))):
+                if snapshot is None or not snapshot.skipped:
+                    continue
+                skipped.append({
+                    "path": path,
+                    "phase": phase,
+                    "reason": snapshot.skip_reason or "snapshot skipped",
+                    "size": snapshot.size,
+                    "is_file": snapshot.is_file,
+                })
+        return skipped
 
     def _undo_conflicts(self, record: CheckpointRecord) -> list[str]:
         conflicts = []

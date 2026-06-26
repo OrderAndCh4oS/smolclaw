@@ -19,6 +19,7 @@ from app.checkpoints import CheckpointStore
 from app.model_settings import ModelSelection, RuntimeModelSettings, apply_model_selection
 from app.runtime_config import RuntimeAdapterConfig
 from app.run_trace import RunTraceStore
+from app.runtime_state import RuntimeSharedState
 from app.session import SessionManager
 from app.tools.base import ToolRuntimeContext, normalize_tool_result
 from app.tools.middleware import HookFiringMiddleware
@@ -34,7 +35,9 @@ SmolRagResolver = Callable[[AgentConfig], object | None]
 HookRunnerConfigurersResolver = Callable[[AgentConfig], HookRunnerConfigurers]
 
 
-def _make_promote_hook(smol_rag):
+def _make_promote_hook(smol_rag, promote_accessed_excerpts=None):
+    promote_accessed_excerpts = promote_accessed_excerpts or _promote_accessed_excerpts
+
     async def _promote_hook(ctx):
         if not ctx.get("success"):
             return
@@ -44,7 +47,7 @@ def _make_promote_hook(smol_rag):
         if not excerpt_ids:
             return
         if tool_name in {"memory_search", "memory_recall"}:
-            await _promote_accessed_excerpts(smol_rag, excerpt_ids)
+            await promote_accessed_excerpts(smol_rag, excerpt_ids)
 
     return _promote_hook
 
@@ -57,6 +60,8 @@ class ChildAgentFactory:
     session_manager: SessionManager
     parent_session_key: str
     llm_factory_kwargs: Optional[dict] = None
+    llm_factory: Optional[Callable[..., object]] = None
+    promote_accessed_excerpts: Optional[Callable[..., object]] = None
     model_settings: RuntimeModelSettings | None = None
     adapter_config: RuntimeAdapterConfig | None = None
     registry_factory: Optional[Callable[[AgentConfig], ToolRegistry]] = None
@@ -121,6 +126,8 @@ class ChildAgentFactory:
             child_smol_rag_resolver=self.smol_rag_resolver,
             child_hook_runner_configurers_resolver=self.hook_runner_configurers_resolver,
             llm_factory_kwargs=self.llm_factory_kwargs,
+            llm_factory=self.llm_factory,
+            promote_accessed_excerpts=self.promote_accessed_excerpts,
             model_settings=self.model_settings,
             adapter_config=self.adapter_config,
             is_child_agent=True,
@@ -147,6 +154,8 @@ def build_agent_loop(
     child_smol_rag_resolver: Optional[SmolRagResolver] = None,
     child_hook_runner_configurers_resolver: Optional[HookRunnerConfigurersResolver] = None,
     llm_factory_kwargs: Optional[dict] = None,
+    llm_factory: Optional[Callable[..., object]] = None,
+    promote_accessed_excerpts: Optional[Callable[..., object]] = None,
     model_selection: ModelSelection | None = None,
     model_settings: RuntimeModelSettings | None = None,
     adapter_config: RuntimeAdapterConfig | None = None,
@@ -175,7 +184,8 @@ def build_agent_loop(
         if configured.model == completion_model:
             provider = configured.provider
     if llm is None:
-        llm = create_llm(
+        active_llm_factory = llm_factory or create_llm
+        llm = active_llm_factory(
             completion_model=completion_model,
             provider=provider,
             **(llm_factory_kwargs or {}),
@@ -195,7 +205,7 @@ def build_agent_loop(
     if hook_runner is None:
         hook_runner = HookRunner()
     if not hook_runner_configurers and agent_smol_rag:
-        hook_runner.on(ON_AFTER_TOOL, _make_promote_hook(agent_smol_rag))
+        hook_runner.on(ON_AFTER_TOOL, _make_promote_hook(agent_smol_rag, promote_accessed_excerpts))
     for configure_hook_runner in hook_runner_configurers:
         configure_hook_runner(hook_runner)
 
@@ -211,14 +221,15 @@ def build_agent_loop(
         goal_store=goal_store,
         loop_registrar=child_loop_registrar,
     )
+    runtime_state = RuntimeSharedState(runtime_ctx.shared_state)
     safety_state = SafetyState(workspace=workspace)
-    runtime_ctx.shared_state["safety_state"] = safety_state
-    runtime_ctx.shared_state["session_key"] = resolved_session_key
+    runtime_state.safety_state = safety_state
+    runtime_state.session_key = resolved_session_key
     trace_store = RunTraceStore(workspace.paths.traces_dir) if workspace is not None else None
     if trace_store is not None:
-        runtime_ctx.shared_state["trace_store"] = trace_store
+        runtime_state.trace_store = trace_store
     if workspace is not None:
-        runtime_ctx.shared_state["approval_store"] = ApprovalRequestStore(workspace.paths.approvals_dir)
+        runtime_state.approval_store = ApprovalRequestStore(workspace.paths.approvals_dir)
     runtime_ctx.child_agent_factory = ChildAgentFactory(
         master_registry=master_registry,
         registry_factory=registry_factory,
@@ -227,6 +238,8 @@ def build_agent_loop(
         session_manager=session_manager,
         parent_session_key=resolved_session_key,
         llm_factory_kwargs=llm_factory_kwargs,
+        llm_factory=llm_factory,
+        promote_accessed_excerpts=promote_accessed_excerpts,
         loop_registrar=child_loop_registrar,
         context_builder_factory=context_builder_factory,
         hook_runner_configurers=hook_runner_configurers,
@@ -247,7 +260,7 @@ def build_agent_loop(
     from app.tools.policy import PolicyPermissionMiddleware, load_permission_policy
 
     permission_policy = load_permission_policy(workspace)
-    runtime_ctx.shared_state["permission_policy"] = permission_policy
+    runtime_state.permission_policy = permission_policy
     filtered_registry.use(PolicyPermissionMiddleware(
         config.permission_mode,
         workspace=workspace,
@@ -264,7 +277,7 @@ def build_agent_loop(
         from app.tools.checkpointing import CheckpointMiddleware
 
         checkpoint_store = CheckpointStore(workspace.paths.checkpoints_dir)
-        runtime_ctx.shared_state["checkpoint_store"] = checkpoint_store
+        runtime_state.checkpoint_store = checkpoint_store
         filtered_registry.use(CheckpointMiddleware(
             checkpoint_store,
             workspace=workspace,

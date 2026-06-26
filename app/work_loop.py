@@ -19,15 +19,30 @@ import shutil
 import shlex
 import subprocess
 import sys
-import threading
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any, Literal, Protocol
 
 import yaml
 
+from app.coding_lifecycle import (
+    CodingLifecycleWork,
+    CodingPassResult,
+    LifecyclePhase,
+    LifecycleSourceRef,
+    PublicationRef,
+    PublicationResult,
+    ReviewFeedbackRef,
+)
+from app.command_runner import (
+    CommandResult,
+    CommandRunner,
+    SubprocessCommandRunner,
+    terminate_active_processes,
+)
 from app.storage_paths import atomic_write_json, load_json_with_backup, safe_storage_stem
 from app.workspace import WorkspaceContext
 
@@ -51,114 +66,13 @@ PAUSE_FILE = "PAUSE"
 JOBS_DIR = "jobs"
 CONTROLS_DIR = "controls"
 HEARTBEAT_FILE = "heartbeat.json"
-
-_ACTIVE_PROCESS_LOCK = threading.Lock()
-_ACTIVE_PROCESSES: set[subprocess.Popen] = set()
-
-
-def _register_process(process: subprocess.Popen):
-    with _ACTIVE_PROCESS_LOCK:
-        _ACTIVE_PROCESSES.add(process)
-
-
-def _unregister_process(process: subprocess.Popen):
-    with _ACTIVE_PROCESS_LOCK:
-        _ACTIVE_PROCESSES.discard(process)
-
+WORK_ITEM_SCHEMA_VERSION = 2
 
 def terminate_active_work_loop_processes():
-    with _ACTIVE_PROCESS_LOCK:
-        processes = list(_ACTIVE_PROCESSES)
-    for process in processes:
-        if process.poll() is not None:
-            _unregister_process(process)
-            continue
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            if os.name == "posix" and getattr(process, "_smolclaw_own_process_group", False):
-                os.killpg(process.pid, 15)
-            else:
-                process.terminate()
-    deadline = time.time() + 3
-    for process in processes:
-        remaining = max(0, deadline - time.time())
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            process.wait(timeout=remaining)
-        if process.poll() is None:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                if os.name == "posix" and getattr(process, "_smolclaw_own_process_group", False):
-                    os.killpg(process.pid, 9)
-                else:
-                    process.kill()
-        _unregister_process(process)
+    terminate_active_processes()
 
 
 atexit.register(terminate_active_work_loop_processes)
-
-
-@dataclass(frozen=True)
-class CommandResult:
-    args: list[str]
-    returncode: int
-    stdout: str = ""
-    stderr: str = ""
-
-    @property
-    def ok(self) -> bool:
-        return self.returncode == 0
-
-    @property
-    def output(self) -> str:
-        return (self.stdout or "") + (self.stderr or "")
-
-
-class CommandRunner(Protocol):
-    def run(
-        self,
-        args: list[str],
-        *,
-        cwd: str | None = None,
-        input_text: str | None = None,
-        timeout: int = 600,
-    ) -> CommandResult:
-        ...
-
-
-class SubprocessCommandRunner:
-    def run(
-        self,
-        args: list[str],
-        *,
-        cwd: str | None = None,
-        input_text: str | None = None,
-        timeout: int = 600,
-    ) -> CommandResult:
-        process: subprocess.Popen | None = None
-        own_process_group = os.name == "posix" and not os.getenv("SMOLCLAW_WORK_LOOP_JOB_ID")
-        try:
-            process = subprocess.Popen(
-                args,
-                cwd=cwd,
-                stdin=subprocess.PIPE if input_text is not None else None,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=own_process_group,
-            )
-            process._smolclaw_own_process_group = own_process_group
-            _register_process(process)
-            stdout, stderr = process.communicate(input=input_text, timeout=timeout)
-            return CommandResult(args=args, returncode=process.returncode, stdout=stdout, stderr=stderr)
-        except FileNotFoundError as exc:
-            return CommandResult(args=args, returncode=127, stderr=str(exc))
-        except subprocess.TimeoutExpired as exc:
-            if process is not None:
-                terminate_active_work_loop_processes()
-            stdout = exc.stdout if isinstance(exc.stdout, str) else ""
-            stderr = exc.stderr if isinstance(exc.stderr, str) else ""
-            return CommandResult(args=args, returncode=124, stdout=stdout, stderr=stderr or "Command timed out.")
-        finally:
-            if process is not None:
-                _unregister_process(process)
 
 
 @dataclass(frozen=True)
@@ -419,6 +333,27 @@ class TaskCandidate:
     source_type: str = "jira"
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def to_lifecycle_work(self) -> CodingLifecycleWork:
+        return CodingLifecycleWork(
+            source_ref=LifecycleSourceRef(
+                kind="discovery",
+                provider=self.source_type or "jira",
+                key=self.key,
+                url=self.url,
+                metadata=dict(self.metadata),
+            ),
+            title=self.summary,
+            description=self.description,
+            phase="discovered",
+            metadata={
+                "issue_type": self.issue_type,
+                "status": self.status,
+                "assignee": self.assignee,
+                "priority": self.priority,
+                "labels": list(self.labels),
+            },
+        )
+
 
 JiraCandidate = TaskCandidate
 
@@ -535,6 +470,7 @@ class InternalReviewRecord:
 class WorkItem:
     jira_key: str
     title: str
+    schema_version: int = WORK_ITEM_SCHEMA_VERSION
     state: WorkItemState = "selected"
     run_id: str = field(default_factory=lambda: f"run-{uuid.uuid4().hex[:12]}")
     task_source_type: str = "jira"
@@ -555,8 +491,77 @@ class WorkItem:
     updated_at: float = field(default_factory=time.time)
     created_at: float = field(default_factory=time.time)
 
+    @property
+    def source_key(self) -> str:
+        return self.jira_key
+
+    @source_key.setter
+    def source_key(self, value: str):
+        self.jira_key = value
+
+    @property
+    def source_url(self) -> str:
+        return self.jira_url
+
+    @source_url.setter
+    def source_url(self, value: str):
+        self.jira_url = value
+
+    @property
+    def source_provider(self) -> str:
+        return self.task_source_type
+
+    @source_provider.setter
+    def source_provider(self, value: str):
+        self.task_source_type = value
+
+    def to_lifecycle_work(self) -> CodingLifecycleWork:
+        publication_refs: list[PublicationRef] = [
+            PublicationRef(kind="commit", provider="git", identifier=commit)
+            for commit in self.commits
+        ]
+        if self.pr_number is not None or self.pr_url:
+            publication_refs.append(
+                PublicationRef(
+                    kind="pull_request",
+                    provider="github",
+                    identifier=str(self.pr_number or ""),
+                    url=self.pr_url,
+                )
+            )
+        return CodingLifecycleWork(
+            source_ref=LifecycleSourceRef(
+                kind="discovery",
+                provider=self.source_provider or "jira",
+                key=self.source_key,
+                url=self.source_url,
+            ),
+            title=self.title,
+            phase=_lifecycle_phase_for_work_item_state(self.state),
+            branch_name=self.branch_name,
+            workspace_path=self.workspace_path,
+            publication_refs=publication_refs,
+            handled_feedback_ids=[
+                item.comment_id for item in self.processed_review_comments
+            ],
+            blocker=self.blocker,
+            metadata={
+                "run_id": self.run_id,
+                "selected_reason": self.selected_reason,
+                "execution_profile": dict(self.execution_profile),
+                "base_branch": self.base_branch,
+                "base_commit": self.base_commit,
+            },
+            updated_at=self.updated_at,
+            created_at=self.created_at,
+        )
+
     def to_dict(self) -> dict:
         return {
+            "schema_version": self.schema_version,
+            "source_key": self.source_key,
+            "source_provider": self.source_provider,
+            "source_url": self.source_url,
             "jira_key": self.jira_key,
             "title": self.title,
             "state": self.state,
@@ -582,13 +587,17 @@ class WorkItem:
 
     @classmethod
     def from_dict(cls, data: dict) -> "WorkItem":
+        source_key = str(data.get("source_key") or data.get("jira_key") or "")
+        source_provider = str(data.get("source_provider") or data.get("task_source_type") or "jira")
+        source_url = str(data.get("source_url") or data.get("jira_url") or "")
         return cls(
-            jira_key=str(data.get("jira_key") or ""),
+            jira_key=source_key,
             title=str(data.get("title") or ""),
+            schema_version=int(data.get("schema_version") or WORK_ITEM_SCHEMA_VERSION),
             state=str(data.get("state") or "selected"),  # type: ignore[arg-type]
             run_id=str(data.get("run_id") or f"run-{uuid.uuid4().hex[:12]}"),
-            task_source_type=str(data.get("task_source_type") or "jira"),
-            jira_url=str(data.get("jira_url") or ""),
+            task_source_type=source_provider,
+            jira_url=source_url,
             selected_reason=str(data.get("selected_reason") or ""),
             execution_profile=dict(data.get("execution_profile") or {}),
             workspace_path=str(data.get("workspace_path") or ""),
@@ -610,6 +619,22 @@ class WorkItem:
         )
 
 
+def _lifecycle_phase_for_work_item_state(state: WorkItemState) -> LifecyclePhase:
+    if state == "selected":
+        return "discovered"
+    if state == "active":
+        return "implementing"
+    if state == "open-pr":
+        return "open-pr"
+    if state in {"merged", "closed", "done"}:
+        return "done"
+    if state == "blocked":
+        return "blocked"
+    if state == "failed":
+        return "failed"
+    return "discovered"
+
+
 class WorkLoopLedger:
     def __init__(self, root_dir: str):
         self.root_dir = os.path.realpath(root_dir)
@@ -618,14 +643,15 @@ class WorkLoopLedger:
 
     @classmethod
     def for_workspace(cls, workspace: WorkspaceContext) -> "WorkLoopLedger":
-        return cls(os.path.join(workspace.state_root_dir, "work-loop"))
+        return cls(workspace.paths.work_loop_dir)
 
     def _path(self, key: str) -> str:
         return os.path.join(self.items_dir, f"{safe_storage_stem(key)}.json")
 
     def save(self, item: WorkItem) -> WorkItem:
         item.updated_at = time.time()
-        atomic_write_json(self._path(item.jira_key), item.to_dict())
+        item.schema_version = WORK_ITEM_SCHEMA_VERSION
+        atomic_write_json(self._path(item.source_key), item.to_dict())
         return item
 
     def load(self, key: str) -> WorkItem | None:
@@ -703,7 +729,7 @@ class WorkLoopControl:
 
     @classmethod
     def for_workspace(cls, workspace: WorkspaceContext, *, job_id: str | None = None) -> "WorkLoopControl":
-        return cls(os.path.join(workspace.state_root_dir, "work-loop"), job_id=job_id)
+        return cls(workspace.paths.work_loop_dir, job_id=job_id)
 
     @property
     def control_dir(self) -> str:
@@ -778,7 +804,7 @@ class WorkLoopJobStore:
 
     @classmethod
     def for_workspace(cls, workspace: WorkspaceContext) -> "WorkLoopJobStore":
-        return cls(os.path.join(workspace.state_root_dir, "work-loop"))
+        return cls(workspace.paths.work_loop_dir)
 
     def _path(self, job_id: str) -> str:
         return os.path.join(self.jobs_dir, f"{safe_storage_stem(job_id)}.json")
@@ -802,11 +828,18 @@ class WorkLoopJobStore:
 
 
 class WorkLoopJobSupervisor:
-    def __init__(self, workspace: WorkspaceContext, *, runner: CommandRunner | None = None):
+    def __init__(
+        self,
+        workspace: WorkspaceContext,
+        *,
+        runner: CommandRunner | None = None,
+        process_factory: Callable[..., subprocess.Popen] | None = None,
+    ):
         self.workspace = workspace.ensure_dirs()
-        self.root_dir = os.path.join(self.workspace.state_root_dir, "work-loop")
+        self.root_dir = self.workspace.paths.work_loop_dir
         self.store = WorkLoopJobStore(self.root_dir)
         self.runner = runner
+        self.process_factory = process_factory or subprocess.Popen
 
     @classmethod
     def for_workspace(cls, workspace: WorkspaceContext) -> "WorkLoopJobSupervisor":
@@ -819,7 +852,7 @@ class WorkLoopJobSupervisor:
         try:
             env = os.environ.copy()
             env["SMOLCLAW_WORK_LOOP_JOB_ID"] = job_id
-            process = subprocess.Popen(
+            process = self.process_factory(
                 command,
                 cwd=self.workspace.root_dir,
                 stdin=subprocess.DEVNULL,
@@ -936,6 +969,12 @@ class JiraAdapter:
             raise RuntimeError(f"Jira search failed: {result.output.strip()}")
         return parse_jira_candidates(result.stdout)
 
+    def discover(self, config: WorkLoopConfig, *, limit: int = 50) -> list[CodingLifecycleWork]:
+        return [
+            candidate.to_lifecycle_work()
+            for candidate in self.search_backlog(config, limit=limit)
+        ]
+
     def view(self, key: str) -> JiraCandidate:
         result = self.runner.run(
             [
@@ -957,6 +996,9 @@ class JiraAdapter:
             raise RuntimeError(f"Jira view returned no work item for {key}")
         return candidates[0]
 
+    def load(self, source_ref: LifecycleSourceRef) -> CodingLifecycleWork:
+        return self.view(source_ref.key).to_lifecycle_work()
+
     def transition(self, key: str, status: str):
         if not status:
             return
@@ -977,6 +1019,11 @@ class JiraAdapter:
         )
         if not result.ok:
             raise RuntimeError(f"Jira transition failed for {key}: {result.output.strip()}")
+
+    def update_status(self, source_ref: LifecycleSourceRef, phase: LifecyclePhase):
+        status = str(source_ref.metadata.get(f"{phase}_status") or "")
+        if status:
+            self.transition(source_ref.key, status)
 
     def comment(self, key: str, body: str):
         result = self.runner.run(
@@ -1042,17 +1089,89 @@ class GitHubAdapter:
         if not result.ok:
             raise RuntimeError(f"PR comment failed for {pr_number}: {result.output.strip()}")
 
+    def discover_followups(
+        self,
+        config: WorkLoopConfig,
+        *,
+        open_items: list[WorkItem] | None = None,
+    ) -> list[CodingLifecycleWork]:
+        followups: list[CodingLifecycleWork] = []
+        for item in open_items or []:
+            if item.pr_number is None:
+                continue
+            pr = self.view_pr(item.pr_number)
+            comments = new_actionable_comments(pr, item)
+            check_summary = summarize_status_checks(pr)
+            feedback_refs = [
+                ReviewFeedbackRef(
+                    provider="github",
+                    pr_number=item.pr_number,
+                    comment_id=str(comment["id"]),
+                    body=str(comment.get("body") or ""),
+                    source="comment",
+                )
+                for comment in comments
+            ]
+            if check_summary:
+                feedback_refs.append(
+                    ReviewFeedbackRef(
+                        provider="github",
+                        pr_number=item.pr_number,
+                        body=check_summary,
+                        source="check",
+                    )
+                )
+            if not feedback_refs:
+                continue
+            work = item.to_lifecycle_work()
+            work.phase = "responding-to-review"
+            work.description = "\n\n".join(ref.body for ref in feedback_refs if ref.body)
+            work.review_feedback = feedback_refs
+            followups.append(work)
+        return followups
+
+    def respond(self, feedback: ReviewFeedbackRef, body: str) -> PublicationResult:
+        if feedback.pr_number is None:
+            return PublicationResult(ok=False, message="Review feedback has no PR number.")
+        self.comment(feedback.pr_number, body)
+        return PublicationResult(
+            ok=True,
+            refs=(
+                PublicationRef(
+                    kind="comment",
+                    provider="github",
+                    identifier=feedback.comment_id,
+                    metadata={"pr_number": feedback.pr_number},
+                ),
+            ),
+            message="Posted PR response.",
+        )
+
+
+TASK_SOURCE_ADAPTER_FACTORIES: dict[str, Callable[[CommandRunner], TaskSourceAdapter]] = {
+    "jira": JiraAdapter,
+}
+CODE_REVIEW_ADAPTER_FACTORIES: dict[str, Callable[[CommandRunner], CodeReviewAdapter]] = {
+    "github": GitHubAdapter,
+}
+
 
 def build_task_source_adapter(config: WorkLoopConfig, runner: CommandRunner) -> TaskSourceAdapter:
-    if config.task_source_type == "jira":
-        return JiraAdapter(runner)
-    raise ValueError(f"Unsupported task source adapter: {config.task_source_type}")
+    provider = config.task_source_type or "jira"
+    factory = TASK_SOURCE_ADAPTER_FACTORIES.get(provider)
+    if factory is None:
+        supported = ", ".join(sorted(TASK_SOURCE_ADAPTER_FACTORIES))
+        raise ValueError(f"Unsupported task source adapter: {provider}. Supported adapters: {supported}.")
+    return factory(runner)
 
 
 def build_code_review_adapter(config: WorkLoopConfig, runner: CommandRunner) -> CodeReviewAdapter:
-    if config.code_review_type == "github":
-        return GitHubAdapter(runner)
-    raise ValueError(f"Unsupported code review adapter: {config.code_review_type}")
+    provider = config.code_review_type or "github"
+    factory = CODE_REVIEW_ADAPTER_FACTORIES.get(provider)
+    if factory is None:
+        supported = ", ".join(sorted(CODE_REVIEW_ADAPTER_FACTORIES))
+        raise ValueError(f"Unsupported code review adapter: {provider}. Supported adapters: {supported}.")
+    return factory(runner)
 
 
 class DoneGateRunner:
@@ -1067,11 +1186,12 @@ class DoneGateRunner:
 
 
 class RunWorkspaceManager:
-    def __init__(self, workspace: WorkspaceContext):
+    def __init__(self, workspace: WorkspaceContext, *, runner: CommandRunner | None = None):
         self.workspace = workspace
+        self.runner = runner or SubprocessCommandRunner()
 
     def path_for_item(self, item: WorkItem, index: int) -> str:
-        batch_dir = os.path.join(self.workspace.state_root_dir, "work-loop", "runs", item.run_id)
+        batch_dir = os.path.join(self.workspace.paths.work_loop_dir, "runs", item.run_id)
         return os.path.join(batch_dir, f"run_{index}")
 
     def prepare_parent(self, item: WorkItem):
@@ -1080,12 +1200,9 @@ class RunWorkspaceManager:
     def cleanup(self, item: WorkItem):
         if item.workspace_path:
             with contextlib.suppress(OSError, subprocess.SubprocessError):
-                subprocess.run(
+                self.runner.run(
                     ["git", "worktree", "remove", "--force", item.workspace_path],
                     cwd=self.workspace.root_dir,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
                     timeout=30,
                 )
             shutil.rmtree(item.workspace_path, ignore_errors=True)
@@ -1181,6 +1298,17 @@ class TaskExecutionResult:
     blocker: str = ""
     attempts: int = 0
     capped: bool = False
+
+    def to_coding_pass_result(self) -> CodingPassResult:
+        return CodingPassResult(
+            success=self.success,
+            summary=self.summary,
+            verification=list(self.verification),
+            manual_steps=self.manual_steps,
+            blocker=self.blocker,
+            attempts=self.attempts,
+            capped=self.capped,
+        )
 
 
 class InternalReviewRunner:
@@ -1336,7 +1464,7 @@ class WorkLoopRunner:
         self.control = WorkLoopControl.for_workspace(self.workspace, job_id=job_id)
         self.done_gate = done_gate or DoneGateRunner(self.command_runner)
         self.git = git or GitOperations(self.command_runner, self.workspace)
-        self.run_workspaces = run_workspaces or RunWorkspaceManager(self.workspace)
+        self.run_workspaces = run_workspaces or RunWorkspaceManager(self.workspace, runner=self.command_runner)
         self.task_executor = task_executor or CliAgentTaskExecutor(
             self.command_runner,
             control=self.control,
@@ -1450,6 +1578,17 @@ class WorkLoopRunner:
             updated.append(item)
         return updated
 
+    def run_first_pass(self, *, limit: int | None = None, dry_run: bool = False) -> list[WorkItem]:
+        return self.run_tasks(limit=limit, dry_run=dry_run)
+
+    def run_followups(self, *, dry_run: bool = False) -> list[WorkItem]:
+        return self.run_reviews(dry_run=dry_run)
+
+    def run_all(self, *, limit: int | None = None, dry_run: bool = False) -> tuple[list[WorkItem], list[WorkItem]]:
+        followup_items = self.run_followups(dry_run=dry_run)
+        first_pass_items = self.run_first_pass(limit=limit, dry_run=dry_run)
+        return followup_items, first_pass_items
+
     def _execute_item(self, item: WorkItem, candidate: TaskCandidate, profile: TaskExecutionProfile):
         self.control.check(f"creating workspace for {item.jira_key}")
         self._create_branch_workspace(item)
@@ -1533,6 +1672,9 @@ class WorkLoopRunner:
 
     def _commit_and_push(self, item: WorkItem, result: TaskExecutionResult) -> str:
         return self.git.commit_and_push(item, result)
+
+
+CodingLifecycleRunner = WorkLoopRunner
 
 
 def build_backlog_jql(config: WorkLoopConfig) -> str:

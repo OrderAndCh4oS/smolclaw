@@ -1,3 +1,5 @@
+import asyncio
+import inspect
 import json
 import os
 import time
@@ -21,13 +23,19 @@ DEFAULT_ANTHROPIC_COMPLETION_MODEL = os.getenv(
 
 
 class AnthropicLlm:
-    def __init__(self, completion_model=None, query_cache_kv=None, db_path=None) -> None:
+    def __init__(self, completion_model=None, query_cache_kv=None, db_path=None, client=None, client_factory=None) -> None:
         api_key = os.getenv("ANTHROPIC_API_KEY")
-        self.client = anthropic.Anthropic(api_key=api_key)
+        self.client = client or (client_factory or anthropic.Anthropic)(api_key=api_key)
         cache_db_path = db_path or SQLITE_DB_PATH
         self.query_cache_kv = query_cache_kv or SqliteKvStore(cache_db_path, "query_cache")
         self.completion_model = completion_model or DEFAULT_ANTHROPIC_COMPLETION_MODEL
         self.usage_collector = None
+
+    async def _call_client_method(self, method: Callable, *args, **kwargs):
+        result = await asyncio.to_thread(method, *args, **kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     async def __aenter__(self):
         return self
@@ -83,7 +91,7 @@ class AnthropicLlm:
         try:
             with trace_llm_call("completion", model) as span:
                 started = time.perf_counter()
-                response = self.client.messages.create(**kwargs)
+                response = await self._call_client_method(self.client.messages.create, **kwargs)
                 duration_ms = int((time.perf_counter() - started) * 1000)
                 result = response.content[0].text
                 usage = getattr(response, "usage", None)
@@ -139,7 +147,7 @@ class AnthropicLlm:
         try:
             with trace_llm_call("tool_completion", model) as span:
                 started = time.perf_counter()
-                response = self.client.messages.create(**kwargs)
+                response = await self._call_client_method(self.client.messages.create, **kwargs)
                 duration_ms = int((time.perf_counter() - started) * 1000)
                 usage = getattr(response, "usage", None)
                 input_tokens = getattr(usage, "input_tokens", 0)
@@ -162,7 +170,8 @@ class AnthropicLlm:
         try:
             started = time.perf_counter()
 
-            with self.client.messages.stream(**kwargs) as stream:
+            stream_context = await self._call_client_method(self.client.messages.stream, **kwargs)
+            with stream_context as stream:
                 for text in stream.text_stream:
                     await on_chunk(text)
 
@@ -224,7 +233,7 @@ class AnthropicLlm:
 
         try:
             started = time.perf_counter()
-            response = self.client.messages.create(**kwargs)
+            response = await self._call_client_method(self.client.messages.create, **kwargs)
             duration_ms = int((time.perf_counter() - started) * 1000)
             usage = getattr(response, "usage", None)
             input_tokens = getattr(usage, "input_tokens", 0)
