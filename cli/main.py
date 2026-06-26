@@ -52,6 +52,7 @@ from app.tools.memory_tools import MemoryRecallTool, MemoryStoreTool
 from app.utilities import ensure_dir
 from app.workspace import WorkspaceContext
 from app.run_trace import RunTraceStore
+from app.run_views import build_run_status_view
 from app.worktree import WorktreeRunner
 from app.work_loop import (
     DEFAULT_WORK_LOOP_CONFIG,
@@ -1396,8 +1397,15 @@ async def _run_once(
         else:
             responses.append(await agent.process(prompt))
         trace_store = RunTraceStore(paths.traces_dir)
-        latest_trace = trace_store.latest_summary(agent.session.key)
         current_goal = goal_store.load(agent.session.key)
+        worktree_diff = worktree_ctx.diff() if worktree_ctx is not None else None
+        run_status_view = build_run_status_view(
+            session_key=agent.session.key,
+            trace_store=trace_store,
+            goal_store=goal_store,
+            worktree_path=worktree_ctx.path if worktree_ctx is not None else None,
+            worktree_diff=worktree_diff,
+        )
         return {
             "session_key": agent.session.key,
             "status": current_goal.status if current_goal is not None else "complete",
@@ -1407,18 +1415,13 @@ async def _run_once(
             "response": responses[-1] if responses else "",
             "responses": responses,
             "turns": len(responses),
-            "trace_path": latest_trace.trace_path if latest_trace is not None else None,
-            "trace_summary_path": (
-                trace_store.summary_path(agent.session.key, latest_trace.run_id)
-                if latest_trace is not None else None
-            ),
-            "ledger_path": (
-                os.path.join(paths.ledgers_dir, f"{agent.session.key}.ledger.json")
-                if current_goal is not None else None
-            ),
-            "stop_reason": latest_trace.stop_reason if latest_trace is not None else None,
-            "worktree_path": worktree_ctx.path if worktree_ctx is not None else None,
-            "worktree_diff": worktree_ctx.diff() if worktree_ctx is not None else None,
+            "trace_path": run_status_view.trace_path,
+            "trace_summary_path": run_status_view.summary_path,
+            "ledger_path": run_status_view.ledger_path,
+            "stop_reason": run_status_view.stop_reason,
+            "worktree_path": run_status_view.worktree_path,
+            "worktree_diff": worktree_diff,
+            "run_status": run_status_view.to_dict(),
         }
     finally:
         if agent is not None:

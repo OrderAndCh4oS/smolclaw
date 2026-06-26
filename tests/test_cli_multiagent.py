@@ -185,6 +185,11 @@ class TestCliMultiagent:
         assert payload["response"] == "response to hello"
         assert payload["turns"] == 1
         assert payload["trace_path"].endswith(".jsonl")
+        assert payload["run_status"]["session_key"] == "default"
+        assert payload["run_status"]["trace_status"] == "complete"
+        assert payload["run_status"]["trace_path"] == payload["trace_path"]
+        assert payload["run_status"]["summary_path"] == payload["trace_summary_path"]
+        assert payload["run_status"]["pending_approvals"] == payload["pending_approvals"]
         fake_agent.close.assert_awaited_once()
         smol_rag.close.assert_awaited_once()
 
@@ -249,6 +254,9 @@ class TestCliMultiagent:
         assert built_workspace.state_root_dir == os.path.realpath(build_workspace_paths(temp_dir).state_root_dir)
         assert payload["worktree_path"] == worktree_path
         assert payload["worktree_diff"] == "diff --git a/app.py b/app.py"
+        assert payload["run_status"]["worktree_path"] == worktree_path
+        assert payload["run_status"]["worktree_has_diff"] is True
+        assert payload["run_status"]["worktree_diff_size"] == len("diff --git a/app.py b/app.py")
         assert os.path.realpath(payload["trace_path"]).startswith(
             os.path.realpath(build_workspace_paths(temp_dir).traces_dir)
         )

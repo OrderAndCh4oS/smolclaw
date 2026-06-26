@@ -30,13 +30,33 @@ class RunStatusView:
     goal_status: str | None = None
     goal_loop_status: str | None = None
     goal_run_id: str | None = None
+    pending_approvals: int = 0
     goal_pending_approvals: int = 0
     goal_turns: int = 0
     changed_files: list[str] = field(default_factory=list)
     verification_summaries: list[str] = field(default_factory=list)
+    worktree_path: str | None = None
+    worktree_has_diff: bool | None = None
+    worktree_diff_size: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def _worktree_diff_metadata(worktree_diff: str | None) -> tuple[bool | None, int | None]:
+    if worktree_diff is None:
+        return None, None
+    return bool(worktree_diff.strip()), len(worktree_diff)
+
+
+def _unique_ordered(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            unique.append(value)
+            seen.add(value)
+    return unique
 
 
 def build_run_status_view(
@@ -44,6 +64,8 @@ def build_run_status_view(
     session_key: str,
     trace_store: RunTraceStore | None = None,
     goal_store=None,
+    worktree_path: str | None = None,
+    worktree_diff: str | None = None,
 ) -> RunStatusView:
     summary = trace_store.latest_summary(session_key) if trace_store is not None else None
     ledger = goal_store.load(session_key) if goal_store is not None else None
@@ -57,6 +79,8 @@ def build_run_status_view(
         if goal_store is not None and hasattr(goal_store, "_file_path") and ledger is not None
         else None
     )
+    pending_approvals = getattr(ledger, "pending_approvals", 0) if ledger else 0
+    worktree_has_diff, worktree_diff_size = _worktree_diff_metadata(worktree_diff)
     return RunStatusView(
         session_key=session_key,
         trace_run_id=summary.run_id if summary else None,
@@ -76,7 +100,8 @@ def build_run_status_view(
         goal_status=ledger.status if ledger else None,
         goal_loop_status=getattr(ledger, "loop_status", None) if ledger else None,
         goal_run_id=getattr(ledger, "run_id", None) if ledger else None,
-        goal_pending_approvals=getattr(ledger, "pending_approvals", 0) if ledger else 0,
+        pending_approvals=pending_approvals,
+        goal_pending_approvals=pending_approvals,
         goal_turns=ledger.turn_count if ledger else 0,
         changed_files=[item.path for item in ledger.changed_files if item.path] if ledger else [],
         verification_summaries=[
@@ -84,6 +109,9 @@ def build_run_status_view(
             for item in ledger.verification
             if item.summary or item.command
         ] if ledger else [],
+        worktree_path=worktree_path,
+        worktree_has_diff=worktree_has_diff,
+        worktree_diff_size=worktree_diff_size,
     )
 
 
@@ -94,8 +122,12 @@ def build_run_status_view_from_artifacts(
     ledger: GoalLedger | None = None,
     summary_path: str | None = None,
     ledger_path: str | None = None,
+    worktree_path: str | None = None,
+    worktree_diff: str | None = None,
 ) -> RunStatusView:
     verification = getattr(trace_summary, "verification", []) if trace_summary else []
+    pending_approvals = getattr(ledger, "pending_approvals", 0) if ledger else 0
+    worktree_has_diff, worktree_diff_size = _worktree_diff_metadata(worktree_diff)
     return RunStatusView(
         session_key=session_key,
         trace_run_id=getattr(trace_summary, "run_id", None) if trace_summary else None,
@@ -115,7 +147,8 @@ def build_run_status_view_from_artifacts(
         goal_status=ledger.status if ledger else None,
         goal_loop_status=getattr(ledger, "loop_status", None) if ledger else None,
         goal_run_id=getattr(ledger, "run_id", None) if ledger else None,
-        goal_pending_approvals=getattr(ledger, "pending_approvals", 0) if ledger else 0,
+        pending_approvals=pending_approvals,
+        goal_pending_approvals=pending_approvals,
         goal_turns=ledger.turn_count if ledger else 0,
         changed_files=[item.path for item in ledger.changed_files if item.path] if ledger else [],
         verification_summaries=[
@@ -123,6 +156,9 @@ def build_run_status_view_from_artifacts(
             for item in ledger.verification
             if item.summary or item.command
         ] if ledger else [],
+        worktree_path=worktree_path,
+        worktree_has_diff=worktree_has_diff,
+        worktree_diff_size=worktree_diff_size,
     )
 
 def format_goal_status(goal: GoalLedger | None) -> str:
@@ -171,34 +207,7 @@ def format_trace_status(
     )
     if view.trace_run_id is None:
         return "No run trace is available for this session."
-    lines = [
-        f"Trace: {view.trace_run_id}",
-        f"Status: {view.trace_status}",
-        f"Stop reason: {view.stop_reason or 'unknown'}",
-        f"Model: {view.model}",
-        f"Tool calls: {view.tool_calls}",
-        f"Denied tool calls: {view.denied_tool_calls}",
-    ]
-    if view.files_changed:
-        lines.append(f"Files changed: {', '.join(view.files_changed)}")
-    if view.commands_run:
-        lines.append(f"Commands: {'; '.join(view.commands_run)}")
-    if view.checkpoints:
-        lines.append(f"Checkpoints: {', '.join(view.checkpoints)}")
-    if view.verification_count:
-        lines.append(f"Verification records: {view.verification_count}")
-    if view.goal_objective:
-        lines.extend([
-            f"Goal: {view.goal_objective}",
-            f"Goal status: {view.goal_status}",
-        ])
-    if view.ledger_path:
-        lines.append(f"Ledger path: {view.ledger_path}")
-    lines.extend([
-        f"Trace path: {view.trace_path}",
-        f"Summary path: {view.summary_path}",
-    ])
-    return "\n".join(lines)
+    return format_run_status_view(view)
 
 
 def format_trace_list(
@@ -329,6 +338,9 @@ def format_run_status_view(view: RunStatusView) -> str:
             f"Trace: {view.trace_run_id}",
             f"Status: {view.trace_status}",
             f"Stop reason: {view.stop_reason or 'unknown'}",
+            f"Model: {view.model or 'unknown'}",
+            f"Tool calls: {view.tool_calls}",
+            f"Denied tool calls: {view.denied_tool_calls}",
         ])
     else:
         lines.append("Trace: none")
@@ -336,20 +348,36 @@ def format_run_status_view(view: RunStatusView) -> str:
         lines.extend([
             f"Goal: {view.goal_objective}",
             f"Goal status: {view.goal_status}",
+            f"Goal loop: {view.goal_loop_status or 'idle'}",
             f"Goal turns: {view.goal_turns}",
         ])
+        if view.goal_run_id:
+            lines.append(f"Goal run: {view.goal_run_id}")
+        if view.pending_approvals:
+            lines.append(f"Pending approvals: {view.pending_approvals}")
     else:
         lines.append("Goal: none")
-    changed = view.changed_files or view.files_changed
+    changed = _unique_ordered([*view.changed_files, *view.files_changed])
     if changed:
         lines.append(f"Changed files: {', '.join(changed)}")
+    if view.commands_run:
+        lines.append(f"Commands: {'; '.join(view.commands_run)}")
+    if view.checkpoints:
+        lines.append(f"Checkpoints: {', '.join(view.checkpoints)}")
     if view.verification_summaries:
         lines.append("Verification:")
         lines.extend(f"- {item}" for item in view.verification_summaries[-3:])
     elif view.verification_count:
         lines.append(f"Verification records: {view.verification_count}")
+    if view.worktree_path:
+        lines.append(f"Worktree path: {view.worktree_path}")
+        if view.worktree_has_diff is not None:
+            diff_state = "present" if view.worktree_has_diff else "none"
+            lines.append(f"Worktree diff: {diff_state} ({view.worktree_diff_size or 0} bytes)")
     if view.ledger_path:
         lines.append(f"Ledger path: {view.ledger_path}")
     if view.trace_path:
         lines.append(f"Trace path: {view.trace_path}")
+    if view.summary_path:
+        lines.append(f"Summary path: {view.summary_path}")
     return "\n".join(lines)

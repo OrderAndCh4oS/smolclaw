@@ -1,3 +1,4 @@
+import json
 import os
 
 from app.goal_ledger import GoalLedgerStore
@@ -31,6 +32,7 @@ def test_format_trace_status_can_include_goal_ledger(temp_dir):
     assert "Goal: Fix parser" in output
     assert "Goal status: active" in output
     assert "Ledger path:" in output
+    assert "Summary path:" in output
 
 
 def test_run_status_view_combines_trace_and_ledger_state(temp_dir):
@@ -52,26 +54,61 @@ def test_run_status_view_combines_trace_and_ledger_state(temp_dir):
         status="passed",
     )
     recorder = trace_store.start_run("session-a")
+    recorder.append("tool.started", {"name": "run_command", "command": "pytest"})
     recorder.append("checkpoint.created", {
         "checkpoint_id": "chk-1",
         "changed_paths": ["parser.py"],
     })
     recorder.finish("complete", stop_reason="assistant_final")
+    goal_store.mark_loop_finished("session-a", stop_reason="approval_required", pending_approvals=2)
 
     view = build_run_status_view(
         session_key="session-a",
         trace_store=trace_store,
         goal_store=goal_store,
+        worktree_path="/tmp/smolclaw-worktree",
+        worktree_diff="diff --git a/parser.py b/parser.py\n",
     )
     output = format_run_status_view(view)
+    encoded = json.loads(json.dumps(view.to_dict()))
 
     assert view.trace_run_id == recorder.run_id
     assert view.goal_objective == "Fix parser"
+    assert view.commands_run == ["pytest"]
+    assert view.checkpoints == ["chk-1"]
+    assert view.pending_approvals == 2
+    assert view.goal_pending_approvals == 2
+    assert view.worktree_has_diff is True
+    assert encoded["worktree_diff_size"] == len("diff --git a/parser.py b/parser.py\n")
     assert view.changed_files == ["parser.py"]
     assert view.verification_summaries == ["pytest passed"]
     assert "Changed files: parser.py" in output
+    assert "Commands: pytest" in output
+    assert "Checkpoints: chk-1" in output
+    assert "Pending approvals: 2" in output
+    assert "Worktree diff: present" in output
     assert "Verification:" in output
     assert "- pytest passed" in output
+
+
+def test_trace_status_uses_canonical_run_status_renderer(temp_dir):
+    trace_store = RunTraceStore(os.path.join(temp_dir, "stores", "traces"))
+    goal_store = GoalLedgerStore(os.path.join(temp_dir, "stores", "ledgers"))
+    goal_store.start("session-a", "Fix parser")
+    recorder = trace_store.start_run("session-a")
+    recorder.append("tool.started", {"name": "run_command", "command": "pytest"})
+    recorder.finish("complete", stop_reason="assistant_final")
+
+    output = format_trace_status(trace_store, "session-a", goal_store=goal_store)
+    canonical = format_run_status_view(build_run_status_view(
+        session_key="session-a",
+        trace_store=trace_store,
+        goal_store=goal_store,
+    ))
+
+    assert output == canonical
+    assert f"Trace: {recorder.run_id}" in output
+    assert "Commands: pytest" in output
 
 
 def test_goal_status_renders_ledger_details(temp_dir):
