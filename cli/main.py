@@ -11,6 +11,7 @@ import uuid
 from typing import Optional
 
 import typer
+import yaml
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
@@ -37,6 +38,7 @@ from app.model_settings import (
     subagent_model_status,
 )
 from app.runtime_builder import build_runtime_services
+from app.runtime_config import RuntimeAdapterConfig, load_runtime_config
 from app.session_export_hook import SessionExportHook
 from app.runtime import build_configured_agent, build_master_registry
 from app.session import SessionManager
@@ -467,7 +469,7 @@ def _build_multiagent(
         env=env,
         session_key_prefix=session_key,
         child_loop_registrar=child_loop_registrar,
-        model_override=model_override,
+        model_override=model_override if model_override != AGENT_MODEL else None,
     )
 
 
@@ -499,7 +501,7 @@ def _build_default_chat_agent(
         config=configs["default"],
         env=env,
         session_key=session_key,
-        model_override=model,
+        model_override=model if model != AGENT_MODEL else None,
         child_loop_registrar=child_loop_registrar,
     )
 
@@ -567,8 +569,23 @@ def run_once(
     console.print(json.dumps(result, indent=2, sort_keys=True))
 
 
-def _load_work_loop_config(config_path: str, project: str = "", *, max_concurrency: int | None = None) -> WorkLoopConfig:
+def _load_work_loop_config(
+    config_path: str,
+    project: str = "",
+    *,
+    max_concurrency: int | None = None,
+    adapter_config: RuntimeAdapterConfig | None = None,
+) -> WorkLoopConfig:
     config = WorkLoopConfig.load(config_path, project=project)
+    if adapter_config is not None:
+        explicit_task_source, explicit_code_review = _work_loop_explicit_adapter_types(config_path)
+        config = WorkLoopConfig(
+            **{
+                **config.__dict__,
+                "task_source_type": config.task_source_type if explicit_task_source else adapter_config.task_source.provider,
+                "code_review_type": config.code_review_type if explicit_code_review else adapter_config.code_review.provider,
+            }
+        )
     if max_concurrency is not None:
         config = WorkLoopConfig(
             **{
@@ -579,6 +596,21 @@ def _load_work_loop_config(config_path: str, project: str = "", *, max_concurren
     return config
 
 
+def _work_loop_explicit_adapter_types(config_path: str) -> tuple[bool, bool]:
+    if not config_path or not os.path.exists(config_path):
+        return False, False
+    with open(config_path, encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    if not isinstance(data, dict):
+        return False, False
+    task_source = data.get("task_source")
+    code_review = data.get("code_review")
+    return (
+        "task_source_type" in data or (isinstance(task_source, dict) and "type" in task_source),
+        "code_review_type" in data or (isinstance(code_review, dict) and "type" in code_review),
+    )
+
+
 def _build_work_loop_runner(
     *,
     workspace: str,
@@ -587,7 +619,13 @@ def _build_work_loop_runner(
     max_concurrency: int | None = None,
 ) -> WorkLoopRunner:
     workspace_ctx = _workspace_context(workspace)
-    config = _load_work_loop_config(config_path, project=project, max_concurrency=max_concurrency)
+    adapter_config = load_runtime_config(workspace_ctx)
+    config = _load_work_loop_config(
+        config_path,
+        project=project,
+        max_concurrency=max_concurrency,
+        adapter_config=adapter_config,
+    )
     return WorkLoopRunner(workspace=workspace_ctx, config=config)
 
 
@@ -635,7 +673,13 @@ def _run_work_loop_mode(
     job_id: str | None = None,
 ) -> str:
     workspace_ctx = _workspace_context(workspace)
-    config = _load_work_loop_config(config_path, project=project, max_concurrency=max_concurrency)
+    adapter_config = load_runtime_config(workspace_ctx)
+    config = _load_work_loop_config(
+        config_path,
+        project=project,
+        max_concurrency=max_concurrency,
+        adapter_config=adapter_config,
+    )
     runner = WorkLoopRunner(workspace=workspace_ctx, config=config, job_id=job_id)
     if mode == "tasks":
         return format_work_items(runner.run_tasks(limit=limit, dry_run=dry_run))

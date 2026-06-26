@@ -171,6 +171,61 @@ When a rule uses `action: ask`, SmolClaw records a pending exact-call approval. 
 
 `/approval detail <id>` shows the tool, exact-call scope, normalized argument hash, argument preview, matched policy rule, reason, run id when available, and expiry. Approving an item allows the same tool call with the same normalized arguments to run once. Changed arguments create a new approval request.
 
+## Adapter Config
+
+SmolClaw loads project adapter defaults from `.smolclaw/config.yaml`.
+User-level config can also live at `~/.config/smolclaw/config.yaml` or `~/.smolclaw/config.yaml`.
+Workspace config overrides user config, and explicit CLI flags such as `--model` override YAML.
+
+Example:
+
+```yaml
+adapters:
+  llm:
+    default:
+      provider: openai
+      model: gpt-5.5
+    memory_extract:
+      provider: openai
+      model: gpt-5.4-mini
+    memory_query:
+      provider: openai
+      model: gpt-5.4
+    embeddings:
+      provider: openai
+      model: text-embedding-3-small
+    subagents:
+      provider: openai
+      model: gpt-5.5
+  task_source:
+    default:
+      provider: jira
+  code_review:
+    default:
+      provider: github
+  command:
+    default:
+      provider: subprocess
+```
+
+Claude completions can be paired with Voyage embeddings:
+
+```yaml
+adapters:
+  llm:
+    default:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+    subagents:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+    embeddings:
+      provider: voyage
+      model: voyage-4
+```
+
+Secrets do not belong in this file. API keys and CLI authentication still come from environment variables or provider-specific auth tools.
+
 Gateway mode still exists in the codebase, but it is not the primary product surface while local safety, checkpoints, and evals are being hardened.
 
 ## Recommended Pattern

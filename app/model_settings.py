@@ -3,6 +3,7 @@ from unittest.mock import Mock
 
 from app.llm import detect_provider
 from app.model_defaults import (
+    DEFAULT_ANTHROPIC_CHAT_MODEL,
     DEFAULT_OPENAI_CHAT_MODEL,
     DEFAULT_OPENAI_MEMORY_QUERY_MODEL,
     DEFAULT_SUBAGENT_MODEL,
@@ -20,9 +21,13 @@ class ModelSelection:
 
 
 class RuntimeModelSettings:
-    def __init__(self):
-        self.default_selection: ModelSelection | None = None
-        self.subagent_selection = ModelSelection(
+    def __init__(
+        self,
+        default_selection: ModelSelection | None = None,
+        subagent_selection: ModelSelection | None = None,
+    ):
+        self.default_selection: ModelSelection | None = default_selection
+        self.subagent_selection = subagent_selection or ModelSelection(
             model=DEFAULT_SUBAGENT_MODEL,
             reasoning_effort=MODEL_REGISTRY.default_effort(DEFAULT_SUBAGENT_MODEL),
         )
@@ -151,6 +156,7 @@ def model_list() -> str:
         "Compatibility:",
         f"  {DEFAULT_OPENAI_CHAT_MODEL}*: {MODEL_REGISTRY.describe(DEFAULT_OPENAI_CHAT_MODEL, 'medium')}",
         f"  gpt-5.4*: {MODEL_REGISTRY.describe(DEFAULT_OPENAI_MEMORY_QUERY_MODEL, 'medium')}",
+        f"  claude-*: {MODEL_REGISTRY.describe(DEFAULT_ANTHROPIC_CHAT_MODEL)}",
         "Examples:",
         *[f"  {model}" for model in MODEL_EXAMPLES],
     ])

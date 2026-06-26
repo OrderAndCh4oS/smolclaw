@@ -249,10 +249,10 @@ class AnthropicLlm:
             raise
 
     async def get_embedding(self, content: Any, model: Optional[str] = None) -> List[float]:
-        raise NotImplementedError("Anthropic does not provide an embeddings API. Use CompositeLlm.")
+        raise NotImplementedError("Anthropic does not provide an embeddings API. Use CompositeLlm with Voyage or OpenAI.")
 
     async def get_embeddings(self, contents: List[Any], model: Optional[str] = None) -> List[List[float]]:
-        raise NotImplementedError("Anthropic does not provide an embeddings API. Use CompositeLlm.")
+        raise NotImplementedError("Anthropic does not provide an embeddings API. Use CompositeLlm with Voyage or OpenAI.")
 
     @staticmethod
     def _translate_messages(messages: List[dict]) -> tuple:

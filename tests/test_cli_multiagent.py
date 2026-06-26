@@ -801,6 +801,7 @@ class TestCliMultiagent:
             session_manager,
             True,
             child_loop_registrar=ANY,
+            model_override="model",
         )
         assert ON_SESSION_END in fake_agent.hook_runner.events
         assert len(fake_agent.hook_runner._hooks[ON_SESSION_END]) == 2
@@ -887,6 +888,7 @@ class TestCliMultiagent:
             session_manager,
             False,
             child_loop_registrar=ANY,
+            model_override="model",
         )
         # Usage persist hook is always registered; export hooks only when auto_export=True
         assert ON_SESSION_END in fake_agent.hook_runner.events

@@ -28,6 +28,7 @@ from app.work_loop import (
     summarize_status_checks,
 )
 from app.agent_config import AgentConfigLoader
+from app.runtime_config import RuntimeAdapterConfig
 from app.workspace import WorkspaceContext
 
 
@@ -384,6 +385,51 @@ def test_work_loop_config_loads_adapter_and_profile_rules(temp_dir):
     assert config.task_profiles[0].name == "api_change"
     assert config.task_profiles[0].execution.models.coding_model == "gpt-5.5"
     assert config.task_profiles[0].execution.inner_max_turns == 9
+
+
+def test_cli_work_loop_config_uses_runtime_adapter_defaults(temp_dir):
+    from cli.main import _load_work_loop_config
+
+    config = _load_work_loop_config(
+        "",
+        adapter_config=RuntimeAdapterConfig.from_dict({
+            "adapters": {
+                "task_source": {"default": {"provider": "jira"}},
+                "code_review": {"default": {"provider": "github"}},
+            },
+        }),
+    )
+
+    assert config.task_source_type == "jira"
+    assert config.code_review_type == "github"
+
+
+def test_cli_work_loop_config_file_overrides_runtime_adapter_defaults(temp_dir):
+    from cli.main import _load_work_loop_config
+
+    config_path = os.path.join(temp_dir, "smolclaw-loop.yaml")
+    with open(config_path, "w", encoding="utf-8") as handle:
+        handle.write(
+            "\n".join([
+                "task_source:",
+                "  type: jira",
+                "code_review:",
+                "  type: github",
+            ])
+        )
+
+    config = _load_work_loop_config(
+        config_path,
+        adapter_config=RuntimeAdapterConfig.from_dict({
+            "adapters": {
+                "task_source": {"default": {"provider": "unsupported-task"}},
+                "code_review": {"default": {"provider": "unsupported-review"}},
+            },
+        }),
+    )
+
+    assert config.task_source_type == "jira"
+    assert config.code_review_type == "github"
 
 
 def test_reviewer_agent_is_read_only():

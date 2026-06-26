@@ -67,6 +67,9 @@ class TestSmolRagModelRouting:
     def test_default_embedding_dimensions_for_openai_embedding_models(self):
         assert default_embedding_dimensions("text-embedding-3-small") == 1536
 
+    def test_default_embedding_dimensions_for_voyage_embedding_models(self):
+        assert default_embedding_dimensions("voyage-4") == 1024
+
     @pytest.mark.asyncio
     async def test_default_memory_models_are_used_to_create_llm(self, temp_dir):
         created = {}

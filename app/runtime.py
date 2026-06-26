@@ -9,6 +9,7 @@ from app.context_builder import ContextBuilder
 from app.definitions import PROJECT_ROOT
 from app.hooks import HookRunner, ON_AFTER_TOOL
 from app.model_settings import RuntimeModelSettings
+from app.runtime_config import RuntimeAdapterConfig
 from app.runtime_capabilities import (
     CAPABILITY_GOAL,
     CAPABILITY_MEMORY,
@@ -53,6 +54,7 @@ class RuntimeEnvironment:
     enable_subagents: bool = False
     llm: object = None
     model_settings: RuntimeModelSettings = field(default_factory=RuntimeModelSettings)
+    adapter_config: RuntimeAdapterConfig = field(default_factory=RuntimeAdapterConfig)
 
     @property
     def memory_docs_dir(self) -> str:
@@ -225,4 +227,6 @@ def build_configured_agent(
         child_hook_runner_configurers_resolver=lambda agent_config: resolve_hook_runner_configurers(agent_config, env),
         llm_factory_kwargs=llm_factory_kwargs,
         model_settings=env.model_settings,
+        adapter_config=env.adapter_config,
+        llm=env.llm,
     )

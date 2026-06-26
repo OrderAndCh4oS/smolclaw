@@ -192,12 +192,14 @@ class RouteTool(Tool):
         smol_rag,
         session_manager: SessionManager,
         child_agent_factory: ChildAgentFactory | None = None,
+        llm=None,
     ):
         self.configs = configs
         self.master_registry = master_registry
         self.smol_rag = smol_rag
         self.session_manager = session_manager
         self.child_agent_factory = child_agent_factory
+        self.llm = llm
 
     def bind(self, runtime_ctx: ToolRuntimeContext) -> Tool:
         return RouteTool(
@@ -206,6 +208,7 @@ class RouteTool(Tool):
             smol_rag=self.smol_rag,
             session_manager=self.session_manager,
             child_agent_factory=runtime_ctx.child_agent_factory or self.child_agent_factory,
+            llm=runtime_ctx.llm or self.llm,
         )
 
     async def execute(self, **kwargs) -> str:
@@ -217,5 +220,6 @@ class RouteTool(Tool):
             master_registry=self.master_registry,
             smol_rag=self.smol_rag,
             session_manager=self.session_manager,
+            llm=self.llm,
             child_agent_factory=self.child_agent_factory,
         )

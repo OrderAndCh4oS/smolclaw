@@ -20,6 +20,8 @@ from app.vector_store import SqliteVectorStore
 
 
 def default_embedding_dimensions(model: str | None) -> int:
+    if model and model.startswith("voyage-"):
+        return 1024
     return 1536
 
 
@@ -51,6 +53,9 @@ class SmolRag:
             log_dir=None,
             memory_extract_model=None,
             memory_query_model=None,
+            embedding_model=None,
+            llm_provider=None,
+            embedding_provider=None,
     ):
         _db = db_path or SQLITE_DB_PATH
         set_logger("smolclaw-rag.log", log_dir=log_dir)
@@ -63,25 +68,29 @@ class SmolRag:
         self.input_docs_dir = input_docs_dir or INPUT_DOCS_DIR
         self.memory_extract_model = memory_extract_model or MEMORY_EXTRACT_MODEL
         self.memory_query_model = memory_query_model or MEMORY_QUERY_MODEL
+        self.embedding_model = embedding_model or EMBEDDING_MODEL
 
         self.llm = llm or create_llm(
             self.memory_extract_model,
-            EMBEDDING_MODEL,
+            self.embedding_model,
+            provider=llm_provider,
+            embedding_provider=embedding_provider,
+            require_embeddings=True,
             query_cache_kv=query_cache_kv,
             embedding_cache_kv=embedding_cache_kv,
             db_path=_db,
         )
 
-        _dimensions = dimensions or default_embedding_dimensions(EMBEDDING_MODEL)
+        _dimensions = dimensions or default_embedding_dimensions(self.embedding_model)
         self.stores = StoreBundle(
             embeddings_db=embeddings_db or SqliteVectorStore(
-                _db, dimensions=_dimensions, table=EMBEDDINGS_TABLE, embedding_model=EMBEDDING_MODEL
+                _db, dimensions=_dimensions, table=EMBEDDINGS_TABLE, embedding_model=self.embedding_model
             ),
             entities_db=entities_db or SqliteVectorStore(
-                _db, dimensions=_dimensions, table=ENTITIES_TABLE, embedding_model=EMBEDDING_MODEL
+                _db, dimensions=_dimensions, table=ENTITIES_TABLE, embedding_model=self.embedding_model
             ),
             relationships_db=relationships_db or SqliteVectorStore(
-                _db, dimensions=_dimensions, table=RELATIONSHIPS_TABLE, embedding_model=EMBEDDING_MODEL
+                _db, dimensions=_dimensions, table=RELATIONSHIPS_TABLE, embedding_model=self.embedding_model
             ),
             source_doc_map=source_doc_map or SqliteMappingStore(_db, "source_doc_map", "source", "doc_id"),
             doc_excerpt_map=doc_excerpt_map or SqliteMappingStore(_db, "doc_excerpt_map", "doc_id", "excerpt_id"),

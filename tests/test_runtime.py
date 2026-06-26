@@ -8,6 +8,7 @@ from app.agent_config import AgentConfig
 from app.context_assembly import ContextAssembler
 from app.context_builder import ContextBuilder
 from app.hooks import ON_AFTER_TOOL
+from app.runtime_config import RuntimeAdapterConfig
 from app.runtime import RuntimeEnvironment, build_configured_agent
 from app.session import SessionManager
 from app.workspace import WorkspaceContext
@@ -135,6 +136,107 @@ class TestRuntimeMemoryCapabilities:
 
 
 class TestRuntimeProviders:
+    def test_build_configured_agent_uses_project_default_for_default_agent_model(
+        self, mock_smol_rag, sessions_dir, temp_dir
+    ):
+        llm = _make_loop_llm()
+        workspace = WorkspaceContext.from_root(temp_dir)
+        env = RuntimeEnvironment(
+            smol_rag=mock_smol_rag,
+            session_manager=SessionManager(sessions_dir),
+            workspace=workspace,
+            adapter_config=RuntimeAdapterConfig.from_dict({
+                "adapters": {
+                    "llm": {
+                        "default": {
+                            "provider": "openai",
+                            "model": "gpt-5.4-pro",
+                        },
+                    },
+                },
+            }),
+        )
+        config = AgentConfig(
+            name="default",
+            model="gpt-5.5",
+            persona="You are Default.",
+            tools=["read_file"],
+            capabilities=["filesystem"],
+        )
+
+        with patch("app.agent_factory.create_llm", return_value=llm) as mock_create:
+            build_configured_agent(config, env)
+
+        mock_create.assert_called_once()
+        assert mock_create.call_args.kwargs["completion_model"] == "gpt-5.4-pro"
+        assert mock_create.call_args.kwargs["provider"] == "openai"
+
+    def test_build_configured_agent_passes_anthropic_provider_from_project_default(
+        self, mock_smol_rag, sessions_dir, temp_dir
+    ):
+        llm = _make_loop_llm()
+        llm.completion_model = "claude-sonnet-4-20250514"
+        env = RuntimeEnvironment(
+            smol_rag=mock_smol_rag,
+            session_manager=SessionManager(sessions_dir),
+            workspace=WorkspaceContext.from_root(temp_dir),
+            adapter_config=RuntimeAdapterConfig.from_dict({
+                "adapters": {
+                    "llm": {
+                        "default": {
+                            "provider": "anthropic",
+                            "model": "claude-sonnet-4-20250514",
+                        },
+                    },
+                },
+            }),
+        )
+        config = AgentConfig(
+            name="default",
+            model="gpt-5.5",
+            persona="You are Default.",
+            tools=["read_file"],
+            capabilities=["filesystem"],
+        )
+
+        with patch("app.agent_factory.create_llm", return_value=llm) as mock_create:
+            build_configured_agent(config, env)
+
+        assert mock_create.call_args.kwargs["completion_model"] == "claude-sonnet-4-20250514"
+        assert mock_create.call_args.kwargs["provider"] == "anthropic"
+
+    def test_build_configured_agent_keeps_explicit_agent_model(
+        self, mock_smol_rag, sessions_dir, temp_dir
+    ):
+        llm = _make_loop_llm()
+        env = RuntimeEnvironment(
+            smol_rag=mock_smol_rag,
+            session_manager=SessionManager(sessions_dir),
+            workspace=WorkspaceContext.from_root(temp_dir),
+            adapter_config=RuntimeAdapterConfig.from_dict({
+                "adapters": {
+                    "llm": {
+                        "default": {
+                            "provider": "openai",
+                            "model": "gpt-5.4-pro",
+                        },
+                    },
+                },
+            }),
+        )
+        config = AgentConfig(
+            name="specialist",
+            model="gpt-custom",
+            persona="You are Specialist.",
+            tools=["read_file"],
+            capabilities=["filesystem"],
+        )
+
+        with patch("app.agent_factory.create_llm", return_value=llm) as mock_create:
+            build_configured_agent(config, env)
+
+        assert mock_create.call_args.kwargs["completion_model"] == "gpt-custom"
+
     @pytest.mark.asyncio
     async def test_build_configured_agent_uses_mcp_wrappers_for_gateway_transport(
         self, mock_smol_rag, sessions_dir, temp_dir

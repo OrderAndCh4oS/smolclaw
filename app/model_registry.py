@@ -2,6 +2,7 @@ import os
 from dataclasses import dataclass
 
 from app.model_defaults import (
+    MODEL_PREFIX_ANTHROPIC_CLAUDE,
     MODEL_PREFIX_OPENAI_GPT54,
     MODEL_PREFIX_OPENAI_GPT55,
 )
@@ -58,6 +59,20 @@ class ModelRegistry:
                 tool_endpoint="chat.completions",
                 reasoning_tool_endpoint="responses",
             ),
+            ModelCapabilities(
+                provider="anthropic",
+                model_prefix=MODEL_PREFIX_ANTHROPIC_CLAUDE,
+                endpoint_family="messages",
+                supports_tools=True,
+                supports_reasoning_effort=False,
+                supports_streaming=True,
+                supports_structured_output=True,
+                max_context_tokens=None,
+                default_effort=None,
+                text_endpoint="messages",
+                tool_endpoint="messages",
+                reasoning_tool_endpoint="messages",
+            ),
         ]
 
     def resolve(self, model: str | None) -> ModelCapabilities | None:
@@ -103,7 +118,8 @@ class ModelRegistry:
         if caps is None:
             raise ValueError(
                 "Model must start with "
-                f"{MODEL_PREFIX_OPENAI_GPT54} or {MODEL_PREFIX_OPENAI_GPT55}."
+                f"{MODEL_PREFIX_OPENAI_GPT54}, {MODEL_PREFIX_OPENAI_GPT55}, "
+                f"or {MODEL_PREFIX_ANTHROPIC_CLAUDE}."
             )
         if reasoning_effort is not None and reasoning_effort not in REASONING_EFFORTS:
             valid = ", ".join(sorted(REASONING_EFFORTS))

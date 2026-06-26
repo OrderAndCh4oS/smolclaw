@@ -18,6 +18,11 @@ class FakeLlm:
     reasoning_effort = None
 
 
+class FakeClaudeLlm:
+    completion_model = "claude-sonnet-4-20250514"
+    reasoning_effort = None
+
+
 def test_parse_model_selection_accepts_gpt_55_high_effort():
     selection = parse_model_selection("gpt-5.5 high")
 
@@ -32,8 +37,20 @@ def test_parse_model_selection_accepts_any_gpt_54_or_55_suffix():
     assert selection.reasoning_effort == "xhigh"
 
 
+def test_parse_model_selection_accepts_claude_model_without_effort():
+    selection = parse_model_selection("claude-sonnet-4-20250514")
+
+    assert selection.model == "claude-sonnet-4-20250514"
+    assert selection.reasoning_effort is None
+
+
+def test_parse_model_selection_rejects_claude_reasoning_effort():
+    with pytest.raises(ValueError, match="does not support reasoning effort"):
+        parse_model_selection("claude-sonnet-4-20250514 high")
+
+
 def test_parse_model_selection_rejects_other_models():
-    with pytest.raises(ValueError, match="gpt-5.4 or gpt-5.5"):
+    with pytest.raises(ValueError, match="claude-"):
         parse_model_selection("gpt-4.1 high")
 
 
@@ -65,6 +82,17 @@ def test_apply_model_selection_rejects_runtime_provider_swap():
 
     with pytest.raises(ValueError, match="Cannot switch provider"):
         apply_model_selection(llm, ModelSelection("claude-sonnet-4-20250514"))
+
+
+def test_apply_model_selection_updates_claude_with_same_provider():
+    llm = FakeClaudeLlm()
+
+    apply_model_selection(llm, parse_model_selection("claude-opus-4-20250514"))
+
+    assert llm.completion_model == "claude-opus-4-20250514"
+    assert llm.reasoning_effort is None
+    assert "provider:anthropic" in model_status(llm)
+    assert "tools:messages" in model_status(llm)
 
 
 def test_runtime_model_settings_use_openai_default_for_subagents():
@@ -110,4 +138,6 @@ def test_model_list_includes_compatibility_details():
 
     assert "Compatibility:" in output
     assert "gpt-5.5*" in output
+    assert "claude-*" in output
     assert "tools:responses" in output
+    assert "provider:anthropic" in output

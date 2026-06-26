@@ -88,6 +88,45 @@ MEMORY_QUERY_MODEL=gpt-5.4
 EMBEDDING_MODEL=text-embedding-3-small
 ```
 
+Project-specific provider defaults can be configured in `.smolclaw/config.yaml`.
+CLI flags such as `--model` and runtime `/model` changes override YAML for the active session.
+
+```yaml
+adapters:
+  llm:
+    default:
+      provider: openai
+      model: gpt-5.5
+    subagents:
+      provider: openai
+      model: gpt-5.5
+    memory_extract:
+      provider: openai
+      model: gpt-5.4-mini
+    memory_query:
+      provider: openai
+      model: gpt-5.4
+    embeddings:
+      provider: openai
+      model: text-embedding-3-small
+```
+
+Claude can be used for the main agent or subagents by switching the completion provider to Anthropic. Anthropic does not provide Claude-native embeddings; their embeddings guide recommends Voyage AI, which SmolClaw supports as an embedding provider.
+
+```yaml
+adapters:
+  llm:
+    default:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+    subagents:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+    embeddings:
+      provider: voyage
+      model: voyage-4
+```
+
 Then run:
 
 ```bash
@@ -120,8 +159,17 @@ Sessions are not exported to memory on shutdown by default. Use `/remember-threa
 Model compatibility:
 
 - `/model` reports the active model, effort, provider, and endpoint behavior.
-- `gpt-5.4*` and `gpt-5.5*` models are validated through `ModelRegistry`.
+- `gpt-5.4*`, `gpt-5.5*`, and `claude-*` models are validated through `ModelRegistry`.
 - Reasoning tool turns use the OpenAI Responses API; compatible legacy text/tool turns keep using Chat Completions.
+- Claude models use the Anthropic Messages API for text and tool turns and do not accept OpenAI reasoning-effort values.
+- Voyage embedding models use the Voyage embeddings API and default to 1024-dimensional vectors.
+
+Provider config:
+
+- `provider: openai` supports `gpt-5.4*`, `gpt-5.5*`, tool calls, structured output, reasoning effort, and OpenAI embeddings.
+- `provider: anthropic` supports `claude-*`, tool calls, and schema-prompted structured output. It does not provide embeddings directly.
+- `provider: voyage` supports `voyage-*` embeddings for memory/RAG. Set `VOYAGE_API_KEY` when using it.
+- Runtime `/model` switching is allowed within the same provider family. Switching from OpenAI to Anthropic, or Anthropic to OpenAI, requires restarting with config or `--model`.
 
 Useful examples:
 

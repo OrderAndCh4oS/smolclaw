@@ -16,6 +16,10 @@ class TestDetectProvider:
         assert detect_provider("gpt-4.1-mini") == "openai"
         assert detect_provider("gpt-3.5-turbo") == "openai"
 
+    def test_voyage_models(self):
+        assert detect_provider("voyage-4") == "voyage"
+        assert detect_provider("voyage-code-3") == "voyage"
+
     def test_empty_and_none(self):
         assert detect_provider("") == "openai"
         assert detect_provider("some-other-model") == "openai"
@@ -50,6 +54,29 @@ class TestCreateLlm:
         assert isinstance(result, CompositeLlm)
         assert result.completion_provider is mock_anthropic
         assert result.embedding_provider is mock_openai
+
+    @patch("app.llm.VoyageEmbeddingLlm")
+    @patch("app.llm.AnthropicLlm")
+    def test_returns_composite_for_claude_with_voyage_embedding(self, MockAnthropic, MockVoyage):
+        mock_anthropic = MagicMock()
+        mock_voyage = MagicMock()
+        MockAnthropic.side_effect = lambda **kwargs: mock_anthropic
+        MockVoyage.side_effect = lambda **kwargs: mock_voyage
+
+        result = create_llm(
+            completion_model="claude-sonnet-4-20250514",
+            embedding_model="voyage-4",
+            embedding_provider="voyage",
+        )
+        assert isinstance(result, CompositeLlm)
+        assert result.completion_provider is mock_anthropic
+        assert result.embedding_provider is mock_voyage
+        MockVoyage.assert_called_once_with(
+            embedding_model="voyage-4",
+            embedding_cache_kv=None,
+            voyage_api_key=None,
+            db_path=None,
+        )
 
     @patch("app.llm.AnthropicLlm")
     def test_returns_bare_anthropic_without_embedding(self, MockAnthropic):

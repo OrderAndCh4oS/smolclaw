@@ -63,9 +63,24 @@ class TestRouteTool:
     @patch("app.orchestration.route", new_callable=AsyncMock)
     async def test_execute(self, mock_route):
         mock_route.return_value = "routed result"
-        tool = RouteTool({}, MagicMock(), None, MagicMock())
+        llm = MagicMock()
+        tool = RouteTool({}, MagicMock(), None, MagicMock(), llm=llm)
         result = await tool.execute(
             input="test query",
             routes={"pattern": "agent_name"},
         )
         assert result == "routed result"
+        assert mock_route.call_args.kwargs["llm"] is llm
+
+    @pytest.mark.asyncio
+    @patch("app.orchestration.route", new_callable=AsyncMock)
+    async def test_bind_uses_runtime_llm(self, mock_route):
+        runtime_llm = MagicMock()
+        runtime_ctx = MagicMock()
+        runtime_ctx.llm = runtime_llm
+        runtime_ctx.child_agent_factory = None
+        tool = RouteTool({}, MagicMock(), None, MagicMock()).bind(runtime_ctx)
+
+        await tool.execute(input="test query", routes={"pattern": "agent_name"})
+
+        assert mock_route.call_args.kwargs["llm"] is runtime_llm

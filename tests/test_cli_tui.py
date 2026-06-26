@@ -539,7 +539,7 @@ async def test_tui_model_command_rejects_unsupported_model():
     await tui.submit("/model gpt-4.1 high")
 
     rendered = "".join(text for _, text in tui._render_transcript())
-    assert "Error: Model must start with gpt-5.4 or gpt-5.5." in rendered
+    assert "Error: Model must start with gpt-5.4, gpt-5.5, or claude-." in rendered
     assert tui.agent.llm.completion_model == "gpt-test"
 
 
@@ -550,7 +550,7 @@ async def test_tui_model_command_rejects_unsupported_local_model():
     await tui.submit("/model local-model:8b")
 
     rendered = "".join(text for _, text in tui._render_transcript())
-    assert "Error: Model must start with gpt-5.4 or gpt-5.5." in rendered
+    assert "Error: Model must start with gpt-5.4, gpt-5.5, or claude-." in rendered
     assert tui.agent.llm.completion_model == "gpt-test"
 
 

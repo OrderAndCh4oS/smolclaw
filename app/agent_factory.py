@@ -10,12 +10,14 @@ from app.agent_loop import AgentLoop
 from app.behaviors import load_behaviors, resolve_behavior_names
 from app.context_builder import ContextBuilder
 from app.definitions import PROJECT_ROOT
+from app.model_defaults import DEFAULT_AGENT_MODEL
 from app.approvals import ApprovalRequestStore
 from app.goal_ledger import GoalLedgerStore
 from app.hooks import HookRunner, ON_AFTER_TOOL
 from app.llm import create_llm
 from app.checkpoints import CheckpointStore
 from app.model_settings import ModelSelection, RuntimeModelSettings, apply_model_selection
+from app.runtime_config import RuntimeAdapterConfig
 from app.run_trace import RunTraceStore
 from app.session import SessionManager
 from app.tools.base import ToolRuntimeContext, normalize_tool_result
@@ -56,6 +58,7 @@ class ChildAgentFactory:
     parent_session_key: str
     llm_factory_kwargs: Optional[dict] = None
     model_settings: RuntimeModelSettings | None = None
+    adapter_config: RuntimeAdapterConfig | None = None
     registry_factory: Optional[Callable[[AgentConfig], ToolRegistry]] = None
     loop_registrar: Optional[Callable[[AgentLoop], None]] = None
     context_builder_factory: Optional[Callable[[AgentConfig], ContextBuilder]] = None
@@ -119,6 +122,7 @@ class ChildAgentFactory:
             child_hook_runner_configurers_resolver=self.hook_runner_configurers_resolver,
             llm_factory_kwargs=self.llm_factory_kwargs,
             model_settings=self.model_settings,
+            adapter_config=self.adapter_config,
             is_child_agent=True,
         )
         if self.loop_registrar:
@@ -145,13 +149,37 @@ def build_agent_loop(
     llm_factory_kwargs: Optional[dict] = None,
     model_selection: ModelSelection | None = None,
     model_settings: RuntimeModelSettings | None = None,
+    adapter_config: RuntimeAdapterConfig | None = None,
+    llm=None,
     is_child_agent: bool = False,
 ) -> AgentLoop:
     selection = model_selection
     if selection is None and model_settings is not None:
         selection = model_settings.resolve(config.model, subagent=is_child_agent)
+    if (
+        adapter_config is not None
+        and not is_child_agent
+        and model_selection is None
+        and (model_settings is None or model_settings.default_selection is None)
+        and config.model == DEFAULT_AGENT_MODEL
+        and adapter_config.llm.default.model
+    ):
+        selection = ModelSelection(
+            adapter_config.llm.default.model,
+            None,
+        )
     completion_model = selection.model if selection is not None else config.model
-    llm = create_llm(completion_model=completion_model, **(llm_factory_kwargs or {}))
+    provider = None
+    if adapter_config is not None:
+        configured = adapter_config.llm.subagents if is_child_agent else adapter_config.llm.default
+        if configured.model == completion_model:
+            provider = configured.provider
+    if llm is None:
+        llm = create_llm(
+            completion_model=completion_model,
+            provider=provider,
+            **(llm_factory_kwargs or {}),
+        )
     if selection is not None:
         apply_model_selection(llm, selection)
     agent_smol_rag = smol_rag
@@ -205,6 +233,7 @@ def build_agent_loop(
         smol_rag_resolver=child_smol_rag_resolver,
         hook_runner_configurers_resolver=child_hook_runner_configurers_resolver,
         model_settings=model_settings,
+        adapter_config=adapter_config,
     )
     filtered_registry = master_registry.project_for_agent(
         config.tools,
