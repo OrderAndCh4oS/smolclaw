@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "run_id": "run-large-repo-exploration",
+  "session_key": "eval-large_repo_exploration",
+  "status": "complete",
+  "model": "recorded",
+  "tool_calls": 7,
+  "denied_tool_calls": 0,
+  "files_changed": ["services/accounts/serializer.py"],
+  "commands_run": ["python -m pytest"],
+  "checkpoints": ["chk-large"],
+  "verification": [{"command": "python -m pytest", "status": "passed"}],
+  "stop_reason": "assistant_final"
+}

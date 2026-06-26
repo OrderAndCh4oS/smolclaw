@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
@@ -62,6 +63,7 @@ class MemoryCodingEvalReport:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "report_type": "memory_coding_eval",
             "task_id": self.task_id,
             "status": self.status,
             "score": self.score,
@@ -210,3 +212,102 @@ def _coerce_patch_map(value: Any, field_name: str) -> dict[str, str]:
     if not isinstance(value, dict):
         raise ValueError(f"Memory coding eval field '{field_name}' must be an object.")
     return {str(path): str(content) for path, content in value.items()}
+
+
+def build_memory_coding_eval_suite_report(
+    reports: list[MemoryCodingEvalReport],
+    *,
+    baseline: dict[str, float],
+) -> dict[str, Any]:
+    report_payloads = [report.to_dict() for report in reports]
+    passed = sum(1 for report in reports if report.status == "passed")
+    failed = len(reports) - passed
+    raw_check_counts: dict[str, list[int]] = {}
+    score_deltas: dict[str, dict[str, float | None]] = {}
+    for report in reports:
+        for check, ok in report.checks.items():
+            raw_check_counts.setdefault(check, [0, 0])
+            raw_check_counts[check][1] += 1
+            if ok:
+                raw_check_counts[check][0] += 1
+        baseline_score = baseline.get(report.task_id)
+        score_deltas[report.task_id] = {
+            "current": report.score,
+            "baseline": baseline_score,
+            "delta": None if baseline_score is None else report.score - baseline_score,
+        }
+    checks = {
+        check: {
+            "passed": values[0],
+            "total": values[1],
+            "rate": values[0] / values[1] if values[1] else 0.0,
+        }
+        for check, values in sorted(raw_check_counts.items())
+    }
+    average_score = (
+        sum(report.score for report in reports) / len(reports)
+        if reports
+        else 0.0
+    )
+    return {
+        "status": "passed" if failed == 0 else "failed",
+        "mode": "memory_coding",
+        "task_count": len(reports),
+        "passed": passed,
+        "failed": failed,
+        "average_score": average_score,
+        "checks": checks,
+        "score_deltas": score_deltas,
+        "reports": report_payloads,
+        "created_at": time.time(),
+    }
+
+
+def load_memory_coding_eval_baseline_scores(path: str) -> dict[str, float]:
+    with open(path, encoding="utf-8") as handle:
+        return _extract_baseline_scores(json.load(handle))
+
+
+def memory_coding_eval_regressions(
+    suite_report: dict[str, Any],
+    *,
+    max_score_drop: float,
+) -> list[dict[str, Any]]:
+    regressions: list[dict[str, Any]] = []
+    for task_id, delta in (suite_report.get("score_deltas") or {}).items():
+        if not isinstance(delta, dict) or delta.get("delta") is None:
+            continue
+        if float(delta["delta"]) < -max_score_drop:
+            regressions.append({
+                "task_id": str(task_id),
+                "current": float(delta["current"]),
+                "baseline": float(delta["baseline"]),
+                "delta": float(delta["delta"]),
+                "max_score_drop": max_score_drop,
+            })
+    return regressions
+
+
+def memory_coding_eval_suite_report_to_json(suite_report: dict[str, Any]) -> str:
+    return json.dumps(suite_report, indent=2, sort_keys=True)
+
+
+def _extract_baseline_scores(payload: Any) -> dict[str, float]:
+    scores: dict[str, float] = {}
+    if isinstance(payload, dict) and isinstance(payload.get("reports"), list):
+        for report in payload["reports"]:
+            if isinstance(report, dict) and "task_id" in report and "score" in report:
+                scores[str(report["task_id"])] = float(report["score"])
+        return scores
+    if isinstance(payload, dict) and "task_id" in payload and "score" in payload:
+        return {str(payload["task_id"]): float(payload["score"])}
+    if isinstance(payload, dict):
+        for task_id, value in payload.items():
+            if isinstance(value, dict) and "score" in value:
+                scores[str(task_id)] = float(value["score"])
+            elif isinstance(value, (int, float)):
+                scores[str(task_id)] = float(value)
+            elif isinstance(value, dict):
+                for nested_id, nested_score in _extract_baseline_scores(value).items():
+                    scores[nested_id] = nested_score
+    return scores

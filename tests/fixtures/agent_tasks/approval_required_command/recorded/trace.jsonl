@@ -1,0 +1,2 @@
+{"event_id":"evt-approval","event":"approval.requested","run_id":"run-approval-required-command","session_key":"eval-approval_required_command","data":{"tool_name":"run_command"}}
+{"event_id":"evt-end","event":"run.ended","run_id":"run-approval-required-command","session_key":"eval-approval_required_command","data":{"status":"stopped"}}

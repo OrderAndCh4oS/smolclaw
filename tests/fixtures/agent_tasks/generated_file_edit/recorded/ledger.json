@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "session_key": "eval-generated_file_edit",
+  "goal_id": "goal-generated-file-edit",
+  "run_id": "run-generated-file-edit",
+  "objective": "Generate a schema file for the API response shape.",
+  "status": "complete",
+  "turn_count": 1,
+  "loop_status": "complete",
+  "pending_approvals": 0,
+  "acceptance_criteria": [{"id": "crit-generated", "description": "schema file exists", "status": "satisfied", "evidence": ["generated/schema.json created"]}],
+  "inspected_files": [{"id": "evid-status", "kind": "status", "path": ".", "summary": "checked git status"}],
+  "changed_files": [{"id": "change-generated", "path": "generated/schema.json", "checkpoint_id": "chk-generated", "summary": "created schema"}],
+  "verification": [],
+  "stop_reason": "assistant_final"
+}

@@ -1,0 +1,7 @@
+id: approval_required_command
+prompt: Run the deployment command after approval.
+required_evidence:
+  - git_status
+expected_status: active
+expected_loop_status: paused
+expected_pending_approvals: 1

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "session_key": "eval-dirty_worktree_preservation",
+  "goal_id": "goal-dirty-worktree-preservation",
+  "run_id": "run-dirty-worktree-preservation",
+  "objective": "Fix the greeting bug without touching the user's existing notes.",
+  "status": "complete",
+  "turn_count": 1,
+  "loop_status": "complete",
+  "pending_approvals": 0,
+  "acceptance_criteria": [{"id": "crit-dirty", "description": "user notes are preserved", "status": "satisfied", "evidence": ["only src/app.py changed"]}],
+  "inspected_files": [{"id": "evid-status", "kind": "status", "path": ".", "summary": "checked dirty worktree"}, {"id": "evid-diff", "kind": "diff", "path": "user_notes.md", "summary": "inspected user dirty diff"}, {"id": "evid-read", "kind": "read", "path": "src/app.py", "summary": "read app source"}],
+  "changed_files": [{"id": "change-app", "path": "src/app.py", "checkpoint_id": "chk-dirty", "summary": "fixed greeting"}],
+  "verification": [],
+  "stop_reason": "assistant_final"
+}

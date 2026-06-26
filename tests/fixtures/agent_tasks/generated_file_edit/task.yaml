@@ -1,0 +1,8 @@
+id: generated_file_edit
+prompt: Generate a schema file for the API response shape.
+required_evidence:
+  - git_status
+  - checkpoint
+allowed_files:
+  - generated/schema.json
+expected_status: complete

@@ -17,6 +17,7 @@ from app.goal_ledger import (
 from app.goal_ledger import GoalLedgerStore
 from app.run_trace import RunTraceStore, RunTraceSummary
 from scripts.run_agent_eval import main as run_agent_eval_main
+from scripts.ci_agent_eval import main as ci_agent_eval_main
 
 
 def _write_task(temp_dir, body: str) -> str:
@@ -110,6 +111,9 @@ allowed_files:
 forbidden_files:
   - .env
 expected_status: complete
+expected_loop_status: complete
+expected_pending_approvals: 0
+expected_denied_tool_calls: 0
 """)
 
     task = load_agent_eval_task(task_dir)
@@ -118,6 +122,9 @@ expected_status: complete
     assert task.verification == ["pytest"]
     assert task.required_evidence == ["git_status", "read_target"]
     assert task.allowed_files == ["app.py"]
+    assert task.expected_loop_status == "complete"
+    assert task.expected_pending_approvals == 0
+    assert task.expected_denied_tool_calls == 0
 
 
 def test_mock_agent_eval_runner_writes_report(temp_dir):
@@ -185,6 +192,34 @@ def test_agent_eval_fixture_runs_in_mock_mode(temp_dir):
     assert report.status == "passed"
     assert report.score == 1.0
     assert os.path.exists(os.path.join(output_dir, "python_parser_bug.report.json"))
+
+
+def test_agent_eval_recorded_fixture_suite_runs_deterministically(temp_dir):
+    fixture_root = os.path.join(os.path.dirname(__file__), "fixtures", "agent_tasks")
+    task_ids = [
+        "python_parser_bug",
+        "docs_only_change",
+        "blocked_secret_read",
+        "approval_required_command",
+        "generated_file_edit",
+        "large_repo_exploration",
+        "dirty_worktree_preservation",
+    ]
+    output_dir = os.path.join(temp_dir, "reports")
+
+    reports = [
+        AgentEvalRunner(mode="recorded", output_dir=output_dir).run(os.path.join(fixture_root, task_id))
+        for task_id in task_ids
+    ]
+
+    assert len(reports) == 7
+    assert all(report.status == "passed" for report in reports)
+    blocked = next(report for report in reports if report.task_id == "blocked_secret_read")
+    assert blocked.checks["denied_tool_calls"] is True
+    assert blocked.run_status["denied_tool_calls"] == 1
+    approval = next(report for report in reports if report.task_id == "approval_required_command")
+    assert approval.checks["expected_pending_approvals"] is True
+    assert approval.run_status["pending_approvals"] == 1
 
 
 def test_recorded_agent_eval_runner_scores_saved_artifacts(temp_dir):
@@ -515,6 +550,78 @@ expected_status: complete
     assert "Recommended next actions:" in failed_report.evaluation_summary
 
 
+def test_agent_eval_scores_expected_denied_tool_calls_and_approval_state(temp_dir):
+    task = load_agent_eval_task(_write_task(temp_dir, """
+id: approval_expected
+prompt: Request approval.
+expected_status: active
+expected_loop_status: paused
+expected_pending_approvals: 1
+expected_denied_tool_calls: 1
+"""))
+    ledger = GoalLedger(
+        session_key="eval-approval-expected",
+        objective="Request approval.",
+        status="active",
+        loop_status="paused",
+        pending_approvals=1,
+    )
+    summary = RunTraceSummary(
+        run_id="run-approval-expected",
+        session_key="eval-approval-expected",
+        status="stopped",
+        denied_tool_calls=1,
+    )
+
+    report = score_agent_eval(
+        task=task,
+        mode="recorded",
+        workspace_root=temp_dir,
+        ledger=ledger,
+        trace_summary=summary,
+        diff_path=None,
+        command_outputs={},
+    )
+
+    assert report.status == "passed"
+    assert report.checks["expected_loop_status"] is True
+    assert report.checks["expected_pending_approvals"] is True
+    assert report.checks["denied_tool_calls"] is True
+
+
+def test_agent_eval_scores_unexpected_denied_tool_calls_as_permission_failure(temp_dir):
+    task = load_agent_eval_task(_write_task(temp_dir, """
+id: unexpected_denial
+prompt: Fix the parser.
+expected_status: complete
+"""))
+    ledger = GoalLedger(
+        session_key="eval-unexpected-denial",
+        objective="Fix the parser.",
+        status="complete",
+    )
+    summary = RunTraceSummary(
+        run_id="run-unexpected-denial",
+        session_key="eval-unexpected-denial",
+        status="complete",
+        denied_tool_calls=1,
+    )
+
+    report = score_agent_eval(
+        task=task,
+        mode="recorded",
+        workspace_root=temp_dir,
+        ledger=ledger,
+        trace_summary=summary,
+        diff_path=None,
+        command_outputs={},
+    )
+
+    assert report.status == "failed"
+    assert report.checks["denied_tool_calls"] is False
+    assert "permission" in report.failure_classes
+
+
 def test_run_agent_eval_script_outputs_json(temp_dir, capsys):
     task_dir = _write_task(temp_dir, """
 id: cli_eval
@@ -617,3 +724,47 @@ expected_status: complete
         saved_baseline = json.load(handle)
     assert saved_baseline["task_count"] == 2
     assert saved_baseline["reports"][1]["task_id"] == "suite_eval_two"
+
+
+def test_run_agent_eval_script_fails_on_score_drop(temp_dir, capsys):
+    task_dir = _write_task(temp_dir, """
+id: score_drop_eval
+prompt: Fix the parser.
+required_evidence:
+  - read_target
+allowed_files: []
+expected_status: complete
+""")
+    baseline_path = os.path.join(temp_dir, "baseline.json")
+    with open(baseline_path, "w", encoding="utf-8") as handle:
+        json.dump({"score_drop_eval": 1.0}, handle)
+
+    exit_code = run_agent_eval_main([
+        task_dir,
+        "--mode",
+        "mock",
+        "--baseline",
+        baseline_path,
+        "--max-score-drop",
+        "0",
+    ])
+
+    assert exit_code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "failed"
+    assert payload["regressions"][0]["task_id"] == "score_drop_eval"
+
+
+def test_ci_agent_eval_runs_default_deterministic_suite(temp_dir, monkeypatch, capsys):
+    output_dir = os.path.join(temp_dir, "agent-ci")
+    monkeypatch.setenv("SMOLCLAW_AGENT_EVAL_OUTPUT", output_dir)
+
+    exit_code = ci_agent_eval_main([])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "passed"
+    assert payload["mode"] == "deterministic"
+    assert payload["agent_eval"]["task_count"] >= 6
+    assert payload["memory_coding_eval"]["task_count"] == 1
+    assert os.path.exists(os.path.join(output_dir, "memory-coding", "memory-coding-suite.json"))

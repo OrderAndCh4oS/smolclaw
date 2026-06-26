@@ -105,21 +105,21 @@ coding behavior, safety behavior, and run artifact integrity.
 ### Current State
 
 - `scripts/run_agent_eval.py` supports mock, recorded, and opt-in live modes.
-- Eval scoring checks trace/ledger integrity and can report failure classes and score deltas.
-- Existing fixtures are thin and do not cover enough real workflow diversity.
+- Eval scoring checks trace/ledger integrity, loop state, approval state, denied tool-call expectations, failure classes, and score deltas.
+- `scripts/ci_agent_eval.py` runs deterministic recorded coding fixtures plus the memory-on/off coding contrast fixture without model credentials.
 - Memory evals have deterministic fixture and docs suites.
 
 ### Implementation Details
 
 1. Add coding-agent fixtures:
-   - multi-file bugfix;
    - documentation-only change;
    - blocked secret read;
    - approval-required command;
    - dirty-worktree preservation;
    - generated-file edit;
    - large-repo exploration;
-   - TUI/trace rendering.
+   - parser bugfix;
+   - memory-on/off coding contrast.
 2. For each fixture define:
    - prompt;
    - allowed files;
@@ -141,8 +141,9 @@ coding behavior, safety behavior, and run artifact integrity.
 5. Report score dimensions separately:
    - exploration;
    - safety;
-   - permissions;
-   - touched files;
+- permissions;
+- approval pause state;
+- touched files;
    - verification;
    - completion;
    - trace/ledger integrity.

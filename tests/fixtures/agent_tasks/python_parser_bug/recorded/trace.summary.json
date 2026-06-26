@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "run_id": "run-python-parser-bug",
+  "session_key": "eval-python_parser_bug",
+  "status": "complete",
+  "model": "recorded",
+  "tool_calls": 5,
+  "denied_tool_calls": 0,
+  "files_changed": ["parser.py"],
+  "commands_run": ["python -m pytest"],
+  "checkpoints": ["chk-parser"],
+  "verification": [{"command": "python -m pytest", "status": "passed"}],
+  "stop_reason": "assistant_final"
+}

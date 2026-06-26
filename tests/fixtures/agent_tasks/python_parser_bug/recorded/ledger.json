@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "session_key": "eval-python_parser_bug",
+  "goal_id": "goal-python-parser-bug",
+  "run_id": "run-python-parser-bug",
+  "objective": "Fix parse_int_list so it accepts comma-separated integers with optional surrounding whitespace and ignores empty segments.",
+  "status": "complete",
+  "turn_count": 1,
+  "loop_status": "complete",
+  "pending_approvals": 0,
+  "acceptance_criteria": [{"id": "crit-python-parser-bug", "description": "parser handles whitespace and empty segments", "status": "satisfied", "evidence": ["tests passed"]}],
+  "inspected_files": [{"id": "evid-status", "kind": "status", "path": ".", "summary": "checked git status"}, {"id": "evid-read", "kind": "read", "path": "parser.py", "summary": "read parser implementation"}],
+  "changed_files": [{"id": "change-parser", "path": "parser.py", "checkpoint_id": "chk-parser", "summary": "fixed parse_int_list"}],
+  "verification": [{"id": "verify-pytest", "command": "python -m pytest", "status": "passed", "summary": "tests passed"}],
+  "stop_reason": "assistant_final"
+}

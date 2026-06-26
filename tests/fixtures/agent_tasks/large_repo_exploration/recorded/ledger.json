@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "session_key": "eval-large_repo_exploration",
+  "goal_id": "goal-large-repo-exploration",
+  "run_id": "run-large-repo-exploration",
+  "objective": "Find the account serializer bug and fix the incorrect field mapping.",
+  "status": "complete",
+  "turn_count": 1,
+  "loop_status": "complete",
+  "pending_approvals": 0,
+  "acceptance_criteria": [{"id": "crit-large", "description": "serializer maps name correctly", "status": "satisfied", "evidence": ["tests passed"]}],
+  "inspected_files": [{"id": "evid-status", "kind": "status", "path": ".", "summary": "checked git status"}, {"id": "evid-search", "kind": "search", "path": "services/accounts", "summary": "searched account serializer"}, {"id": "evid-read", "kind": "read", "path": "services/accounts/serializer.py", "summary": "read serializer"}],
+  "changed_files": [{"id": "change-large", "path": "services/accounts/serializer.py", "checkpoint_id": "chk-large", "summary": "fixed field mapping"}],
+  "verification": [{"id": "verify-large", "command": "python -m pytest", "status": "passed", "summary": "tests passed"}],
+  "stop_reason": "assistant_final"
+}

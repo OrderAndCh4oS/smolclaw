@@ -1,0 +1,6 @@
+diff --git a/generated/schema.json b/generated/schema.json
+new file mode 100644
+--- /dev/null
++++ b/generated/schema.json
+@@
++{"type":"object","properties":{"id":{"type":"string"}}}

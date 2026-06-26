@@ -1,0 +1,3 @@
+{
+  "python -m pytest": "exit code 0\nstdout:\npassed\nstderr:\n"
+}

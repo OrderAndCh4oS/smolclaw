@@ -1,0 +1,12 @@
+id: dirty_worktree_preservation
+prompt: Fix the greeting bug without touching the user's existing notes.
+required_evidence:
+  - git_status
+  - diff
+  - read_target
+  - checkpoint
+allowed_files:
+  - src/app.py
+forbidden_files:
+  - user_notes.md
+expected_status: complete

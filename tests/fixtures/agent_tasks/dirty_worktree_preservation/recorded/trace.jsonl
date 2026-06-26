@@ -1,0 +1,2 @@
+{"event_id":"evt-run","event":"run.started","run_id":"run-dirty-worktree-preservation","session_key":"eval-dirty_worktree_preservation","data":{}}
+{"event_id":"evt-end","event":"run.ended","run_id":"run-dirty-worktree-preservation","session_key":"eval-dirty_worktree_preservation","data":{"status":"complete"}}

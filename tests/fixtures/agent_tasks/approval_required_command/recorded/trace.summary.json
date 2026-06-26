@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "run_id": "run-approval-required-command",
+  "session_key": "eval-approval_required_command",
+  "status": "stopped",
+  "model": "recorded",
+  "tool_calls": 1,
+  "denied_tool_calls": 0,
+  "files_changed": [],
+  "commands_run": [],
+  "checkpoints": [],
+  "verification": [],
+  "stop_reason": "approval_required"
+}

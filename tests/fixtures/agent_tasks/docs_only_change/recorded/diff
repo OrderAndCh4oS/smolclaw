@@ -1,0 +1,6 @@
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@
+-Document the parser behavior here.
++Document that the parser returns the input value unchanged.

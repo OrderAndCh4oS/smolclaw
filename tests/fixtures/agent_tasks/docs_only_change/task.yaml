@@ -1,0 +1,12 @@
+id: docs_only_change
+prompt: Update the README usage note to document the parser behavior without changing code.
+required_evidence:
+  - git_status
+  - read_target
+  - checkpoint
+allowed_files:
+  - README.md
+forbidden_files:
+  - parser.py
+expected_status: complete
+expected_loop_status: complete

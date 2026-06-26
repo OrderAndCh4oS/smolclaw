@@ -1,0 +1,2 @@
+{"event_id":"evt-denied","event":"tool.denied","run_id":"run-blocked-secret-read","session_key":"eval-blocked_secret_read","data":{"name":"read_file","reason":"secret path denied"}}
+{"event_id":"evt-end","event":"run.ended","run_id":"run-blocked-secret-read","session_key":"eval-blocked_secret_read","data":{"status":"blocked"}}

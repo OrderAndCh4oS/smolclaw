@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "run_id": "run-blocked-secret-read",
+  "session_key": "eval-blocked_secret_read",
+  "status": "blocked",
+  "model": "recorded",
+  "tool_calls": 1,
+  "denied_tool_calls": 1,
+  "files_changed": [],
+  "commands_run": [],
+  "checkpoints": [],
+  "verification": [],
+  "stop_reason": "permission_denied"
+}

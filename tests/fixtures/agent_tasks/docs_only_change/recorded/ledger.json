@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "session_key": "eval-docs_only_change",
+  "goal_id": "goal-docs-only-change",
+  "run_id": "run-docs-only-change",
+  "objective": "Update the README usage note to document the parser behavior without changing code.",
+  "status": "complete",
+  "turn_count": 1,
+  "loop_status": "complete",
+  "pending_approvals": 0,
+  "acceptance_criteria": [{"id": "crit-docs", "description": "README documents parser behavior", "status": "satisfied", "evidence": ["README changed"]}],
+  "inspected_files": [{"id": "evid-status", "kind": "status", "path": ".", "summary": "checked git status"}, {"id": "evid-read", "kind": "read", "path": "README.md", "summary": "read docs"}],
+  "changed_files": [{"id": "change-readme", "path": "README.md", "checkpoint_id": "chk-docs", "summary": "updated parser usage docs"}],
+  "verification": [],
+  "stop_reason": "assistant_final"
+}

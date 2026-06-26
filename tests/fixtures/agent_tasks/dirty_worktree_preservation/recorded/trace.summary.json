@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "run_id": "run-dirty-worktree-preservation",
+  "session_key": "eval-dirty_worktree_preservation",
+  "status": "complete",
+  "model": "recorded",
+  "tool_calls": 5,
+  "denied_tool_calls": 0,
+  "files_changed": ["src/app.py"],
+  "commands_run": [],
+  "checkpoints": ["chk-dirty"],
+  "verification": [],
+  "stop_reason": "assistant_final"
+}

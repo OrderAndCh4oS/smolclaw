@@ -25,7 +25,9 @@ Run common focused groups:
 python -m pytest tests/test_runtime.py tests/test_agent_factory.py tests/test_agent_loop.py
 python -m pytest tests/test_tools_command.py tests/test_permissions.py tests/test_checkpoints.py
 python -m pytest tests/test_mcp_client.py tests/test_tools_web.py tests/test_llm_factory.py
-python -m pytest tests/test_agent_eval.py tests/test_memory_eval.py
+python -m pytest tests/test_agent_eval.py tests/test_memory_eval.py tests/test_memory_coding_eval.py
+python scripts/ci_agent_eval.py
+python scripts/ci_memory_eval.py
 ```
 
 ## Coverage Areas
@@ -49,7 +51,10 @@ python -m pytest tests/test_agent_eval.py tests/test_memory_eval.py
   `test_ingest_text.py`.
 - Whole-agent and memory evals:
   `test_agent_eval.py`, `test_memory_eval.py`, and
-  `test_memory_coding_eval.py`.
+  `test_memory_coding_eval.py`. Deterministic coding fixtures cover standard
+  bugfix, docs-only change, blocked secret access, approval pause, generated
+  files, large-repo exploration, dirty-worktree preservation, and memory-on/off
+  coding contrast.
 
 ## Test Design Rules
 

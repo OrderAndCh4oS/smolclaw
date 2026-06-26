@@ -1,0 +1,13 @@
+id: large_repo_exploration
+prompt: Find the account serializer bug and fix the incorrect field mapping.
+verification:
+  - python -m pytest
+required_evidence:
+  - git_status
+  - search
+  - read_target
+  - checkpoint
+  - test_command
+allowed_files:
+  - services/accounts/serializer.py
+expected_status: complete

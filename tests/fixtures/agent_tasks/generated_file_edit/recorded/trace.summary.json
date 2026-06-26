@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "run_id": "run-generated-file-edit",
+  "session_key": "eval-generated_file_edit",
+  "status": "complete",
+  "model": "recorded",
+  "tool_calls": 3,
+  "denied_tool_calls": 0,
+  "files_changed": ["generated/schema.json"],
+  "commands_run": [],
+  "checkpoints": ["chk-generated"],
+  "verification": [],
+  "stop_reason": "assistant_final"
+}

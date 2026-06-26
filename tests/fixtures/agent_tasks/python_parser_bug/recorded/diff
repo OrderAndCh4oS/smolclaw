@@ -1,0 +1,6 @@
+diff --git a/parser.py b/parser.py
+--- a/parser.py
++++ b/parser.py
+@@
+-    return [int(part) for part in value.split(",")]
++    return [int(part.strip()) for part in value.split(",") if part.strip()]

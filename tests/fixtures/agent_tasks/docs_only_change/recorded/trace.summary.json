@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "run_id": "run-docs-only-change",
+  "session_key": "eval-docs_only_change",
+  "status": "complete",
+  "model": "recorded",
+  "tool_calls": 3,
+  "denied_tool_calls": 0,
+  "files_changed": ["README.md"],
+  "commands_run": [],
+  "checkpoints": ["chk-docs"],
+  "verification": [],
+  "stop_reason": "assistant_final"
+}

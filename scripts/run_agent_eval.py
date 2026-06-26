@@ -44,6 +44,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--write-baseline",
         help="Optional path to write the current suite JSON for future delta comparisons",
     )
+    parser.add_argument(
+        "--max-score-drop",
+        type=float,
+        default=None,
+        help="Fail when any baseline score delta is below -N. Use 0 to fail on any regression.",
+    )
     return parser
 
 
@@ -68,17 +74,25 @@ def main(argv: list[str] | None = None) -> int:
     if len(reports) == 1 and not args.baseline and not args.write_baseline:
         print(report_to_json(reports[0]))
         return 0 if reports[0].status == "passed" else 2
-    baseline = _load_baseline_scores(args.baseline) if args.baseline else {}
-    suite = _build_suite_report(reports, baseline=baseline)
+    baseline = load_agent_eval_baseline_scores(args.baseline) if args.baseline else {}
+    suite = build_agent_eval_suite_report(reports, baseline=baseline)
+    regressions = (
+        agent_eval_regressions(suite, max_score_drop=args.max_score_drop)
+        if args.max_score_drop is not None
+        else []
+    )
+    if regressions:
+        suite["status"] = "failed"
+        suite["regressions"] = regressions
     if args.write_baseline:
         with open(args.write_baseline, "w", encoding="utf-8") as handle:
             json.dump(suite, handle, indent=2, sort_keys=True)
             handle.write("\n")
-    print(json.dumps(suite, indent=2, sort_keys=True))
+    print(agent_eval_suite_report_to_json(suite))
     return 0 if suite["status"] == "passed" else 2
 
 
-def _build_suite_report(reports, *, baseline: dict[str, float]) -> dict[str, Any]:
+def build_agent_eval_suite_report(reports, *, baseline: dict[str, float]) -> dict[str, Any]:
     report_payloads = [report.to_dict() for report in reports]
     passed = sum(1 for report in reports if report.status == "passed")
     failed = len(reports) - passed
@@ -127,9 +141,33 @@ def _build_suite_report(reports, *, baseline: dict[str, float]) -> dict[str, Any
     }
 
 
-def _load_baseline_scores(path: str) -> dict[str, float]:
+def load_agent_eval_baseline_scores(path: str) -> dict[str, float]:
     with open(path, encoding="utf-8") as handle:
         payload = json.load(handle)
+    return _extract_baseline_scores(payload)
+
+
+def agent_eval_regressions(suite_report: dict[str, Any], *, max_score_drop: float) -> list[dict[str, Any]]:
+    regressions: list[dict[str, Any]] = []
+    for task_id, delta in (suite_report.get("score_deltas") or {}).items():
+        if not isinstance(delta, dict) or delta.get("delta") is None:
+            continue
+        if float(delta["delta"]) < -max_score_drop:
+            regressions.append({
+                "task_id": str(task_id),
+                "current": float(delta["current"]),
+                "baseline": float(delta["baseline"]),
+                "delta": float(delta["delta"]),
+                "max_score_drop": max_score_drop,
+            })
+    return regressions
+
+
+def agent_eval_suite_report_to_json(suite_report: dict[str, Any]) -> str:
+    return json.dumps(suite_report, indent=2, sort_keys=True)
+
+
+def _extract_baseline_scores(payload: Any) -> dict[str, float]:
     scores: dict[str, float] = {}
     if isinstance(payload, dict) and isinstance(payload.get("reports"), list):
         for report in payload["reports"]:
@@ -144,6 +182,9 @@ def _load_baseline_scores(path: str) -> dict[str, float]:
                 scores[str(task_id)] = float(value["score"])
             elif isinstance(value, (int, float)):
                 scores[str(task_id)] = float(value)
+            elif isinstance(value, dict):
+                for nested_score_id, nested_score in _extract_baseline_scores(value).items():
+                    scores[nested_score_id] = nested_score
     return scores
 
 

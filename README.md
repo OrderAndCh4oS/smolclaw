@@ -247,7 +247,17 @@ python -m pytest -q
 ```
 
 Tests use mocked model paths where possible and should not require live provider keys for normal unit coverage.
-Agent eval tasks can be run with `scripts/run_agent_eval.py` in `mock`, `recorded`, or opt-in `live` mode. Pass multiple task directories to emit a suite report with aggregate check rates, failure classes, recommended actions, and optional score deltas from `--baseline`.
+Agent eval tasks can be run with `scripts/run_agent_eval.py` in `mock`, `recorded`, or opt-in `live` mode. Pass multiple task directories to emit a suite report with aggregate check rates, failure classes, recommended actions, artifact paths, and optional score deltas from `--baseline`.
+
+Deterministic coding-harness evals can be run without model credentials:
+
+```bash
+python scripts/ci_agent_eval.py
+python scripts/run_agent_eval.py tests/fixtures/agent_tasks/python_parser_bug --mode recorded
+python scripts/run_agent_eval.py tests/fixtures/agent_tasks/python_parser_bug tests/fixtures/agent_tasks/blocked_secret_read --mode recorded --baseline baseline.json --max-score-drop 0
+```
+
+`scripts/ci_agent_eval.py` runs the recorded coding fixtures plus the memory-on/off coding contrast fixture. Baseline gating uses `SMOLCLAW_AGENT_EVAL_BASELINE`, `SMOLCLAW_AGENT_EVAL_MAX_DROP`, and `SMOLCLAW_AGENT_EVAL_WRITE_BASELINE`.
 
 Corpus-memory and knowledge-graph evals can be run with:
 

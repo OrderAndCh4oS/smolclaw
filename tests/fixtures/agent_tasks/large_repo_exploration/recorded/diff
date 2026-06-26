@@ -1,0 +1,6 @@
+diff --git a/services/accounts/serializer.py b/services/accounts/serializer.py
+--- a/services/accounts/serializer.py
++++ b/services/accounts/serializer.py
+@@
+-    return {"id": account["id"], "name": account["email"]}
++    return {"id": account["id"], "name": account["name"]}
