@@ -25,6 +25,31 @@ corpus:
       - subject: SmolClaw architecture
         predicate: source_of_truth
         object: system-design-spec
+  - path: roadmap.md
+    source_id: implementation-roadmap
+    title: SmolClaw Roadmap
+    kind: produced
+    captured_at: "2026-06-26"
+    entities:
+      - Roadmap
+      - Implementation details
+      - Impact details
+      - Acceptance criteria
+      - Eval suite
+    relationships:
+      - source: Roadmap
+        relation: sequences
+        target: Implementation work
+      - source: Implementation details
+        relation: define
+        target: Acceptance criteria
+      - source: Eval suite
+        relation: measures
+        target: Reliability changes
+    claims:
+      - subject: SmolClaw roadmap
+        predicate: scope
+        object: current implementation work
   - path: workspaces.md
     source_id: workspaces
     title: SmolClaw Workspaces
@@ -137,6 +162,28 @@ questions:
       - source root
       - state root
       - Adapter Config
+  - id: roadmap_implementation_impact
+    query: What roadmap explains current implementation details, expected impact, acceptance criteria, sequencing dependencies, and eval suite expansion?
+    expected_sources:
+      - implementation-roadmap
+    expected_entities:
+      - Roadmap
+      - Implementation details
+      - Impact details
+      - Acceptance criteria
+      - Eval suite
+    expected_relationships:
+      - source: Roadmap
+        relation: sequences
+        target: Implementation work
+      - source: Implementation details
+        relation: define
+        target: Acceptance criteria
+    required_terms:
+      - implementation work
+      - Impact
+      - Acceptance Criteria
+      - Sequencing Dependencies
   - id: memory_eval_provenance_scope
     query: How do memory evals test deterministic source retrieval, knowledge graph relationships, citation provenance, stale evidence, and contradiction checks?
     expected_sources:
@@ -181,6 +228,11 @@ staleness:
     as_of: "2026-06-26"
   - id: workspace_docs_are_current
     source_id: workspaces
+    expected: fresh
+    max_age_days: 45
+    as_of: "2026-06-26"
+  - id: roadmap_is_current
+    source_id: implementation-roadmap
     expected: fresh
     max_age_days: 45
     as_of: "2026-06-26"

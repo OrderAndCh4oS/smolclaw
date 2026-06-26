@@ -339,7 +339,7 @@ def test_project_docs_memory_eval_suite_passes():
     report = MemoryEvalRunner().run(suite_path)
 
     assert report.status == "passed"
-    assert report.corpus_size >= 4
+    assert report.corpus_size >= 5
     assert any(item.check == "staleness" for item in report.hygiene_reports)
     assert report.question_reports[0].checks["source_retrieval"] is True
 

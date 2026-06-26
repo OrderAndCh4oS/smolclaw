@@ -272,6 +272,9 @@ The current priorities are:
 4. Improve approval UX while keeping exact-call approvals as the safe default.
 5. Tune target-aware safety using eval-backed fixtures before tightening heuristics.
 
+Implementation details, expected impact, sequencing, and acceptance criteria are
+tracked in [docs/roadmap.md](docs/roadmap.md).
+
 ## Non-Goals For Now
 
 - Full OpenClaw-style always-on personal assistant.

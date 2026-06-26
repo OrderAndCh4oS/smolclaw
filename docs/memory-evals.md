@@ -84,11 +84,11 @@ smolclaw memory-eval docs/smolclaw-memory-eval.yaml --output .smolclaw/stores/ev
 ```
 
 This suite references the current docs that remain after the project pivot:
-the system design spec, workspace guide, memory-eval guide, and the suite file
-itself. The suite adds metadata in YAML rather than copying the documents, so it
-exercises the real writing while still declaring the graph entities,
-relationships, claims, and freshness expectations the memory layer should
-preserve.
+the system design spec, roadmap, workspace guide, memory-eval guide, and the
+suite file itself. The suite adds metadata in YAML rather than copying the
+documents, so it exercises the real writing while still declaring the graph
+entities, relationships, claims, and freshness expectations the memory layer
+should preserve.
 
 ## Suite Reports And Baselines
 

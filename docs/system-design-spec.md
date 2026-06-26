@@ -12,6 +12,7 @@ where the implementation has gaps, this document names them.
 Related docs:
 
 - [workspaces.md](workspaces.md): workspace layout, reset behavior, and adapter config.
+- [roadmap.md](roadmap.md): current implementation roadmap and impact details.
 - [memory-evals.md](memory-evals.md): memory evaluation design and operating guidance.
 - [smolclaw-memory-eval.yaml](smolclaw-memory-eval.yaml): deterministic eval suite for current project docs.
 
