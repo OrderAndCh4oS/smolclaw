@@ -131,6 +131,35 @@ agents:
     context_budget: 6000
     timeout: 600
 
+  - name: reviewer
+    model: default
+    persona: >
+      You are an isolated code reviewer. Find correctness, acceptance-criteria,
+      regression, and test-coverage issues before human review. Be concise and
+      actionable. Do not edit files, commit, push, or run shell commands.
+    tools:
+      - memory_search
+      - memory_graph_query
+      - contradiction_review
+      - memory_recall
+      - find_files
+      - read_file
+      - grep_search
+      - git_status
+      - git_diff
+    capabilities:
+      - filesystem
+      - command
+      - memory
+    permission_mode: plan
+    bootstrap_path: agents/reviewer.md
+    behaviors:
+      - reflect
+    max_iterations: 15
+    memory_window: 20
+    context_budget: 6000
+    timeout: 600
+
   - name: orchestrator
     model: default
     persona: >

@@ -309,6 +309,9 @@ class WorkLoopConfig:
     lint_commands: list[str] = field(default_factory=list)
     format_commands: list[str] = field(default_factory=list)
     github_label: str = "agent-owned"
+    internal_review_enabled: bool = True
+    reviewer_agent: str = "reviewer"
+    internal_review_repair_cycles: int = 1
 
     def __post_init__(self):
         if isinstance(self.models, dict):
@@ -362,6 +365,14 @@ class WorkLoopConfig:
             for key in ("inner_max_turns", "repair_attempts"):
                 if key in defaults:
                     values[key] = defaults[key]
+        internal_review = data.get("internal_review")
+        if isinstance(internal_review, dict):
+            if "enabled" in internal_review:
+                values["internal_review_enabled"] = bool(internal_review["enabled"])
+            if "reviewer_agent" in internal_review:
+                values["reviewer_agent"] = str(internal_review["reviewer_agent"])
+            if "repair_cycles" in internal_review:
+                values["internal_review_repair_cycles"] = int(internal_review["repair_cycles"])
         if isinstance(values.get("models"), dict):
             values["models"] = WorkLoopModels.from_dict(values["models"])
         default_execution = TaskExecutionProfile(
@@ -492,6 +503,33 @@ class ProcessedReviewComment:
 
 
 @dataclass
+class InternalReviewRecord:
+    status: str
+    findings: str = ""
+    repair_attempted: bool = False
+    timestamp: float = field(default_factory=time.time)
+
+    def to_dict(self) -> dict:
+        return {
+            "status": self.status,
+            "findings": self.findings,
+            "repair_attempted": self.repair_attempted,
+            "timestamp": self.timestamp,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "InternalReviewRecord | None":
+        if not isinstance(data, dict):
+            return None
+        return cls(
+            status=str(data.get("status") or "not-run"),
+            findings=str(data.get("findings") or ""),
+            repair_attempted=bool(data.get("repair_attempted")),
+            timestamp=float(data.get("timestamp") or time.time()),
+        )
+
+
+@dataclass
 class WorkItem:
     jira_key: str
     title: str
@@ -510,6 +548,7 @@ class WorkItem:
     commits: list[str] = field(default_factory=list)
     verification: list[VerificationRecord] = field(default_factory=list)
     processed_review_comments: list[ProcessedReviewComment] = field(default_factory=list)
+    internal_review: InternalReviewRecord | None = None
     blocker: str = ""
     updated_at: float = field(default_factory=time.time)
     created_at: float = field(default_factory=time.time)
@@ -533,6 +572,7 @@ class WorkItem:
             "commits": list(self.commits),
             "verification": [item.to_dict() for item in self.verification],
             "processed_review_comments": [item.to_dict() for item in self.processed_review_comments],
+            "internal_review": self.internal_review.to_dict() if self.internal_review else None,
             "blocker": self.blocker,
             "updated_at": self.updated_at,
             "created_at": self.created_at,
@@ -561,6 +601,7 @@ class WorkItem:
                 ProcessedReviewComment.from_dict(item)
                 for item in data.get("processed_review_comments") or []
             ],
+            internal_review=InternalReviewRecord.from_dict(data.get("internal_review")),
             blocker=str(data.get("blocker") or ""),
             updated_at=float(data.get("updated_at") or time.time()),
             created_at=float(data.get("created_at") or time.time()),
@@ -1137,6 +1178,46 @@ class TaskExecutionResult:
     capped: bool = False
 
 
+class InternalReviewRunner:
+    def __init__(self, runner: CommandRunner):
+        self.runner = runner
+
+    def review(
+        self,
+        item: WorkItem,
+        candidate: TaskCandidate,
+        config: WorkLoopConfig,
+        execution_result: TaskExecutionResult,
+    ) -> InternalReviewRecord:
+        if not config.internal_review_enabled:
+            return InternalReviewRecord(status="not-run")
+        prompt = build_internal_review_prompt(candidate, execution_result)
+        args = [
+            sys.executable,
+            "-m",
+            "cli.main",
+            "run",
+            prompt,
+            "--workspace",
+            item.workspace_path,
+            "--agent",
+            config.reviewer_agent,
+            "--agents-config",
+            config.agents_config,
+        ]
+        review_run = self.runner.run(args, cwd=item.workspace_path, timeout=1800)
+        if not review_run.ok:
+            return InternalReviewRecord(
+                status="error",
+                findings=f"Internal reviewer failed: {review_run.output.strip()}",
+            )
+        response = parse_run_once_response(review_run.stdout)
+        findings = response.strip()
+        if not findings or is_no_actionable_findings(findings):
+            return InternalReviewRecord(status="passed", findings=findings or "No actionable findings.")
+        return InternalReviewRecord(status="findings", findings=findings)
+
+
 class CliAgentTaskExecutor:
     def __init__(
         self,
@@ -1229,6 +1310,7 @@ class WorkLoopRunner:
         code_review: CodeReviewAdapter | None = None,
         ledger: WorkLoopLedger | None = None,
         task_executor: CliAgentTaskExecutor | None = None,
+        internal_reviewer: InternalReviewRunner | None = None,
         git: GitOperations | None = None,
         run_workspaces: RunWorkspaceManager | None = None,
         done_gate: DoneGateRunner | None = None,
@@ -1251,6 +1333,7 @@ class WorkLoopRunner:
             control=self.control,
             done_gate=self.done_gate,
         )
+        self.internal_reviewer = internal_reviewer or InternalReviewRunner(self.command_runner)
 
     def preflight(self, *, require_jira: bool = True, require_github: bool = True) -> list[str]:
         errors: list[str] = []
@@ -1371,6 +1454,28 @@ class WorkLoopRunner:
         self.control.check(f"executing {item.jira_key}")
         result = self.task_executor.execute(item, candidate, self.config, profile=profile)
         item.verification.extend(result.verification)
+        if self.config.internal_review_enabled:
+            review = self.internal_reviewer.review(item, candidate, self.config, result)
+            item.internal_review = review
+            self.ledger.save(item)
+            if (
+                review.status == "findings"
+                and self.config.internal_review_repair_cycles > 0
+            ):
+                self.control.check(f"repairing internal review findings for {item.jira_key}")
+                result = self.task_executor.execute(
+                    item,
+                    candidate,
+                    self.config,
+                    review_feedback=render_internal_review_feedback(review),
+                    profile=profile,
+                )
+                item.verification.extend(result.verification)
+                item.internal_review = InternalReviewRecord(
+                    status=review.status,
+                    findings=review.findings,
+                    repair_attempted=True,
+                )
         if not result.success:
             item.blocker = result.blocker
         self.control.check(f"committing {item.jira_key}")
@@ -1391,7 +1496,11 @@ class WorkLoopRunner:
         self.control.check(f"transitioning {item.jira_key} to review")
         self.task_source.transition(item.jira_key, self.config.review_status)
         self.control.check(f"commenting on Jira for {item.jira_key}")
-        self.task_source.comment(item.jira_key, render_jira_pr_comment(pr_url, result))
+        self.task_source.comment(item.jira_key, render_jira_pr_comment(
+            pr_url,
+            result,
+            internal_review=item.internal_review,
+        ))
         self.ledger.save(item)
         self.run_workspaces.cleanup(item)
 
@@ -1607,6 +1716,18 @@ def run_verification_commands(
     return records
 
 
+def parse_run_once_response(raw: str) -> str:
+    try:
+        payload = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return raw or ""
+    if isinstance(payload, dict):
+        response = payload.get("response")
+        if response is not None:
+            return str(response)
+    return raw or ""
+
+
 def build_task_prompt(candidate: TaskCandidate, commands: list[str], *, review_feedback: str = "") -> str:
     feedback = f"\n\nReview feedback to address:\n{review_feedback}" if review_feedback else ""
     command_block = "\n".join(f"- {command}" for command in commands) or "- <none discovered>"
@@ -1618,6 +1739,40 @@ def build_task_prompt(candidate: TaskCandidate, commands: list[str], *, review_f
         "Write or update appropriate tests. Continue until the ticket requirements are complete.\n\n"
         f"Verification commands expected by the outer loop:\n{command_block}"
         f"{feedback}"
+    )
+
+
+def build_internal_review_prompt(candidate: TaskCandidate, result: TaskExecutionResult) -> str:
+    verification = "\n".join(
+        f"- {record.command}: {record.status}\n{record.output[-2000:]}"
+        for record in result.verification
+    ) or "- No verification recorded"
+    return (
+        f"Review Jira ticket {candidate.key}: {candidate.summary}\n\n"
+        f"Ticket description:\n{candidate.description or candidate.summary}\n\n"
+        "Review the current workspace diff as an isolated reviewer. Use git_status, git_diff, "
+        "and read/search tools as needed. Focus only on correctness, missed acceptance criteria, "
+        "regressions, and missing or weak tests. Do not comment on style, naming, or broad architecture "
+        "unless it creates a correctness risk.\n\n"
+        f"Implementation summary:\n{result.summary}\n\n"
+        f"Known blocker:\n{result.blocker or '- None recorded'}\n\n"
+        f"Verification:\n{verification}\n\n"
+        "If there are no actionable correctness or test findings, respond exactly:\n"
+        "No actionable findings.\n\n"
+        "Otherwise respond with a concise actionable findings list."
+    )
+
+
+def is_no_actionable_findings(text: str) -> bool:
+    normalized = " ".join(text.strip().lower().rstrip(".").split())
+    return normalized == "no actionable findings"
+
+
+def render_internal_review_feedback(review: InternalReviewRecord) -> str:
+    return (
+        "Internal pre-PR review found actionable correctness or test issues. "
+        "Address these findings before the human-review handoff:\n"
+        f"{review.findings}"
     )
 
 
@@ -1645,6 +1800,17 @@ def work_status(result: TaskExecutionResult) -> str:
     return "incomplete"
 
 
+def internal_review_summary(review: InternalReviewRecord | None) -> str:
+    if review is None:
+        return "not-run"
+    status = review.status
+    if review.repair_attempted:
+        status += " - repair attempted"
+    if review.findings and review.status in {"findings", "error"}:
+        return f"{status}: {review.findings}"
+    return status
+
+
 def render_commit_message(item: WorkItem, result: TaskExecutionResult) -> str:
     verification = "\n".join(f"- {record.command}: {record.status}" for record in result.verification)
     return (
@@ -1652,6 +1818,7 @@ def render_commit_message(item: WorkItem, result: TaskExecutionResult) -> str:
         f"Status: {work_status(result)}\n\n"
         f"Work completed:\n{result.summary}\n\n"
         f"Tests and verification:\n{verification or '- No verification recorded'}\n\n"
+        f"Internal review:\n{internal_review_summary(item.internal_review)}\n\n"
         f"Known issues:\n{result.blocker or '- None recorded'}\n\n"
         f"Manual testing:\n{result.manual_steps or 'Review the changed workflow manually.'}"
     )
@@ -1665,6 +1832,7 @@ def render_pr_body(item: WorkItem, candidate: TaskCandidate, result: TaskExecuti
         f"## Status\n{work_status(result)}\n\n"
         f"## Work completed\n{result.summary}\n\n"
         f"## Verification\n{verification or '- No verification recorded'}\n\n"
+        f"## Internal review\n{internal_review_summary(item.internal_review)}\n\n"
         f"## Known issues\n{result.blocker or '- None recorded'}\n\n"
         f"## Manual testing\n{result.manual_steps or manual_testing_steps(candidate)}\n"
     )
@@ -1687,13 +1855,19 @@ def render_review_response(result: TaskExecutionResult) -> str:
     )
 
 
-def render_jira_pr_comment(pr_url: str, result: TaskExecutionResult) -> str:
+def render_jira_pr_comment(
+    pr_url: str,
+    result: TaskExecutionResult,
+    *,
+    internal_review: InternalReviewRecord | None = None,
+) -> str:
     verification = "\n".join(f"- {record.command}: {record.status}" for record in result.verification)
     return "\n\n".join(
         [
             f"Opened PR: {pr_url}",
             f"Status: {work_status(result)}",
             f"Verification:\n{verification or '- No verification recorded'}",
+            f"Internal review:\n{internal_review_summary(internal_review)}",
             f"Known issues:\n{result.blocker or '- None recorded'}",
         ]
     )
@@ -1809,6 +1983,7 @@ def format_work_item_status(item: WorkItem | None) -> str:
             f"Workspace: {item.workspace_path or '<none>'}",
             f"PR: {item.pr_url or '<none>'}",
             f"Blocker: {item.blocker or '<none>'}",
+            f"Internal review: {internal_review_summary(item.internal_review)}",
             "Verification:",
             verification or "- <none>",
             "Processed review comments:",

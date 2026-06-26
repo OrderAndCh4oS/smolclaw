@@ -5,6 +5,7 @@ from typer.testing import CliRunner
 
 from app.work_loop import (
     CommandResult,
+    InternalReviewRecord,
     RunWorkspaceManager,
     WorkLoopControl,
     WorkLoopJobSupervisor,
@@ -26,6 +27,7 @@ from app.work_loop import (
     new_actionable_comments,
     summarize_status_checks,
 )
+from app.agent_config import AgentConfigLoader
 from app.workspace import WorkspaceContext
 
 
@@ -148,6 +150,26 @@ class FakeTaskExecutor:
         )
 
 
+class SequencedTaskExecutor:
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls = []
+
+    def execute(self, item, candidate, config, *, review_feedback="", profile=None):
+        self.calls.append((item.jira_key, review_feedback, profile.name if profile else ""))
+        return self.results.pop(0)
+
+
+class FakeInternalReviewer:
+    def __init__(self, record):
+        self.record = record
+        self.calls = []
+
+    def review(self, item, candidate, config, result):
+        self.calls.append((item.jira_key, candidate.key, result.summary))
+        return self.record
+
+
 class FailingVerificationRunner(FakeCommandRunner):
     def run(self, args, *, cwd=None, input_text=None, timeout=600):
         if args[:4] == [os.sys.executable, "-m", "cli.main", "run"]:
@@ -264,6 +286,9 @@ def test_run_tasks_creates_pr_and_records_ticket(temp_dir):
     assert jira.comments[0][0] == "APP-1"
     assert "Opened PR: https://github.com/example/repo/pull/42" in jira.comments[0][1]
     assert "Status: complete" in jira.comments[0][1]
+    assert "Internal review:\npassed" in jira.comments[0][1]
+    assert "## Internal review\npassed" in github.last_body
+    assert item.internal_review.status == "passed"
     assert not os.path.exists(item.workspace_path)
 
 
@@ -332,6 +357,10 @@ def test_work_loop_config_loads_adapter_and_profile_rules(temp_dir):
                     "    coding_model: subagent",
                     "  inner_max_turns: 6",
                     "  repair_attempts: 4",
+                    "internal_review:",
+                    "  enabled: true",
+                    "  reviewer_agent: reviewer",
+                    "  repair_cycles: 1",
                     "task_profiles:",
                     "  - name: api_change",
                     "    match:",
@@ -349,9 +378,31 @@ def test_work_loop_config_loads_adapter_and_profile_rules(temp_dir):
     assert config.code_review_type == "github"
     assert config.project == "APP"
     assert config.github_label == "agent-owned"
+    assert config.internal_review_enabled is True
+    assert config.reviewer_agent == "reviewer"
+    assert config.internal_review_repair_cycles == 1
     assert config.task_profiles[0].name == "api_change"
     assert config.task_profiles[0].execution.models.coding_model == "gpt-5.5"
     assert config.task_profiles[0].execution.inner_max_turns == 9
+
+
+def test_reviewer_agent_is_read_only():
+    config = AgentConfigLoader.load("agents.yaml")["reviewer"]
+
+    blocked_tools = {
+        "write_file",
+        "edit_file",
+        "apply_patch",
+        "run_command",
+        "git_add",
+        "git_commit",
+        "git_push",
+        "git_checkout",
+        "git_pull",
+    }
+    assert config.permission_mode == "plan"
+    assert not blocked_tools.intersection(config.tools)
+    assert {"read_file", "grep_search", "git_status", "git_diff"}.issubset(config.tools)
 
 
 def test_run_tasks_opens_pr_with_incomplete_status_after_attempt_cap(temp_dir):
@@ -383,6 +434,97 @@ def test_run_tasks_opens_pr_with_incomplete_status_after_attempt_cap(temp_dir):
     assert "## Status\nincomplete - attempt cap reached" in github.last_body
     assert "Known issues" in github.last_body
     assert "tests still fail" in jira.comments[0][1]
+
+
+def test_internal_review_findings_trigger_one_repair_before_pr(temp_dir):
+    workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+    config = WorkLoopConfig(project="APP", verification_commands=["python -m pytest"])
+    candidate = JiraCandidate(
+        key="APP-3",
+        summary="Fix stale total",
+        issue_type="Bug",
+        status="Open",
+        description="The total does not refresh after item removal.",
+    )
+    initial = TaskExecutionResult(
+        success=True,
+        summary="Updated total refresh logic.",
+        verification=[VerificationRecord(command="python -m pytest", status="passed")],
+        manual_steps="Remove an item and inspect the total.",
+    )
+    repaired = TaskExecutionResult(
+        success=True,
+        summary="Added missing removal regression test.",
+        verification=[VerificationRecord(command="python -m pytest", status="passed")],
+        manual_steps="Remove an item and inspect the total.",
+    )
+    executor = SequencedTaskExecutor([initial, repaired])
+    reviewer = FakeInternalReviewer(InternalReviewRecord(
+        status="findings",
+        findings="Add a regression test for removing the final cart item.",
+    ))
+    jira = FakeJira([candidate])
+    github = FakeGitHub()
+    runner = WorkLoopRunner(
+        workspace=workspace,
+        config=config,
+        command_runner=FakeCommandRunner(),
+        jira=jira,
+        github=github,
+        task_executor=executor,
+        internal_reviewer=reviewer,
+    )
+
+    item = runner.run_tasks(limit=1)[0]
+
+    assert len(executor.calls) == 2
+    assert executor.calls[0] == ("APP-3", "", "default")
+    assert "Internal pre-PR review found actionable" in executor.calls[1][1]
+    assert "final cart item" in executor.calls[1][1]
+    assert item.internal_review.status == "findings"
+    assert item.internal_review.repair_attempted is True
+    assert len(item.verification) == 2
+    assert "repair attempted" in github.last_body
+    assert "final cart item" in github.last_body
+    assert "Internal review:\nfindings - repair attempted" in jira.comments[0][1]
+
+
+def test_internal_review_findings_do_not_block_pr_after_repair_cap(temp_dir):
+    workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+    config = WorkLoopConfig(
+        project="APP",
+        verification_commands=["python -m pytest"],
+        internal_review_repair_cycles=0,
+    )
+    candidate = JiraCandidate(key="APP-12", summary="Fix validation", issue_type="Bug", status="Open")
+    executor = SequencedTaskExecutor([
+        TaskExecutionResult(
+            success=True,
+            summary="Updated validation.",
+            verification=[VerificationRecord(command="python -m pytest", status="passed")],
+        )
+    ])
+    reviewer = FakeInternalReviewer(InternalReviewRecord(
+        status="findings",
+        findings="Add a boundary-case validation test.",
+    ))
+    github = FakeGitHub()
+    runner = WorkLoopRunner(
+        workspace=workspace,
+        config=config,
+        command_runner=FakeCommandRunner(),
+        jira=FakeJira([candidate]),
+        github=github,
+        task_executor=executor,
+        internal_reviewer=reviewer,
+    )
+
+    item = runner.run_tasks(limit=1)[0]
+
+    assert item.state == "open-pr"
+    assert len(executor.calls) == 1
+    assert item.internal_review.repair_attempted is False
+    assert "Add a boundary-case validation test." in github.last_body
 
 
 def test_cli_agent_executor_caps_inner_loop_at_five_attempts(temp_dir):
