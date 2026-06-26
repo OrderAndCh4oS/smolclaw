@@ -36,6 +36,16 @@ corpus:
       - Impact details
       - Acceptance criteria
       - Eval suite
+      - Agentic coding harness parity
+      - Plan/build mode
+      - LSP code intelligence
+      - Todo planning
+      - Custom tools
+      - IDE integration
+      - Real sandbox backend
+      - Docker sandbox
+      - CommandRunner
+      - Isolated workspace
     relationships:
       - source: Roadmap
         relation: sequences
@@ -46,6 +56,18 @@ corpus:
       - source: Eval suite
         relation: measures
         target: Reliability changes
+      - source: Roadmap
+        relation: addresses
+        target: Agentic coding harness parity
+      - source: LSP code intelligence
+        relation: improves
+        target: Code localization
+      - source: Real sandbox backend
+        relation: isolates
+        target: Agent commands
+      - source: Docker sandbox
+        relation: mounts
+        target: Isolated workspace
     claims:
       - subject: SmolClaw roadmap
         predicate: scope
@@ -184,6 +206,52 @@ questions:
       - Impact
       - Acceptance Criteria
       - Sequencing Dependencies
+  - id: agentic_harness_parity_gaps
+    query: What roadmap workstreams address agentic coding harness parity gaps such as plan/build mode, LSP code intelligence, todo planning, custom tools, IDE integration, sharing, and redo or rewind?
+    expected_sources:
+      - implementation-roadmap
+    expected_entities:
+      - Agentic coding harness parity
+      - Plan/build mode
+      - LSP code intelligence
+      - Todo planning
+      - Custom tools
+      - IDE integration
+    expected_relationships:
+      - source: Roadmap
+        relation: addresses
+        target: Agentic coding harness parity
+      - source: LSP code intelligence
+        relation: improves
+        target: Code localization
+    required_terms:
+      - Plan And Build Mode UX
+      - LSP Code Intelligence
+      - Lightweight Todo Planning Tool
+      - Custom Tools And Plugin Surface
+      - IDE Integration And File References
+  - id: real_sandbox_backend
+    query: What roadmap work describes the real sandbox backend, Docker or Podman command runner, isolated workspace mounts, environment stripping, no-network default, resource limits, and apply-back review?
+    expected_sources:
+      - implementation-roadmap
+    expected_entities:
+      - Real sandbox backend
+      - Docker sandbox
+      - CommandRunner
+      - Isolated workspace
+    expected_relationships:
+      - source: Real sandbox backend
+        relation: isolates
+        target: Agent commands
+      - source: Docker sandbox
+        relation: mounts
+        target: Isolated workspace
+    required_terms:
+      - Real Sandbox Backend
+      - DockerCommandRunner
+      - network
+      - env policy
+      - apply-back review
   - id: memory_eval_provenance_scope
     query: How do memory evals test deterministic source retrieval, knowledge graph relationships, citation provenance, stale evidence, and contradiction checks?
     expected_sources:
