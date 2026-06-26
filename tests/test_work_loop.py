@@ -7,6 +7,10 @@ from app.work_loop import (
     WorkLoopControl,
     WorkLoopJobSupervisor,
     JiraCandidate,
+    TaskProfile,
+    TaskProfileMatch,
+    TaskExecutionProfile,
+    WorkLoopModels,
     TaskExecutionResult,
     VerificationRecord,
     WorkItem,
@@ -98,8 +102,8 @@ class FakeTaskExecutor:
         self.calls = []
         self.success = success
 
-    def execute(self, item, candidate, config, *, review_feedback=""):
-        self.calls.append((item.jira_key, review_feedback))
+    def execute(self, item, candidate, config, *, review_feedback="", profile=None):
+        self.calls.append((item.jira_key, review_feedback, profile.name if profile else ""))
         if self.success:
             return TaskExecutionResult(
                 success=True,
@@ -218,6 +222,93 @@ def test_run_tasks_creates_pr_and_records_ticket(temp_dir):
     assert not os.path.exists(item.workspace_path)
 
 
+def test_run_tasks_persists_matching_execution_profile(temp_dir):
+    workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+    config = WorkLoopConfig(
+        project="APP",
+        verification_commands=["python -m pytest"],
+        task_profiles=[
+            TaskProfile(
+                name="small_bug",
+                match=TaskProfileMatch(issue_types=["Bug"], labels=["small"]),
+                execution=TaskExecutionProfile(
+                    name="small_bug",
+                    models=WorkLoopModels(
+                        analysis_model="gpt-5.4-mini",
+                        coding_model="gpt-5.4",
+                        review_model="gpt-5.4-mini",
+                        status_model="gpt-5.4-mini",
+                    ),
+                    inner_max_turns=7,
+                    repair_attempts=2,
+                ),
+            )
+        ],
+    )
+    candidate = JiraCandidate(
+        key="APP-11",
+        summary="Fix small bug",
+        issue_type="Bug",
+        status="Open",
+        labels=["small"],
+    )
+    executor = FakeTaskExecutor()
+    runner = WorkLoopRunner(
+        workspace=workspace,
+        config=config,
+        command_runner=FakeCommandRunner(),
+        jira=FakeJira([candidate]),
+        github=FakeGitHub(),
+        task_executor=executor,
+    )
+
+    item = runner.run_tasks(limit=1)[0]
+
+    assert item.execution_profile["name"] == "small_bug"
+    assert item.execution_profile["models"]["coding_model"] == "gpt-5.4"
+    assert executor.calls[0] == ("APP-11", "", "small_bug")
+
+
+def test_work_loop_config_loads_adapter_and_profile_rules(temp_dir):
+    config_path = os.path.join(temp_dir, "smolclaw-loop.yaml")
+    with open(config_path, "w", encoding="utf-8") as handle:
+        handle.write(
+            "\n".join(
+                [
+                    "task_source:",
+                    "  type: jira",
+                    "  project: APP",
+                    "code_review:",
+                    "  type: github",
+                    "  label: agent-owned",
+                    "defaults:",
+                    "  models:",
+                    "    analysis_model: gpt-5.4-mini",
+                    "    coding_model: subagent",
+                    "  inner_max_turns: 6",
+                    "  repair_attempts: 4",
+                    "task_profiles:",
+                    "  - name: api_change",
+                    "    match:",
+                    "      labels: [api]",
+                    "    models:",
+                    "      coding_model: gpt-5.5",
+                    "    inner_max_turns: 9",
+                ]
+            )
+        )
+
+    config = WorkLoopConfig.load(config_path)
+
+    assert config.task_source_type == "jira"
+    assert config.code_review_type == "github"
+    assert config.project == "APP"
+    assert config.github_label == "agent-owned"
+    assert config.task_profiles[0].name == "api_change"
+    assert config.task_profiles[0].execution.models.coding_model == "gpt-5.5"
+    assert config.task_profiles[0].execution.inner_max_turns == 9
+
+
 def test_run_tasks_opens_pr_with_incomplete_status_after_attempt_cap(temp_dir):
     workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
     config = WorkLoopConfig(project="APP", verification_commands=["python -m pytest"])
@@ -268,6 +359,31 @@ def test_cli_agent_executor_caps_inner_loop_at_five_attempts(temp_dir):
     assert result.attempts == 5
 
 
+def test_cli_agent_executor_passes_explicit_profile_coding_model(temp_dir):
+    from app.work_loop import CliAgentTaskExecutor
+
+    workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+    runner = FakeCommandRunner()
+    executor = CliAgentTaskExecutor(runner)
+    item = WorkItem(jira_key="APP-6", title="Fix model", workspace_path=workspace.root_dir)
+    candidate = JiraCandidate(key="APP-6", summary="Fix model")
+    config = WorkLoopConfig(project="APP", verification_commands=[])
+    profile = TaskExecutionProfile(
+        name="explicit",
+        models=WorkLoopModels(coding_model="gpt-5.4"),
+        inner_max_turns=3,
+        repair_attempts=0,
+    )
+
+    result = executor.execute(item, candidate, config, profile=profile)
+
+    agent_run = next(call for call in runner.calls if call[0][:4] == [os.sys.executable, "-m", "cli.main", "run"])
+    assert "--model" in agent_run[0]
+    assert agent_run[0][agent_run[0].index("--model") + 1] == "gpt-5.4"
+    assert agent_run[0][agent_run[0].index("--max-turns") + 1] == "3"
+    assert result.success is True
+
+
 def test_run_reviews_processes_only_new_actionable_comments(temp_dir):
     workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
     config = WorkLoopConfig(project="APP", verification_commands=["python -m pytest"])
@@ -304,7 +420,7 @@ def test_run_reviews_processes_only_new_actionable_comments(temp_dir):
     items = runner.run_reviews()
 
     assert items[0].processed_review_comments[0].comment_id == "c1"
-    assert executor.calls == [("APP-9", "Review comments:\nPlease add a regression test for this case.")]
+    assert executor.calls == [("APP-9", "Review comments:\nPlease add a regression test for this case.", "default")]
     assert github.comments[0][0] == 9
 
 

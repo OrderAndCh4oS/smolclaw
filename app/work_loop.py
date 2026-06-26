@@ -160,7 +160,134 @@ class SubprocessCommandRunner:
 
 
 @dataclass(frozen=True)
+class WorkLoopModels:
+    analysis_model: str = "gpt-5.4-mini"
+    coding_model: str = "subagent"
+    review_model: str = "gpt-5.4-mini"
+    status_model: str = "gpt-5.4-mini"
+
+    @classmethod
+    def from_dict(cls, data: dict | None, *, base: "WorkLoopModels | None" = None) -> "WorkLoopModels":
+        if isinstance(base, dict):
+            values = cls.from_dict(base).to_dict()
+        else:
+            values = (base or cls()).to_dict()
+        if isinstance(data, dict):
+            aliases = {
+                "analysis": "analysis_model",
+                "coding": "coding_model",
+                "review": "review_model",
+                "status": "status_model",
+            }
+            for key, value in data.items():
+                target = aliases.get(str(key), str(key))
+                if target in values and value:
+                    values[target] = str(value)
+        return cls(**values)
+
+    def to_dict(self) -> dict:
+        return {
+            "analysis_model": self.analysis_model,
+            "coding_model": self.coding_model,
+            "review_model": self.review_model,
+            "status_model": self.status_model,
+        }
+
+
+@dataclass(frozen=True)
+class TaskProfileMatch:
+    projects: list[str] = field(default_factory=list)
+    issue_types: list[str] = field(default_factory=list)
+    labels: list[str] = field(default_factory=list)
+    statuses: list[str] = field(default_factory=list)
+    priorities: list[str] = field(default_factory=list)
+    task_source_types: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "TaskProfileMatch":
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            projects=_as_str_list(data.get("projects") or data.get("project")),
+            issue_types=_as_str_list(data.get("issue_types") or data.get("issue_type")),
+            labels=_as_str_list(data.get("labels") or data.get("label")),
+            statuses=_as_str_list(data.get("statuses") or data.get("status")),
+            priorities=_as_str_list(data.get("priorities") or data.get("priority")),
+            task_source_types=_as_str_list(data.get("task_source_types") or data.get("task_source_type")),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "projects": list(self.projects),
+            "issue_types": list(self.issue_types),
+            "labels": list(self.labels),
+            "statuses": list(self.statuses),
+            "priorities": list(self.priorities),
+            "task_source_types": list(self.task_source_types),
+        }
+
+
+@dataclass(frozen=True)
+class TaskExecutionProfile:
+    name: str = "default"
+    models: WorkLoopModels = field(default_factory=WorkLoopModels)
+    inner_max_turns: int = 6
+    repair_attempts: int = 4
+
+    @classmethod
+    def from_dict(cls, data: dict | None, *, base: "TaskExecutionProfile | None" = None) -> "TaskExecutionProfile":
+        baseline = base or cls()
+        if not isinstance(data, dict):
+            return baseline
+        return cls(
+            name=str(data.get("name") or baseline.name),
+            models=WorkLoopModels.from_dict(data.get("models"), base=baseline.models),
+            inner_max_turns=int(data.get("inner_max_turns") or baseline.inner_max_turns),
+            repair_attempts=int(data.get("repair_attempts") or baseline.repair_attempts),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "models": self.models.to_dict(),
+            "inner_max_turns": self.inner_max_turns,
+            "repair_attempts": self.repair_attempts,
+        }
+
+
+@dataclass(frozen=True)
+class TaskProfile:
+    name: str
+    match: TaskProfileMatch = field(default_factory=TaskProfileMatch)
+    execution: TaskExecutionProfile = field(default_factory=TaskExecutionProfile)
+
+    @classmethod
+    def from_dict(cls, data: dict, *, default_execution: TaskExecutionProfile) -> "TaskProfile":
+        name = str(data.get("name") or "unnamed")
+        merged = {
+            "name": name,
+            "models": data.get("models"),
+            "inner_max_turns": data.get("inner_max_turns"),
+            "repair_attempts": data.get("repair_attempts"),
+        }
+        return cls(
+            name=name,
+            match=TaskProfileMatch.from_dict(data.get("match")),
+            execution=TaskExecutionProfile.from_dict(merged, base=default_execution),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "match": self.match.to_dict(),
+            "execution": self.execution.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
 class WorkLoopConfig:
+    task_source_type: str = "jira"
+    code_review_type: str = "github"
     project: str = ""
     base_branch: str = "main"
     max_concurrency: int = 2
@@ -172,6 +299,8 @@ class WorkLoopConfig:
     in_progress_status: str = "In Progress"
     review_status: str = "In Review"
     selector_model: str = "gpt-5.4-mini"
+    models: WorkLoopModels = field(default_factory=WorkLoopModels)
+    task_profiles: list[TaskProfile] = field(default_factory=list)
     coder_agent: str = "coder"
     agents_config: str = "agents.yaml"
     inner_max_turns: int = 6
@@ -180,6 +309,20 @@ class WorkLoopConfig:
     lint_commands: list[str] = field(default_factory=list)
     format_commands: list[str] = field(default_factory=list)
     github_label: str = "agent-owned"
+
+    def __post_init__(self):
+        if isinstance(self.models, dict):
+            object.__setattr__(self, "models", WorkLoopModels.from_dict(self.models))
+        normalized_profiles = []
+        for profile in self.task_profiles:
+            if isinstance(profile, TaskProfile):
+                normalized_profiles.append(profile)
+            elif isinstance(profile, dict):
+                normalized_profiles.append(
+                    TaskProfile.from_dict(profile, default_execution=default_execution_profile(self))
+                )
+        if normalized_profiles != self.task_profiles:
+            object.__setattr__(self, "task_profiles", normalized_profiles)
 
     @classmethod
     def load(cls, path: str | None, *, project: str = "") -> "WorkLoopConfig":
@@ -190,13 +333,67 @@ class WorkLoopConfig:
         if not isinstance(data, dict):
             raise ValueError(f"Work-loop config must be a mapping: {path}")
         values = {key: data[key] for key in cls.__dataclass_fields__ if key in data}
+        task_source = data.get("task_source")
+        if isinstance(task_source, dict):
+            values["task_source_type"] = str(task_source.get("type") or values.get("task_source_type") or "jira")
+            for key in (
+                "project",
+                "issue_types",
+                "eligible_statuses",
+                "blocked_labels",
+                "required_label",
+                "selected_status",
+                "in_progress_status",
+                "review_status",
+            ):
+                if key in task_source:
+                    values[key] = task_source[key]
+        code_review = data.get("code_review")
+        if isinstance(code_review, dict):
+            values["code_review_type"] = str(code_review.get("type") or values.get("code_review_type") or "github")
+            if "label" in code_review:
+                values["github_label"] = str(code_review["label"])
+            if "github_label" in code_review:
+                values["github_label"] = str(code_review["github_label"])
+        defaults = data.get("defaults")
+        if isinstance(defaults, dict):
+            if "models" in defaults:
+                values["models"] = WorkLoopModels.from_dict(defaults.get("models"), base=values.get("models"))
+            for key in ("inner_max_turns", "repair_attempts"):
+                if key in defaults:
+                    values[key] = defaults[key]
+        if isinstance(values.get("models"), dict):
+            values["models"] = WorkLoopModels.from_dict(values["models"])
+        default_execution = TaskExecutionProfile(
+            name="default",
+            models=values.get("models") if isinstance(values.get("models"), WorkLoopModels) else WorkLoopModels(),
+            inner_max_turns=int(values.get("inner_max_turns") or 6),
+            repair_attempts=int(values.get("repair_attempts") or 4),
+        )
+        raw_profiles = data.get("task_profiles") or values.get("task_profiles") or []
+        if raw_profiles:
+            if not isinstance(raw_profiles, list):
+                raise ValueError("task_profiles must be a list")
+            values["task_profiles"] = [
+                TaskProfile.from_dict(item, default_execution=default_execution)
+                for item in raw_profiles
+                if isinstance(item, dict)
+            ]
         if project:
             values["project"] = project
         return cls(**values)
 
 
+def _as_str_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return [str(value)]
+
+
 @dataclass
-class JiraCandidate:
+class TaskCandidate:
     key: str
     summary: str
     issue_type: str = ""
@@ -206,6 +403,42 @@ class JiraCandidate:
     labels: list[str] = field(default_factory=list)
     description: str = ""
     url: str = ""
+    source_type: str = "jira"
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+JiraCandidate = TaskCandidate
+
+
+class TaskSourceAdapter(Protocol):
+    def auth_ok(self) -> bool:
+        ...
+
+    def search_backlog(self, config: WorkLoopConfig, *, limit: int = 50) -> list[TaskCandidate]:
+        ...
+
+    def view(self, key: str) -> TaskCandidate:
+        ...
+
+    def transition(self, key: str, status: str):
+        ...
+
+    def comment(self, key: str, body: str):
+        ...
+
+
+class CodeReviewAdapter(Protocol):
+    def auth_ok(self) -> bool:
+        ...
+
+    def create_pr(self, item: "WorkItem", body: str, *, base_branch: str, label: str = "") -> tuple[int | None, str]:
+        ...
+
+    def view_pr(self, pr_number: int) -> dict:
+        ...
+
+    def comment(self, pr_number: int, body: str):
+        ...
 
 
 @dataclass
@@ -264,8 +497,10 @@ class WorkItem:
     title: str
     state: WorkItemState = "selected"
     run_id: str = field(default_factory=lambda: f"run-{uuid.uuid4().hex[:12]}")
+    task_source_type: str = "jira"
     jira_url: str = ""
     selected_reason: str = ""
+    execution_profile: dict[str, Any] = field(default_factory=dict)
     workspace_path: str = ""
     branch_name: str = ""
     base_branch: str = "main"
@@ -285,8 +520,10 @@ class WorkItem:
             "title": self.title,
             "state": self.state,
             "run_id": self.run_id,
+            "task_source_type": self.task_source_type,
             "jira_url": self.jira_url,
             "selected_reason": self.selected_reason,
+            "execution_profile": dict(self.execution_profile),
             "workspace_path": self.workspace_path,
             "branch_name": self.branch_name,
             "base_branch": self.base_branch,
@@ -308,8 +545,10 @@ class WorkItem:
             title=str(data.get("title") or ""),
             state=str(data.get("state") or "selected"),  # type: ignore[arg-type]
             run_id=str(data.get("run_id") or f"run-{uuid.uuid4().hex[:12]}"),
+            task_source_type=str(data.get("task_source_type") or "jira"),
             jira_url=str(data.get("jira_url") or ""),
             selected_reason=str(data.get("selected_reason") or ""),
+            execution_profile=dict(data.get("execution_profile") or {}),
             workspace_path=str(data.get("workspace_path") or ""),
             branch_name=str(data.get("branch_name") or ""),
             base_branch=str(data.get("base_branch") or "main"),
@@ -758,6 +997,126 @@ class GitHubAdapter:
             raise RuntimeError(f"PR comment failed for {pr_number}: {result.output.strip()}")
 
 
+def build_task_source_adapter(config: WorkLoopConfig, runner: CommandRunner) -> TaskSourceAdapter:
+    if config.task_source_type == "jira":
+        return JiraAdapter(runner)
+    raise ValueError(f"Unsupported task source adapter: {config.task_source_type}")
+
+
+def build_code_review_adapter(config: WorkLoopConfig, runner: CommandRunner) -> CodeReviewAdapter:
+    if config.code_review_type == "github":
+        return GitHubAdapter(runner)
+    raise ValueError(f"Unsupported code review adapter: {config.code_review_type}")
+
+
+class DoneGateRunner:
+    def __init__(self, runner: CommandRunner):
+        self.runner = runner
+
+    def discover(self, root: str, config: WorkLoopConfig) -> list[str]:
+        return discover_done_gate_commands(root, config)
+
+    def run(self, cwd: str, commands: list[str]) -> list[VerificationRecord]:
+        return run_verification_commands(self.runner, cwd, commands)
+
+
+class RunWorkspaceManager:
+    def __init__(self, workspace: WorkspaceContext):
+        self.workspace = workspace
+
+    def path_for_item(self, item: WorkItem, index: int) -> str:
+        batch_dir = os.path.join(self.workspace.state_root_dir, "work-loop", "runs", item.run_id)
+        return os.path.join(batch_dir, f"run_{index}")
+
+    def prepare_parent(self, item: WorkItem):
+        os.makedirs(os.path.dirname(item.workspace_path), exist_ok=True)
+
+    def cleanup(self, item: WorkItem):
+        if item.workspace_path:
+            shutil.rmtree(item.workspace_path, ignore_errors=True)
+
+
+class GitOperations:
+    def __init__(self, runner: CommandRunner, workspace: WorkspaceContext):
+        self.runner = runner
+        self.workspace = workspace
+
+    def preflight(self, config: WorkLoopConfig) -> list[str]:
+        errors: list[str] = []
+        status = self.runner.run(["git", "status", "--porcelain"], cwd=self.workspace.root_dir, timeout=30)
+        if not status.ok:
+            errors.append(f"Could not inspect git status: {status.output.strip()}")
+        elif status.stdout.strip():
+            errors.append("Base repository has uncommitted changes; start from a clean base before work-loop runs.")
+        fetch = self.runner.run(
+            ["git", "fetch", "origin", config.base_branch],
+            cwd=self.workspace.root_dir,
+            timeout=120,
+        )
+        if not fetch.ok:
+            errors.append(f"Could not fetch origin/{config.base_branch}: {fetch.output.strip()}")
+        return errors
+
+    def create_worktree(self, item: WorkItem, config: WorkLoopConfig):
+        result = self.runner.run(
+            [
+                "git",
+                "worktree",
+                "add",
+                "-b",
+                item.branch_name,
+                item.workspace_path,
+                f"origin/{config.base_branch}",
+            ],
+            cwd=self.workspace.root_dir,
+            timeout=120,
+        )
+        if not result.ok:
+            raise RuntimeError(f"Could not create worktree for {item.jira_key}: {result.output.strip()}")
+        rev = self.runner.run(["git", "rev-parse", "HEAD"], cwd=item.workspace_path, timeout=30)
+        item.base_commit = rev.stdout.strip() if rev.ok else ""
+
+    def ensure_worktree(self, item: WorkItem):
+        if item.workspace_path and os.path.exists(item.workspace_path):
+            return
+        result = self.runner.run(
+            ["git", "worktree", "add", item.workspace_path, item.branch_name],
+            cwd=self.workspace.root_dir,
+            timeout=120,
+        )
+        if not result.ok:
+            raise RuntimeError(f"Could not recreate worktree for {item.jira_key}: {result.output.strip()}")
+
+    def commit_and_push(self, item: WorkItem, result: TaskExecutionResult) -> str:
+        add = self.runner.run(["git", "add", "."], cwd=item.workspace_path, timeout=120)
+        if not add.ok:
+            raise RuntimeError(f"git add failed for {item.jira_key}: {add.output.strip()}")
+        status = self.runner.run(["git", "status", "--porcelain"], cwd=item.workspace_path, timeout=30)
+        if not status.ok:
+            raise RuntimeError(f"git status failed for {item.jira_key}: {status.output.strip()}")
+        if not status.stdout.strip() and result.success:
+            raise RuntimeError(f"No commit-worthy changes for {item.jira_key}.")
+        commit_args = ["git", "commit", "-m", render_commit_message(item, result)]
+        if not status.stdout.strip():
+            commit_args.insert(2, "--allow-empty")
+        commit = self.runner.run(
+            commit_args,
+            cwd=item.workspace_path,
+            timeout=120,
+        )
+        if not commit.ok:
+            raise RuntimeError(f"git commit failed for {item.jira_key}: {commit.output.strip()}")
+        sha = self.runner.run(["git", "rev-parse", "HEAD"], cwd=item.workspace_path, timeout=30)
+        push = self.runner.run(
+            ["git", "push", "-u", "origin", item.branch_name],
+            cwd=item.workspace_path,
+            timeout=180,
+        )
+        if not push.ok:
+            raise RuntimeError(f"git push failed for {item.jira_key}: {push.output.strip()}")
+        return sha.stdout.strip() if sha.ok else ""
+
+
 @dataclass(frozen=True)
 class TaskExecutionResult:
     success: bool
@@ -770,52 +1129,59 @@ class TaskExecutionResult:
 
 
 class CliAgentTaskExecutor:
-    def __init__(self, runner: CommandRunner, control: WorkLoopControl | None = None):
+    def __init__(
+        self,
+        runner: CommandRunner,
+        control: WorkLoopControl | None = None,
+        done_gate: DoneGateRunner | None = None,
+    ):
         self.runner = runner
         self.control = control
+        self.done_gate = done_gate or DoneGateRunner(runner)
 
     def execute(
         self,
         item: WorkItem,
-        candidate: JiraCandidate,
+        candidate: TaskCandidate,
         config: WorkLoopConfig,
         *,
         review_feedback: str = "",
+        profile: TaskExecutionProfile | None = None,
     ) -> TaskExecutionResult:
-        commands = discover_done_gate_commands(item.workspace_path, config)
+        profile = profile or execution_profile_from_item(item, config)
+        commands = self.done_gate.discover(item.workspace_path, config)
         prompt = build_task_prompt(candidate, commands, review_feedback=review_feedback)
         blocker = ""
         verification: list[VerificationRecord] = []
-        max_attempts = max(1, min(config.repair_attempts + 1, MAX_INNER_ATTEMPTS))
+        max_attempts = max(1, min(profile.repair_attempts + 1, MAX_INNER_ATTEMPTS))
         for attempt in range(max_attempts):
             if self.control is not None:
                 self.control.check(f"agent attempt {attempt + 1} for {item.jira_key}")
-            run_result = self.runner.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "cli.main",
-                    "run",
-                    prompt,
-                    "--workspace",
-                    item.workspace_path,
-                    "--agent",
-                    config.coder_agent,
-                    "--agents-config",
-                    config.agents_config,
-                    "--goal",
-                    "--max-turns",
-                    str(config.inner_max_turns),
-                ],
-                cwd=item.workspace_path,
-                timeout=3600,
-            )
+            args = [
+                sys.executable,
+                "-m",
+                "cli.main",
+                "run",
+                prompt,
+                "--workspace",
+                item.workspace_path,
+                "--agent",
+                config.coder_agent,
+                "--agents-config",
+                config.agents_config,
+                "--goal",
+                "--max-turns",
+                str(profile.inner_max_turns),
+            ]
+            if profile.models.coding_model and profile.models.coding_model != "subagent":
+                args.extend(["--model", profile.models.coding_model])
+            run_result = self.runner.run(args, cwd=item.workspace_path, timeout=3600)
             if not run_result.ok:
                 blocker = f"Agent run failed: {run_result.output.strip()}"
                 continue
             if self.control is not None:
                 self.control.check(f"verification for {item.jira_key}")
-            verification = run_verification_commands(self.runner, item.workspace_path, commands)
+            verification = self.done_gate.run(item.workspace_path, commands)
             failed = [record for record in verification if record.status != "passed"]
             if not failed:
                 return TaskExecutionResult(
@@ -848,20 +1214,34 @@ class WorkLoopRunner:
         workspace: WorkspaceContext,
         config: WorkLoopConfig,
         command_runner: CommandRunner | None = None,
-        jira: JiraAdapter | None = None,
-        github: GitHubAdapter | None = None,
+        jira: TaskSourceAdapter | None = None,
+        github: CodeReviewAdapter | None = None,
+        task_source: TaskSourceAdapter | None = None,
+        code_review: CodeReviewAdapter | None = None,
         ledger: WorkLoopLedger | None = None,
         task_executor: CliAgentTaskExecutor | None = None,
+        git: GitOperations | None = None,
+        run_workspaces: RunWorkspaceManager | None = None,
+        done_gate: DoneGateRunner | None = None,
         job_id: str | None = None,
     ):
         self.workspace = workspace.ensure_dirs()
         self.config = config
         self.command_runner = command_runner or SubprocessCommandRunner()
-        self.jira = jira or JiraAdapter(self.command_runner)
-        self.github = github or GitHubAdapter(self.command_runner)
+        self.task_source = task_source or jira or build_task_source_adapter(config, self.command_runner)
+        self.code_review = code_review or github or build_code_review_adapter(config, self.command_runner)
+        self.jira = self.task_source
+        self.github = self.code_review
         self.ledger = ledger or WorkLoopLedger.for_workspace(self.workspace)
         self.control = WorkLoopControl.for_workspace(self.workspace, job_id=job_id)
-        self.task_executor = task_executor or CliAgentTaskExecutor(self.command_runner, control=self.control)
+        self.done_gate = done_gate or DoneGateRunner(self.command_runner)
+        self.git = git or GitOperations(self.command_runner, self.workspace)
+        self.run_workspaces = run_workspaces or RunWorkspaceManager(self.workspace)
+        self.task_executor = task_executor or CliAgentTaskExecutor(
+            self.command_runner,
+            control=self.control,
+            done_gate=self.done_gate,
+        )
 
     def preflight(self, *, require_jira: bool = True, require_github: bool = True) -> list[str]:
         errors: list[str] = []
@@ -869,23 +1249,12 @@ class WorkLoopRunner:
             self.control.check("preflight")
         except WorkLoopStopped as exc:
             return [str(exc)]
-        if require_jira and not self.jira.auth_ok():
-            errors.append("Jira auth failed: run `acli auth login`.")
-        if require_github and not self.github.auth_ok():
-            errors.append("GitHub auth failed: run `gh auth login`.")
-        status = self.command_runner.run(["git", "status", "--porcelain"], cwd=self.workspace.root_dir, timeout=30)
-        if not status.ok:
-            errors.append(f"Could not inspect git status: {status.output.strip()}")
-        elif status.stdout.strip():
-            errors.append("Base repository has uncommitted changes; start from a clean base before work-loop runs.")
-        fetch = self.command_runner.run(
-            ["git", "fetch", "origin", self.config.base_branch],
-            cwd=self.workspace.root_dir,
-            timeout=120,
-        )
-        if not fetch.ok:
-            errors.append(f"Could not fetch origin/{self.config.base_branch}: {fetch.output.strip()}")
-        if not discover_done_gate_commands(self.workspace.root_dir, self.config):
+        if require_jira and not self.task_source.auth_ok():
+            errors.append(f"{self.config.task_source_type} auth failed.")
+        if require_github and not self.code_review.auth_ok():
+            errors.append(f"{self.config.code_review_type} auth failed.")
+        errors.extend(self.git.preflight(self.config))
+        if not self.done_gate.discover(self.workspace.root_dir, self.config):
             errors.append("No verification commands discovered; configure verification_commands.")
         return errors
 
@@ -894,24 +1263,27 @@ class WorkLoopRunner:
         errors = self.preflight(require_jira=True, require_github=True)
         if errors:
             raise RuntimeError("\n".join(errors))
-        candidates = eligible_candidates(self.jira.search_backlog(self.config), self.config)
+        candidates = eligible_candidates(self.task_source.search_backlog(self.config), self.config)
         selected = select_candidates(candidates, limit=limit or self.config.max_concurrency)
         items: list[WorkItem] = []
         for index, candidate in enumerate(selected, start=1):
             self.control.check(f"selecting Jira task {candidate.key}")
-            detailed = self.jira.view(candidate.key)
+            detailed = self.task_source.view(candidate.key)
+            profile = select_execution_profile(detailed, self.config)
             item = self.ledger.load(detailed.key) or WorkItem(
                 jira_key=detailed.key,
                 title=detailed.summary,
+                task_source_type=detailed.source_type or self.config.task_source_type,
                 jira_url=detailed.url,
                 selected_reason="Selected as low-risk unassigned Jira task.",
                 base_branch=self.config.base_branch,
             )
             item.branch_name = branch_name_for_ticket(detailed.key, detailed.summary)
-            item.workspace_path = self._workspace_for_item(item, index)
+            item.execution_profile = profile.to_dict()
+            item.workspace_path = self.run_workspaces.path_for_item(item, index)
             self.ledger.save(item)
             if not dry_run:
-                self._execute_item(item, detailed)
+                self._execute_item(item, detailed, profile)
             items.append(self.ledger.load(item.jira_key) or item)
         return items
 
@@ -925,7 +1297,7 @@ class WorkLoopRunner:
             self.control.check(f"reviewing PR for {item.jira_key}")
             if item.pr_number is None:
                 continue
-            pr = self.github.view_pr(item.pr_number)
+            pr = self.code_review.view_pr(item.pr_number)
             comments = new_actionable_comments(pr, item)
             check_summary = summarize_status_checks(pr)
             if not comments and not check_summary:
@@ -939,10 +1311,22 @@ class WorkLoopRunner:
             if check_summary:
                 feedback_parts.append("GitHub checks:\n" + check_summary)
             feedback = "\n\n".join(feedback_parts)
-            candidate = JiraCandidate(key=item.jira_key, summary=item.title, description=feedback)
+            candidate = TaskCandidate(
+                key=item.jira_key,
+                summary=item.title,
+                description=feedback,
+                source_type=item.task_source_type or self.config.task_source_type,
+            )
             self._ensure_branch_workspace(item)
+            profile = execution_profile_from_item(item, self.config)
             self.control.check(f"executing review fixes for {item.jira_key}")
-            result = self.task_executor.execute(item, candidate, self.config, review_feedback=feedback)
+            result = self.task_executor.execute(
+                item,
+                candidate,
+                self.config,
+                review_feedback=feedback,
+                profile=profile,
+            )
             item.verification.extend(result.verification)
             self.control.check(f"committing review fixes for {item.jira_key}")
             commit_sha = self._commit_and_push(item, result)
@@ -950,7 +1334,7 @@ class WorkLoopRunner:
                 item.commits.append(commit_sha)
             response = render_review_response(result)
             self.control.check(f"commenting on PR for {item.jira_key}")
-            self.github.comment(item.pr_number, response)
+            self.code_review.comment(item.pr_number, response)
             for comment in comments:
                 item.processed_review_comments.append(
                     ProcessedReviewComment(
@@ -965,18 +1349,18 @@ class WorkLoopRunner:
             updated.append(item)
         return updated
 
-    def _execute_item(self, item: WorkItem, candidate: JiraCandidate):
+    def _execute_item(self, item: WorkItem, candidate: TaskCandidate, profile: TaskExecutionProfile):
         self.control.check(f"creating workspace for {item.jira_key}")
         self._create_branch_workspace(item)
         item.state = "active"
         self.ledger.save(item)
         if self.config.selected_status:
             self.control.check(f"transitioning {item.jira_key} to selected")
-            self.jira.transition(item.jira_key, self.config.selected_status)
+            self.task_source.transition(item.jira_key, self.config.selected_status)
         self.control.check(f"transitioning {item.jira_key} to in progress")
-        self.jira.transition(item.jira_key, self.config.in_progress_status)
+        self.task_source.transition(item.jira_key, self.config.in_progress_status)
         self.control.check(f"executing {item.jira_key}")
-        result = self.task_executor.execute(item, candidate, self.config)
+        result = self.task_executor.execute(item, candidate, self.config, profile=profile)
         item.verification.extend(result.verification)
         if not result.success:
             item.blocker = result.blocker
@@ -986,7 +1370,7 @@ class WorkLoopRunner:
             item.commits.append(commit_sha)
         self.control.check(f"creating PR for {item.jira_key}")
         body = render_pr_body(item, candidate, result)
-        pr_number, pr_url = self.github.create_pr(
+        pr_number, pr_url = self.code_review.create_pr(
             item,
             body,
             base_branch=self.config.base_branch,
@@ -996,35 +1380,18 @@ class WorkLoopRunner:
         item.pr_url = pr_url
         item.state = "open-pr"
         self.control.check(f"transitioning {item.jira_key} to review")
-        self.jira.transition(item.jira_key, self.config.review_status)
+        self.task_source.transition(item.jira_key, self.config.review_status)
         self.control.check(f"commenting on Jira for {item.jira_key}")
-        self.jira.comment(item.jira_key, render_jira_pr_comment(pr_url, result))
+        self.task_source.comment(item.jira_key, render_jira_pr_comment(pr_url, result))
         self.ledger.save(item)
-        shutil.rmtree(item.workspace_path, ignore_errors=True)
+        self.run_workspaces.cleanup(item)
 
     def _workspace_for_item(self, item: WorkItem, index: int) -> str:
-        batch_dir = os.path.join(self.workspace.state_root_dir, "work-loop", "runs", item.run_id)
-        return os.path.join(batch_dir, f"run_{index}")
+        return self.run_workspaces.path_for_item(item, index)
 
     def _create_branch_workspace(self, item: WorkItem):
-        os.makedirs(os.path.dirname(item.workspace_path), exist_ok=True)
-        add = self.command_runner.run(
-            [
-                "git",
-                "worktree",
-                "add",
-                "-b",
-                item.branch_name,
-                item.workspace_path,
-                f"origin/{self.config.base_branch}",
-            ],
-            cwd=self.workspace.root_dir,
-            timeout=120,
-        )
-        if not add.ok:
-            raise RuntimeError(f"Could not create worktree for {item.jira_key}: {add.output.strip()}")
-        rev = self.command_runner.run(["git", "rev-parse", "HEAD"], cwd=item.workspace_path, timeout=30)
-        item.base_commit = rev.stdout.strip() if rev.ok else ""
+        self.run_workspaces.prepare_parent(item)
+        self.git.create_worktree(item, self.config)
         self.ledger.save(item)
 
     def _ensure_branch_workspace(self, item: WorkItem):
@@ -1032,44 +1399,12 @@ class WorkLoopRunner:
             return
         if not item.workspace_path:
             item.workspace_path = self._workspace_for_item(item, 1)
-        os.makedirs(os.path.dirname(item.workspace_path), exist_ok=True)
-        result = self.command_runner.run(
-            ["git", "worktree", "add", item.workspace_path, item.branch_name],
-            cwd=self.workspace.root_dir,
-            timeout=120,
-        )
-        if not result.ok:
-            raise RuntimeError(f"Could not recreate worktree for {item.jira_key}: {result.output.strip()}")
+        self.run_workspaces.prepare_parent(item)
+        self.git.ensure_worktree(item)
         self.ledger.save(item)
 
     def _commit_and_push(self, item: WorkItem, result: TaskExecutionResult) -> str:
-        add = self.command_runner.run(["git", "add", "."], cwd=item.workspace_path, timeout=120)
-        if not add.ok:
-            raise RuntimeError(f"git add failed for {item.jira_key}: {add.output.strip()}")
-        status = self.command_runner.run(["git", "status", "--porcelain"], cwd=item.workspace_path, timeout=30)
-        if not status.ok:
-            raise RuntimeError(f"git status failed for {item.jira_key}: {status.output.strip()}")
-        if not status.stdout.strip() and result.success:
-            raise RuntimeError(f"No commit-worthy changes for {item.jira_key}.")
-        commit_args = ["git", "commit", "-m", render_commit_message(item, result)]
-        if not status.stdout.strip():
-            commit_args.insert(2, "--allow-empty")
-        commit = self.command_runner.run(
-            commit_args,
-            cwd=item.workspace_path,
-            timeout=120,
-        )
-        if not commit.ok:
-            raise RuntimeError(f"git commit failed for {item.jira_key}: {commit.output.strip()}")
-        sha = self.command_runner.run(["git", "rev-parse", "HEAD"], cwd=item.workspace_path, timeout=30)
-        push = self.command_runner.run(
-            ["git", "push", "-u", "origin", item.branch_name],
-            cwd=item.workspace_path,
-            timeout=180,
-        )
-        if not push.ok:
-            raise RuntimeError(f"git push failed for {item.jira_key}: {push.output.strip()}")
-        return sha.stdout.strip() if sha.ok else ""
+        return self.git.commit_and_push(item, result)
 
 
 def build_backlog_jql(config: WorkLoopConfig) -> str:
@@ -1090,7 +1425,7 @@ def build_backlog_jql(config: WorkLoopConfig) -> str:
     return " AND ".join(parts) + " ORDER BY updated DESC"
 
 
-def parse_jira_candidates(raw: str) -> list[JiraCandidate]:
+def parse_jira_candidates(raw: str) -> list[TaskCandidate]:
     if not raw.strip():
         return []
     payload = json.loads(raw)
@@ -1098,13 +1433,13 @@ def parse_jira_candidates(raw: str) -> list[JiraCandidate]:
         values = payload.get("issues") or payload.get("workItems") or payload.get("values") or [payload]
     else:
         values = payload
-    candidates: list[JiraCandidate] = []
+    candidates: list[TaskCandidate] = []
     for item in values or []:
         if not isinstance(item, dict):
             continue
         fields = item.get("fields") if isinstance(item.get("fields"), dict) else item
         candidates.append(
-            JiraCandidate(
+            TaskCandidate(
                 key=str(item.get("key") or fields.get("key") or ""),
                 summary=_field_text(fields.get("summary")),
                 issue_type=_field_name(fields.get("issuetype")),
@@ -1133,11 +1468,11 @@ def _field_text(value: Any) -> str:
     return json.dumps(value, sort_keys=True)
 
 
-def eligible_candidates(candidates: list[JiraCandidate], config: WorkLoopConfig) -> list[JiraCandidate]:
+def eligible_candidates(candidates: list[TaskCandidate], config: WorkLoopConfig) -> list[TaskCandidate]:
     blocked = {label.lower() for label in config.blocked_labels}
     eligible_types = {item.lower() for item in config.issue_types}
     eligible_statuses = {item.lower() for item in config.eligible_statuses}
-    result: list[JiraCandidate] = []
+    result: list[TaskCandidate] = []
     for candidate in candidates:
         if candidate.assignee.strip():
             continue
@@ -1156,7 +1491,48 @@ def eligible_candidates(candidates: list[JiraCandidate], config: WorkLoopConfig)
     return result
 
 
-def select_candidates(candidates: list[JiraCandidate], *, limit: int) -> list[JiraCandidate]:
+def select_execution_profile(candidate: TaskCandidate, config: WorkLoopConfig) -> TaskExecutionProfile:
+    for profile in config.task_profiles:
+        if task_profile_matches(profile.match, candidate, config):
+            return profile.execution
+    return default_execution_profile(config)
+
+
+def execution_profile_from_item(item: WorkItem, config: WorkLoopConfig) -> TaskExecutionProfile:
+    if item.execution_profile:
+        return TaskExecutionProfile.from_dict(item.execution_profile, base=default_execution_profile(config))
+    return default_execution_profile(config)
+
+
+def default_execution_profile(config: WorkLoopConfig) -> TaskExecutionProfile:
+    return TaskExecutionProfile(
+        name="default",
+        models=config.models,
+        inner_max_turns=config.inner_max_turns,
+        repair_attempts=config.repair_attempts,
+    )
+
+
+def task_profile_matches(match: TaskProfileMatch, candidate: TaskCandidate, config: WorkLoopConfig) -> bool:
+    if match.projects and config.project.lower() not in {item.lower() for item in match.projects}:
+        return False
+    if match.issue_types and candidate.issue_type.lower() not in {item.lower() for item in match.issue_types}:
+        return False
+    if match.statuses and candidate.status.lower() not in {item.lower() for item in match.statuses}:
+        return False
+    if match.priorities and candidate.priority.lower() not in {item.lower() for item in match.priorities}:
+        return False
+    source_type = candidate.source_type or config.task_source_type
+    if match.task_source_types and source_type.lower() not in {item.lower() for item in match.task_source_types}:
+        return False
+    if match.labels:
+        labels = {label.lower() for label in candidate.labels}
+        if not {label.lower() for label in match.labels}.issubset(labels):
+            return False
+    return True
+
+
+def select_candidates(candidates: list[TaskCandidate], *, limit: int) -> list[TaskCandidate]:
     return sorted(candidates, key=lambda item: (priority_rank(item.priority), len(item.description or item.summary)))[:limit]
 
 
@@ -1222,7 +1598,7 @@ def run_verification_commands(
     return records
 
 
-def build_task_prompt(candidate: JiraCandidate, commands: list[str], *, review_feedback: str = "") -> str:
+def build_task_prompt(candidate: TaskCandidate, commands: list[str], *, review_feedback: str = "") -> str:
     feedback = f"\n\nReview feedback to address:\n{review_feedback}" if review_feedback else ""
     command_block = "\n".join(f"- {command}" for command in commands) or "- <none discovered>"
     return (
@@ -1236,7 +1612,7 @@ def build_task_prompt(candidate: JiraCandidate, commands: list[str], *, review_f
     )
 
 
-def build_repair_prompt(candidate: JiraCandidate, failure_summary: str, *, attempt: int) -> str:
+def build_repair_prompt(candidate: TaskCandidate, failure_summary: str, *, attempt: int) -> str:
     return (
         f"Repair Jira ticket {candidate.key}: {candidate.summary}\n\n"
         f"Verification failed on repair attempt {attempt}. Fix the implementation or tests while "
@@ -1245,7 +1621,7 @@ def build_repair_prompt(candidate: JiraCandidate, failure_summary: str, *, attem
     )
 
 
-def manual_testing_steps(candidate: JiraCandidate) -> str:
+def manual_testing_steps(candidate: TaskCandidate) -> str:
     return (
         f"Manually exercise the workflow affected by {candidate.key} and confirm the behavior "
         "matches the Jira acceptance requirements."
@@ -1272,7 +1648,7 @@ def render_commit_message(item: WorkItem, result: TaskExecutionResult) -> str:
     )
 
 
-def render_pr_body(item: WorkItem, candidate: JiraCandidate, result: TaskExecutionResult) -> str:
+def render_pr_body(item: WorkItem, candidate: TaskCandidate, result: TaskExecutionResult) -> str:
     verification = "\n".join(f"- `{record.command}`: {record.status}" for record in result.verification)
     return (
         f"{PR_MARKER_PREFIX}{item.jira_key} -->\n"
@@ -1404,11 +1780,22 @@ def format_work_item_status(item: WorkItem | None) -> str:
         return "No work-loop item found."
     verification = "\n".join(f"- {record.command}: {record.status}" for record in item.verification)
     comments = "\n".join(f"- {comment.comment_id}: {comment.action}" for comment in item.processed_review_comments)
+    profile = item.execution_profile or {}
+    profile_models = profile.get("models") if isinstance(profile.get("models"), dict) else {}
+    profile_line = str(profile.get("name") or "<none>")
+    if profile_models:
+        profile_line += (
+            f" analysis:{profile_models.get('analysis_model', '<default>')}"
+            f" coding:{profile_models.get('coding_model', '<default>')}"
+            f" review:{profile_models.get('review_model', '<default>')}"
+        )
     return "\n".join(
         [
             f"Ticket: {item.jira_key}",
             f"Title: {item.title}",
             f"State: {item.state}",
+            f"Task source: {item.task_source_type or '<none>'}",
+            f"Execution profile: {profile_line}",
             f"Branch: {item.branch_name or '<none>'}",
             f"Workspace: {item.workspace_path or '<none>'}",
             f"PR: {item.pr_url or '<none>'}",
