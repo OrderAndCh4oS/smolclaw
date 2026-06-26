@@ -8,6 +8,7 @@ Status: paused. The foundation for trace export, goal ledgers, approvals, evals,
 
 ## Recent Verification
 
+
 - Full suite previously passed after the main phase work: `917 passed`.
 - Focused smoke after the worktree and related changes passed: `156 passed`.
 - Latest focused checks for `/remember-thread` UX passed:

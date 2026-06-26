@@ -52,6 +52,12 @@ class OpenAiLlm:
         self.reasoning_effort = _default_reasoning_effort_for_model(self.completion_model)
         self.usage_collector = None
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.close()
+
     def _record_usage(self, operation: str, model: str, prompt_tokens: int,
                        completion_tokens: int, total_tokens: int, duration_ms: int, cached: bool = False):
         if self.usage_collector is None:

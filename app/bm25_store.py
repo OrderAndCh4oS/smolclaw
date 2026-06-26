@@ -9,6 +9,8 @@ import aiosqlite
 from nltk.corpus import stopwords
 from nltk.stem import SnowballStemmer
 
+from app.aiosqlite_lifecycle import close_aiosqlite_connection
+
 try:
     _STOP_WORDS = set(stopwords.words("english"))
 except LookupError:
@@ -34,6 +36,12 @@ class BM25Store:
         self._db = None
         self._loaded = False
         self._lock = asyncio.Lock()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.close()
 
     @staticmethod
     def _tokenize(text: str) -> list[str]:
@@ -159,5 +167,5 @@ class BM25Store:
     async def close(self):
         async with self._lock:
             if self._db is not None:
-                await self._db.close()
+                await close_aiosqlite_connection(self._db)
                 self._db = None

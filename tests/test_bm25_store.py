@@ -2,16 +2,19 @@ import asyncio
 import os
 
 import pytest
+import pytest_asyncio
 
 from app.bm25_store import BM25Store
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def bm25(temp_dir):
     db_path = os.path.join(temp_dir, "test.db")
     store = BM25Store(db_path, "bm25_test")
-    yield store
-    await store.close()
+    try:
+        yield store
+    finally:
+        await store.close()
 
 
 class TestBM25StoreBaseline:
@@ -145,30 +148,26 @@ class TestBM25StorePersistence:
     async def test_persistence_across_instances(self, temp_dir):
         db_path = os.path.join(temp_dir, "persist.db")
 
-        store1 = BM25Store(db_path, "bm25_persist")
-        await store1.add("doc1", "persistent data about foxes")
-        await store1.add("doc2", "ephemeral data about cats")
-        await store1.close()
+        async with BM25Store(db_path, "bm25_persist") as store1:
+            await store1.add("doc1", "persistent data about foxes")
+            await store1.add("doc2", "ephemeral data about cats")
 
-        store2 = BM25Store(db_path, "bm25_persist")
-        results = await store2.query("foxes", top_k=5)
+        async with BM25Store(db_path, "bm25_persist") as store2:
+            results = await store2.query("foxes", top_k=5)
         assert len(results) > 0
         assert results[0]["doc_id"] == "doc1"
-        await store2.close()
 
     @pytest.mark.asyncio
     async def test_remove_persists(self, temp_dir):
         db_path = os.path.join(temp_dir, "persist_rm.db")
 
-        store1 = BM25Store(db_path, "bm25_rm")
-        await store1.add("doc1", "alpha beta gamma")
-        await store1.remove("doc1")
-        await store1.close()
+        async with BM25Store(db_path, "bm25_rm") as store1:
+            await store1.add("doc1", "alpha beta gamma")
+            await store1.remove("doc1")
 
-        store2 = BM25Store(db_path, "bm25_rm")
-        results = await store2.query("alpha", top_k=5)
+        async with BM25Store(db_path, "bm25_rm") as store2:
+            results = await store2.query("alpha", top_k=5)
         assert len(results) == 0
-        await store2.close()
 
 
 class TestBM25StoreReplace:
@@ -188,10 +187,9 @@ class TestBM25StoreRawText:
     @pytest.mark.asyncio
     async def test_raw_text_stored_on_add(self, temp_dir):
         db_path = os.path.join(temp_dir, "raw.db")
-        store = BM25Store(db_path, "bm25_raw")
-        await store.add("doc1", "hello world test")
-        db = await store._get_db()
-        cursor = await db.execute(f"SELECT raw_text FROM [{store.table}] WHERE doc_id = ?", ("doc1",))
-        row = await cursor.fetchone()
+        async with BM25Store(db_path, "bm25_raw") as store:
+            await store.add("doc1", "hello world test")
+            db = await store._get_db()
+            cursor = await db.execute(f"SELECT raw_text FROM [{store.table}] WHERE doc_id = ?", ("doc1",))
+            row = await cursor.fetchone()
         assert row[0] == "hello world test"
-        await store.close()

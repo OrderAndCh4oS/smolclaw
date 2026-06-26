@@ -6,6 +6,7 @@ import tempfile
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import pytest_asyncio
 import numpy as np
 
 from app.graph_store import NetworkXGraphStore
@@ -40,11 +41,14 @@ def graph_store(temp_graph_path):
     yield store
 
 
-@pytest.fixture
-def vector_store(temp_vector_db_path):
+@pytest_asyncio.fixture
+async def vector_store(temp_vector_db_path):
     """Create a SqliteVectorStore instance for testing."""
     store = SqliteVectorStore(temp_vector_db_path, dimensions=1536)
-    yield store
+    try:
+        yield store
+    finally:
+        await store.close()
 
 
 @pytest.fixture

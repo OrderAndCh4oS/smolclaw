@@ -11,7 +11,7 @@ from cli.tui import ActivityEntry, CoderTui, DETAILS_HEIGHT, TranscriptEntry, Ui
 from app.model_settings import RuntimeModelSettings
 
 
-def _fake_tui(show_actions=False):
+def _fake_tui(show_actions=False, resolve_work_loop_command=None):
     agent = MagicMock()
     agent.llm.completion_model = "gpt-test"
     agent.llm.reasoning_effort = None
@@ -48,6 +48,7 @@ def _fake_tui(show_actions=False):
         resolve_approval_command=lambda session_key, arg: f"Approval {session_key} {arg}".strip(),
         resolve_memory_command=lambda arg: f"Memory {arg}".strip(),
         resolve_worktree_command=lambda arg: f"Worktree {arg}".strip(),
+        resolve_work_loop_command=resolve_work_loop_command or (lambda arg: f"Work loop {arg}".strip()),
         initialize_project=lambda: "Created AGENTS.md",
         format_action_event=lambda event: event.get("line"),
         label="SmolClaw",
@@ -405,6 +406,29 @@ async def test_tui_worktree_command_shows_worktree_status():
 
     rendered = "".join(text for _, text in tui._render_transcript())
     assert "Worktree status" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_work_loop_command_shows_work_loop_status():
+    tui = _fake_tui(resolve_work_loop_command=lambda arg: f"Work-loop result for {arg}")
+
+    await tui.submit("/work-loop list --state open-pr")
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Work-loop result for list --state open-pr" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_work_loop_stop_is_available_while_active():
+    tui = _fake_tui(resolve_work_loop_command=lambda arg: f"Stopped via {arg}")
+    tui.state.run_state = "checking"
+    tui.state.activity = "work-loop"
+
+    await tui.submit("/work-loop stop budget reached")
+
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Stopped via stop budget reached" in rendered
+    assert "/work-loop is unavailable" not in rendered
 
 
 @pytest.mark.asyncio

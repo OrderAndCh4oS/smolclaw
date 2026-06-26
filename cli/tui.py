@@ -36,6 +36,8 @@ from app.model_settings import (
     subagent_model_status,
 )
 from app.pricing import format_costs
+from app.work_loop import WorkLoopJobSupervisor, terminate_active_work_loop_processes
+from app.workspace import WorkspaceContext
 from cli.commands import (
     GOAL_COMMAND_HELP,
     SLASH_COMMANDS_HELP,
@@ -233,6 +235,7 @@ class CoderTui:
         initialize_project: Callable[[], str],
         format_action_event: Callable[[dict], Optional[str]],
         resolve_worktree_command: Callable[[str], str] | None = None,
+        resolve_work_loop_command: Callable[[str], str] | None = None,
         label: str = "smolclaw",
     ):
         self.agent = agent
@@ -256,6 +259,7 @@ class CoderTui:
         self.resolve_approval_command = resolve_approval_command
         self.resolve_memory_command = resolve_memory_command
         self.resolve_worktree_command = resolve_worktree_command or (lambda arg: "No active isolated worktree.")
+        self.resolve_work_loop_command = resolve_work_loop_command or (lambda arg: "Work-loop commands are unavailable.")
         self.initialize_project = initialize_project
         self.format_action_event = format_action_event
         self.state = UiState(
@@ -573,6 +577,17 @@ class CoderTui:
         if await self._slash_dispatcher.dispatch(parsed):
             return
 
+        work_loop_control = command == "/work-loop" and command_arg.split(maxsplit=1)[0:1] in (
+            ["stop"],
+            ["pause"],
+            ["resume"],
+            ["state"],
+            ["control"],
+        )
+        if work_loop_control:
+            self._append("system", str(self.resolve_work_loop_command(command_arg)))
+            return
+
         if command.startswith("/") and self._reject_if_active(command):
             return
 
@@ -655,6 +670,16 @@ class CoderTui:
                 self._append("system", str(result))
             if command_arg.split(maxsplit=1)[0:1] in (["apply"], ["discard"]):
                 self._schedule_git_refresh()
+            return
+        if command == "/work-loop":
+            result = await self._run_status_task(
+                activity="checking",
+                active_tool="work-loop",
+                boundary="tui.work_loop",
+                worker_fn=lambda: self.resolve_work_loop_command(command_arg),
+            )
+            if result is not _TASK_FAILED:
+                self._append("system", str(result))
             return
         if text == "/undo":
             await self._handle_undo()
@@ -1004,6 +1029,12 @@ class CoderTui:
     def _force_exit(self):
         self._shutdown_forced = True
         self._shutdown_complete = True
+        WorkLoopJobSupervisor.for_workspace(WorkspaceContext.from_root(self.workspace_root)).stop(
+            "all",
+            reason="Terminal force exit.",
+            grace_seconds=0.5,
+        )
+        terminate_active_work_loop_processes()
         for task in (self._agent_task, self._shutdown_task):
             if task is not None and not task.done() and task is not asyncio.current_task():
                 task.cancel()
@@ -1061,6 +1092,12 @@ class CoderTui:
                     self._run_in_worker(self._close_smol_rag),
                     active_tool="memory",
                 )
+            WorkLoopJobSupervisor.for_workspace(WorkspaceContext.from_root(self.workspace_root)).stop(
+                "all",
+                reason="Terminal shutdown.",
+                grace_seconds=1.0,
+            )
+            terminate_active_work_loop_processes()
             if self._worker_loop is not None:
                 self._worker_loop.stop()
                 self._worker_loop = None

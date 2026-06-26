@@ -108,25 +108,22 @@ class TestVectorStoreMemoryUsage:
     @pytest.mark.asyncio
     async def test_memory_grows_linearly_with_vectors(self, temp_vector_db_path):
         """Test that memory usage grows linearly with number of vectors."""
-        store = SqliteVectorStore(temp_vector_db_path, dimensions=1536)
-
         # Add vectors in batches and estimate memory
         batch_sizes = [100, 500, 1000]
 
         for size in batch_sizes:
-            store = SqliteVectorStore(temp_vector_db_path + f"_{size}", dimensions=1536)
+            async with SqliteVectorStore(temp_vector_db_path + f"_{size}", dimensions=1536) as store:
+                vectors = [make_vector_dict(i, index=i) for i in range(size)]
 
-            vectors = [make_vector_dict(i, index=i) for i in range(size)]
+                start_time = time.perf_counter()
+                await store.upsert(vectors)
+                elapsed = time.perf_counter() - start_time
 
-            start_time = time.perf_counter()
-            await store.upsert(vectors)
-            elapsed = time.perf_counter() - start_time
+                print(f"\nUpsert {size} vectors: {elapsed:.4f}s")
 
-            print(f"\nUpsert {size} vectors: {elapsed:.4f}s")
-
-            # Estimate memory: 1536 dims * 4 bytes (float32) * num vectors
-            estimated_memory_mb = (1536 * 4 * size) / (1024 * 1024)
-            print(f"Estimated memory: {estimated_memory_mb:.2f} MB")
+                # Estimate memory: 1536 dims * 4 bytes (float32) * num vectors
+                estimated_memory_mb = (1536 * 4 * size) / (1024 * 1024)
+                print(f"Estimated memory: {estimated_memory_mb:.2f} MB")
 
     @pytest.mark.performance
     @pytest.mark.slow
@@ -173,27 +170,26 @@ class TestVectorStoreMemoryUsage:
         query_times = []
 
         for size in sizes:
-            store = SqliteVectorStore(temp_vector_db_path + f"_{size}", dimensions=1536)
+            async with SqliteVectorStore(temp_vector_db_path + f"_{size}", dimensions=1536) as store:
+                vectors = [make_vector_dict(i, index=i) for i in range(size)]
 
-            vectors = [make_vector_dict(i, index=i) for i in range(size)]
+                await store.upsert(vectors)
 
-            await store.upsert(vectors)
+                # Measure query time - use more iterations to reduce variance
+                query_vector = np.array(np.random.rand(1536), dtype=np.float32)
 
-            # Measure query time - use more iterations to reduce variance
-            query_vector = np.array(np.random.rand(1536), dtype=np.float32)
+                # Warmup queries to stabilize CPU caching
+                for _ in range(5):
+                    await store.query(query_vector, top_k=10)
 
-            # Warmup queries to stabilize CPU caching
-            for _ in range(5):
-                await store.query(query_vector, top_k=10)
+                # Now measure
+                start_time = time.perf_counter()
+                for _ in range(20):  # More iterations for better averaging
+                    await store.query(query_vector, top_k=10)
+                avg_query_time = (time.perf_counter() - start_time) / 20
+                query_times.append(avg_query_time)
 
-            # Now measure
-            start_time = time.perf_counter()
-            for _ in range(20):  # More iterations for better averaging
-                await store.query(query_vector, top_k=10)
-            avg_query_time = (time.perf_counter() - start_time) / 20
-            query_times.append(avg_query_time)
-
-            print(f"\nDatabase size {size}: avg query time {avg_query_time:.6f}s")
+                print(f"\nDatabase size {size}: avg query time {avg_query_time:.6f}s")
 
         # Query time should increase (roughly linearly for brute force search)
         # Compare extremes: 2000 vectors vs 100 vectors should show growth
@@ -246,21 +242,21 @@ class TestVectorStorePersistence:
     @pytest.mark.asyncio
     async def test_save_and_load(self, temp_vector_db_path):
         """Test saving and loading vector database."""
-        store1 = SqliteVectorStore(temp_vector_db_path, dimensions=1536)
+        async with SqliteVectorStore(temp_vector_db_path, dimensions=1536) as store1:
 
-        # Add vectors
-        vectors = [make_vector_dict(i, index=i) for i in range(10)]
+            # Add vectors
+            vectors = [make_vector_dict(i, index=i) for i in range(10)]
 
-        await store1.upsert(vectors)
+            await store1.upsert(vectors)
 
-        await store1.save()
+            await store1.save()
 
         # SQLite-backed vector stores persist across instances.
-        store2 = SqliteVectorStore(temp_vector_db_path, dimensions=1536)
+        async with SqliteVectorStore(temp_vector_db_path, dimensions=1536) as store2:
 
-        query_vector = np.array(np.random.rand(1536), dtype=np.float32)
-        results = await store2.query(query_vector, top_k=5)
-        persisted = await store2.get(list(range(10)))
+            query_vector = np.array(np.random.rand(1536), dtype=np.float32)
+            results = await store2.query(query_vector, top_k=5)
+            persisted = await store2.get(list(range(10)))
         assert len(results) == 5
         assert len(persisted) == 10
 

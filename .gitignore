@@ -4,6 +4,7 @@
 .nltk_data/
 .idea
 .obsidian/
+.smolclaw/
 __pycache__/
 *.pyc
 *.egg-info/

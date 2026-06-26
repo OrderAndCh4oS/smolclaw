@@ -2,16 +2,19 @@
 import asyncio
 import os
 import pytest
+import pytest_asyncio
 
 from app.sqlite_store import SqliteKvStore
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def sqlite_kv(temp_dir):
     db_path = os.path.join(temp_dir, "test.db")
     store = SqliteKvStore(db_path, "test_table")
-    yield store
-    await store.close()
+    try:
+        yield store
+    finally:
+        await store.close()
 
 
 class TestSqliteKvStoreBaseline:
@@ -75,13 +78,11 @@ class TestSqliteKvStoreBaseline:
     @pytest.mark.asyncio
     async def test_persistence_across_instances(self, temp_dir):
         db_path = os.path.join(temp_dir, "persist.db")
-        store1 = SqliteKvStore(db_path, "persist_table")
-        await store1.add("persistent", "data")
-        await store1.close()
+        async with SqliteKvStore(db_path, "persist_table") as store1:
+            await store1.add("persistent", "data")
 
-        store2 = SqliteKvStore(db_path, "persist_table")
-        value = await store2.get_by_key("persistent")
-        await store2.close()
+        async with SqliteKvStore(db_path, "persist_table") as store2:
+            value = await store2.get_by_key("persistent")
         assert value == "data"
 
     @pytest.mark.asyncio

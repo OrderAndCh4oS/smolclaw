@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import select
+import shlex
 import sys
 import threading
 import uuid
@@ -45,6 +46,20 @@ from app.utilities import ensure_dir
 from app.workspace import WorkspaceContext
 from app.run_trace import RunTraceStore
 from app.worktree import WorktreeRunner
+from app.work_loop import (
+    DEFAULT_WORK_LOOP_CONFIG,
+    WorkLoopControl,
+    WorkLoopConfig,
+    WorkLoopJobStore,
+    WorkLoopJobSupervisor,
+    WorkLoopLedger,
+    WorkLoopRunner,
+    WorkLoopStopped,
+    format_work_loop_jobs,
+    format_work_item_status,
+    format_work_items,
+    terminate_active_work_loop_processes,
+)
 from cli.commands import (
     SLASH_COMMANDS_HELP,
     SlashCommandDispatcher,
@@ -127,6 +142,11 @@ app = typer.Typer(
     help="SmolClaw — agentic assistant with persistent memory",
     rich_markup_mode=None,
 )
+work_loop_app = typer.Typer(
+    help="Run Jira task automation and GitHub PR review follow-up loops.",
+    rich_markup_mode=None,
+)
+app.add_typer(work_loop_app, name="work-loop")
 console = Console()
 
 DEFAULT_AGENTS_CONFIG = os.path.join(os.path.dirname(os.path.dirname(__file__)), "agents.yaml")
@@ -545,6 +565,511 @@ def run_once(
     console.print(json.dumps(result, indent=2, sort_keys=True))
 
 
+def _load_work_loop_config(config_path: str, project: str = "", *, max_concurrency: int | None = None) -> WorkLoopConfig:
+    config = WorkLoopConfig.load(config_path, project=project)
+    if max_concurrency is not None:
+        config = WorkLoopConfig(
+            **{
+                **config.__dict__,
+                "max_concurrency": max_concurrency,
+            }
+        )
+    return config
+
+
+def _build_work_loop_runner(
+    *,
+    workspace: str,
+    config_path: str,
+    project: str = "",
+    max_concurrency: int | None = None,
+) -> WorkLoopRunner:
+    workspace_ctx = _workspace_context(workspace)
+    config = _load_work_loop_config(config_path, project=project, max_concurrency=max_concurrency)
+    return WorkLoopRunner(workspace=workspace_ctx, config=config)
+
+
+def _work_loop_worker_args(
+    *,
+    workspace: str,
+    config_path: str,
+    project: str = "",
+    limit: int | None = None,
+    max_concurrency: int | None = None,
+    dry_run: bool = False,
+) -> list[str]:
+    args = ["--workspace", workspace, "--config", config_path]
+    if project:
+        args.extend(["--project", project])
+    if limit is not None:
+        args.extend(["--limit", str(limit)])
+    if max_concurrency is not None:
+        args.extend(["--max-concurrency", str(max_concurrency)])
+    if dry_run:
+        args.append("--dry-run")
+    return args
+
+
+def _start_work_loop_job(
+    *,
+    workspace: str,
+    mode: str,
+    worker_args: list[str],
+) -> str:
+    workspace_ctx = _workspace_context(workspace)
+    job = WorkLoopJobSupervisor.for_workspace(workspace_ctx).start(mode, worker_args)
+    return f"Started work-loop job {job.job_id} [{job.state}] pid:{job.pid or '<none>'} mode:{mode}"
+
+
+def _run_work_loop_mode(
+    *,
+    mode: str,
+    workspace: str,
+    config_path: str,
+    project: str = "",
+    limit: int | None = None,
+    max_concurrency: int | None = None,
+    dry_run: bool = False,
+    job_id: str | None = None,
+) -> str:
+    workspace_ctx = _workspace_context(workspace)
+    config = _load_work_loop_config(config_path, project=project, max_concurrency=max_concurrency)
+    runner = WorkLoopRunner(workspace=workspace_ctx, config=config, job_id=job_id)
+    if mode == "tasks":
+        return format_work_items(runner.run_tasks(limit=limit, dry_run=dry_run))
+    if mode == "reviews":
+        return format_work_items(runner.run_reviews(dry_run=dry_run))
+    if mode == "run":
+        review_items = runner.run_reviews(dry_run=dry_run)
+        task_items = runner.run_tasks(limit=limit, dry_run=dry_run)
+        return "\n\n".join([
+            "Review follow-up:",
+            format_work_items(review_items),
+            "Jira tasks:",
+            format_work_items(task_items),
+        ])
+    raise ValueError(f"Unsupported work-loop mode: {mode}")
+
+
+def _pop_flag(args: list[str], *names: str, default: str | None = None) -> str | None:
+    for name in names:
+        if name not in args:
+            continue
+        index = args.index(name)
+        if index == len(args) - 1:
+            raise ValueError(f"{name} expects a value")
+        value = args[index + 1]
+        del args[index:index + 2]
+        return value
+    return default
+
+
+def _pop_bool_flag(args: list[str], *names: str) -> bool:
+    found = False
+    for name in names:
+        while name in args:
+            args.remove(name)
+            found = True
+    return found
+
+
+def _int_option(value: str | None, *, label: str) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ValueError(f"{label} expects an integer") from exc
+    if parsed <= 0:
+        raise ValueError(f"{label} expects a positive integer")
+    return parsed
+
+
+def _resolve_work_loop_command(workspace: WorkspaceContext, command_arg: str) -> str:
+    try:
+        parts = shlex.split(command_arg)
+    except ValueError as exc:
+        return f"Error: {exc}"
+    if not parts or parts[0] in {"help", "-h", "--help"}:
+        return "\n".join([
+            "Work-loop commands:",
+            "  /work-loop list [--state STATE]",
+            "  /work-loop jobs",
+            "  /work-loop status <JIRA_KEY_OR_PR_NUMBER>",
+            "  /work-loop tasks --project KEY [--limit N] [--max-concurrency N] [--config PATH] [--dry-run] [--foreground]",
+            "  /work-loop reviews [--config PATH] [--dry-run] [--foreground]",
+            "  /work-loop run --project KEY [--limit N] [--max-concurrency N] [--config PATH] [--dry-run] [--foreground]",
+            "  /work-loop stop [job-id|all] [reason]",
+            "  /work-loop pause [job-id|all] [reason]",
+            "  /work-loop resume [job-id|all]",
+            "  /work-loop state",
+        ])
+    subcommand = parts.pop(0)
+    try:
+        control = WorkLoopControl.for_workspace(workspace)
+        if subcommand == "stop":
+            target = parts.pop(0) if parts and (parts[0] == "all" or parts[0].startswith("job-")) else "all"
+            reason = " ".join(parts).strip() or "User requested stop."
+            if target == "all":
+                control.stop(reason)
+                terminate_active_work_loop_processes()
+            jobs = WorkLoopJobSupervisor.for_workspace(workspace).stop(target, reason=reason)
+            suffix = f" ({len(jobs)} job(s))" if jobs else ""
+            return f"Work-loop stop requested for {target}: {reason}{suffix}"
+        if subcommand == "pause":
+            target = parts.pop(0) if parts and (parts[0] == "all" or parts[0].startswith("job-")) else "all"
+            reason = " ".join(parts).strip() or "User requested pause."
+            if target == "all":
+                control.pause(reason)
+            jobs = WorkLoopJobSupervisor.for_workspace(workspace).pause(target, reason=reason)
+            suffix = f" ({len(jobs)} job(s))" if jobs else ""
+            return f"Work-loop pause requested for {target}: {reason}{suffix}"
+        if subcommand == "resume":
+            target = parts.pop(0) if parts and (parts[0] == "all" or parts[0].startswith("job-")) else "all"
+            if parts:
+                return f"Error: unexpected arguments for /work-loop resume: {' '.join(parts)}"
+            if target == "all":
+                control.resume()
+            jobs = WorkLoopJobSupervisor.for_workspace(workspace).resume(target)
+            suffix = f" ({len(jobs)} job(s))" if jobs else ""
+            return f"Work-loop resumed for {target}; stop and pause files cleared.{suffix}"
+        if subcommand in {"state", "control"}:
+            if parts:
+                return f"Error: unexpected arguments for /work-loop state: {' '.join(parts)}"
+            return f"Work-loop state: {control.status()}"
+        if subcommand == "jobs":
+            if parts:
+                return f"Error: unexpected arguments for /work-loop jobs: {' '.join(parts)}"
+            return format_work_loop_jobs(WorkLoopJobStore.for_workspace(workspace).list())
+        config_path = _pop_flag(parts, "--config", default=DEFAULT_WORK_LOOP_CONFIG) or DEFAULT_WORK_LOOP_CONFIG
+        dry_run = _pop_bool_flag(parts, "--dry-run")
+        foreground = _pop_bool_flag(parts, "--foreground")
+        if subcommand == "list":
+            state = _pop_flag(parts, "--state", default="all") or "all"
+            if parts:
+                return f"Error: unexpected arguments for /work-loop list: {' '.join(parts)}"
+            return format_work_items(WorkLoopLedger.for_workspace(workspace).list(state))
+        if subcommand == "status":
+            target = parts.pop(0) if parts else ""
+            if not target:
+                return "Usage: /work-loop status <JIRA_KEY_OR_PR_NUMBER>"
+            if parts:
+                return f"Error: unexpected arguments for /work-loop status: {' '.join(parts)}"
+            if target.startswith("job-"):
+                job = WorkLoopJobStore.for_workspace(workspace).load(target)
+                return format_work_loop_jobs([job] if job else [])
+            ledger = WorkLoopLedger.for_workspace(workspace)
+            item = ledger.load(target)
+            if item is None and target.isdigit():
+                pr_number = int(target)
+                item = next((candidate for candidate in ledger.list("all") if candidate.pr_number == pr_number), None)
+            return format_work_item_status(item)
+        if subcommand in {"tasks", "run"}:
+            project = _pop_flag(parts, "--project", "-p")
+            if not project:
+                return f"Usage: /work-loop {subcommand} --project KEY"
+            limit = _int_option(_pop_flag(parts, "--limit"), label="--limit")
+            max_concurrency = _int_option(_pop_flag(parts, "--max-concurrency"), label="--max-concurrency")
+            if parts:
+                return f"Error: unexpected arguments for /work-loop {subcommand}: {' '.join(parts)}"
+            worker_args = _work_loop_worker_args(
+                workspace=workspace.root_dir,
+                config_path=config_path,
+                project=project,
+                limit=limit,
+                max_concurrency=max_concurrency,
+                dry_run=dry_run,
+            )
+            if not foreground:
+                return _start_work_loop_job(workspace=workspace.root_dir, mode=subcommand, worker_args=worker_args)
+            return _run_work_loop_mode(
+                mode=subcommand,
+                workspace=workspace.root_dir,
+                config_path=config_path,
+                project=project,
+                limit=limit,
+                max_concurrency=max_concurrency,
+                dry_run=dry_run,
+            )
+        if subcommand == "reviews":
+            if parts:
+                return f"Error: unexpected arguments for /work-loop reviews: {' '.join(parts)}"
+            worker_args = _work_loop_worker_args(
+                workspace=workspace.root_dir,
+                config_path=config_path,
+                dry_run=dry_run,
+            )
+            if not foreground:
+                return _start_work_loop_job(workspace=workspace.root_dir, mode="reviews", worker_args=worker_args)
+            return _run_work_loop_mode(
+                mode="reviews",
+                workspace=workspace.root_dir,
+                config_path=config_path,
+                dry_run=dry_run,
+            )
+    except RuntimeError as exc:
+        return f"Error: {exc}"
+    except ValueError as exc:
+        return f"Error: {exc}"
+    return "Usage: /work-loop list|status|tasks|reviews|run"
+
+
+@work_loop_app.command(name="worker", hidden=True)
+def work_loop_worker(
+    job_id: str = typer.Option(..., "--job-id", help="Work-loop job id"),
+    mode: str = typer.Option(..., "--mode", help="Worker mode: tasks, reviews, or run"),
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root"),
+    config_path: str = typer.Option(DEFAULT_WORK_LOOP_CONFIG, "--config", help="Work-loop YAML config"),
+    project: str = typer.Option("", "--project", "-p", help="Jira project key to search"),
+    limit: Optional[int] = typer.Option(None, "--limit", help="Maximum tickets to start"),
+    max_concurrency: Optional[int] = typer.Option(None, "--max-concurrency", help="Override configured concurrency"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Exercise discovery without changing branches"),
+):
+    """Internal worker process entrypoint."""
+    workspace_ctx = _workspace_context(workspace)
+    store = WorkLoopJobStore.for_workspace(workspace_ctx)
+    job = store.load(job_id)
+    if job is not None:
+        job.state = "running"
+        job.message = "Worker started."
+        store.save(job)
+    try:
+        output = _run_work_loop_mode(
+            mode=mode,
+            workspace=workspace,
+            config_path=config_path,
+            project=project,
+            limit=limit,
+            max_concurrency=max_concurrency,
+            dry_run=dry_run,
+            job_id=job_id,
+        )
+        if job is not None:
+            job.state = "complete"
+            job.exit_code = 0
+            job.message = output[:1000]
+            store.save(job)
+        console.print(output, markup=False)
+    except WorkLoopStopped as exc:
+        if job is not None:
+            job.state = "stopped"
+            job.exit_code = 130
+            job.message = str(exc)
+            store.save(job)
+        console.print(f"Stopped: {exc}", markup=False)
+        raise typer.Exit(130) from exc
+    except Exception as exc:
+        if job is not None:
+            job.state = "failed"
+            job.exit_code = 1
+            job.message = str(exc)
+            store.save(job)
+        console.print(f"Error: {exc}", markup=False)
+        raise typer.Exit(1) from exc
+
+
+@work_loop_app.command(name="tasks")
+def work_loop_tasks(
+    project: str = typer.Option(..., "--project", "-p", help="Jira project key to search"),
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root"),
+    config_path: str = typer.Option(DEFAULT_WORK_LOOP_CONFIG, "--config", help="Work-loop YAML config"),
+    limit: Optional[int] = typer.Option(None, "--limit", help="Maximum tickets to start"),
+    max_concurrency: Optional[int] = typer.Option(None, "--max-concurrency", help="Override configured concurrency"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Select and record candidates without starting implementation"),
+    foreground: bool = typer.Option(False, "--foreground", help="Run synchronously instead of starting a background job"),
+):
+    """Search Jira, start suitable coding tasks, push branches, and create PRs."""
+    try:
+        if foreground:
+            output = _run_work_loop_mode(
+                mode="tasks",
+                workspace=workspace,
+                config_path=config_path,
+                project=project,
+                limit=limit,
+                max_concurrency=max_concurrency,
+                dry_run=dry_run,
+            )
+        else:
+            output = _start_work_loop_job(
+                workspace=workspace,
+                mode="tasks",
+                worker_args=_work_loop_worker_args(
+                    workspace=workspace,
+                    config_path=config_path,
+                    project=project,
+                    limit=limit,
+                    max_concurrency=max_concurrency,
+                    dry_run=dry_run,
+                ),
+            )
+    except RuntimeError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2) from exc
+    console.print(output, markup=False)
+
+
+@work_loop_app.command(name="reviews")
+def work_loop_reviews(
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root"),
+    config_path: str = typer.Option(DEFAULT_WORK_LOOP_CONFIG, "--config", help="Work-loop YAML config"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report PRs needing action without changing branches"),
+    foreground: bool = typer.Option(False, "--foreground", help="Run synchronously instead of starting a background job"),
+):
+    """Check GitHub review feedback for PRs created by the work loop and fix actionable comments."""
+    try:
+        if foreground:
+            output = _run_work_loop_mode(
+                mode="reviews",
+                workspace=workspace,
+                config_path=config_path,
+                dry_run=dry_run,
+            )
+        else:
+            output = _start_work_loop_job(
+                workspace=workspace,
+                mode="reviews",
+                worker_args=_work_loop_worker_args(
+                    workspace=workspace,
+                    config_path=config_path,
+                    dry_run=dry_run,
+                ),
+            )
+    except RuntimeError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2) from exc
+    console.print(output, markup=False)
+
+
+@work_loop_app.command(name="run")
+def work_loop_run(
+    project: str = typer.Option(..., "--project", "-p", help="Jira project key to search"),
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root"),
+    config_path: str = typer.Option(DEFAULT_WORK_LOOP_CONFIG, "--config", help="Work-loop YAML config"),
+    limit: Optional[int] = typer.Option(None, "--limit", help="Maximum new tickets to start after reviews"),
+    max_concurrency: Optional[int] = typer.Option(None, "--max-concurrency", help="Override configured concurrency"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Exercise selection/review discovery without changing branches"),
+    foreground: bool = typer.Option(False, "--foreground", help="Run synchronously instead of starting a background job"),
+):
+    """Run one combined cycle: PR review follow-up first, then new Jira work."""
+    try:
+        if foreground:
+            output = _run_work_loop_mode(
+                mode="run",
+                workspace=workspace,
+                config_path=config_path,
+                project=project,
+                limit=limit,
+                max_concurrency=max_concurrency,
+                dry_run=dry_run,
+            )
+        else:
+            output = _start_work_loop_job(
+                workspace=workspace,
+                mode="run",
+                worker_args=_work_loop_worker_args(
+                    workspace=workspace,
+                    config_path=config_path,
+                    project=project,
+                    limit=limit,
+                    max_concurrency=max_concurrency,
+                    dry_run=dry_run,
+                ),
+            )
+    except RuntimeError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2) from exc
+    console.print(output, markup=False)
+
+
+@work_loop_app.command(name="list")
+def work_loop_list(
+    state: str = typer.Option("all", "--state", help="Filter by state: active, blocked, open-pr, done, all"),
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root"),
+):
+    """List tickets and PRs the work loop has worked on."""
+    ledger = WorkLoopLedger.for_workspace(_workspace_context(workspace))
+    console.print(format_work_items(ledger.list(state)), markup=False)
+
+
+@work_loop_app.command(name="jobs")
+def work_loop_jobs(
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root"),
+):
+    """List work-loop background jobs."""
+    jobs = WorkLoopJobStore.for_workspace(_workspace_context(workspace)).list()
+    console.print(format_work_loop_jobs(jobs), markup=False)
+
+
+@work_loop_app.command(name="status")
+def work_loop_status(
+    ticket_or_pr: str = typer.Argument(..., help="Jira key or PR number"),
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root"),
+):
+    """Show one work-loop ticket/PR record."""
+    workspace_ctx = _workspace_context(workspace)
+    if ticket_or_pr.startswith("job-"):
+        job = WorkLoopJobStore.for_workspace(workspace_ctx).load(ticket_or_pr)
+        console.print(format_work_loop_jobs([job] if job else []), markup=False)
+        return
+    ledger = WorkLoopLedger.for_workspace(workspace_ctx)
+    item = ledger.load(ticket_or_pr)
+    if item is None and ticket_or_pr.isdigit():
+        pr_number = int(ticket_or_pr)
+        item = next((candidate for candidate in ledger.list("all") if candidate.pr_number == pr_number), None)
+    console.print(format_work_item_status(item), markup=False)
+
+
+@work_loop_app.command(name="stop")
+def work_loop_stop(
+    target: str = typer.Argument("all", help="Job id or all"),
+    reason: str = typer.Argument("User requested stop.", help="Stop reason"),
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root"),
+):
+    """Stop one or all work-loop jobs."""
+    workspace_ctx = _workspace_context(workspace)
+    if target == "all":
+        WorkLoopControl.for_workspace(workspace_ctx).stop(reason)
+        terminate_active_work_loop_processes()
+    jobs = WorkLoopJobSupervisor.for_workspace(workspace_ctx).stop(target, reason=reason)
+    console.print(f"Work-loop stop requested for {target}: {reason} ({len(jobs)} job(s))", markup=False)
+
+
+@work_loop_app.command(name="pause")
+def work_loop_pause(
+    target: str = typer.Argument("all", help="Job id or all"),
+    reason: str = typer.Argument("User requested pause.", help="Pause reason"),
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root"),
+):
+    """Pause one or all work-loop jobs before their next step."""
+    workspace_ctx = _workspace_context(workspace)
+    if target == "all":
+        WorkLoopControl.for_workspace(workspace_ctx).pause(reason)
+    jobs = WorkLoopJobSupervisor.for_workspace(workspace_ctx).pause(target, reason=reason)
+    console.print(f"Work-loop pause requested for {target}: {reason} ({len(jobs)} job(s))", markup=False)
+
+
+@work_loop_app.command(name="resume")
+def work_loop_resume(
+    target: str = typer.Argument("all", help="Job id or all"),
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root"),
+):
+    """Resume one or all paused work-loop jobs."""
+    workspace_ctx = _workspace_context(workspace)
+    if target == "all":
+        WorkLoopControl.for_workspace(workspace_ctx).resume()
+    jobs = WorkLoopJobSupervisor.for_workspace(workspace_ctx).resume(target)
+    console.print(f"Work-loop resumed for {target}; stop and pause files cleared. ({len(jobs)} job(s))", markup=False)
+
+
+@work_loop_app.command(name="state")
+def work_loop_state(
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root"),
+):
+    """Show work-loop global control state."""
+    console.print(f"Work-loop state: {WorkLoopControl.for_workspace(_workspace_context(workspace)).status()}", markup=False)
+
+
 @app.command(name="init")
 def init_command(
     workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root"),
@@ -819,6 +1344,7 @@ async def _tui_chat_loop(
         resolve_approval_command=lambda session_key, arg: _resolve_approval_command(approval_store, session_key, arg),
         resolve_memory_command=lambda arg: _resolve_memory_command(smol_rag, arg),
         resolve_worktree_command=lambda arg: _resolve_worktree_command(worktree_state, arg),
+        resolve_work_loop_command=lambda arg: _resolve_work_loop_command(workspace_ctx, arg),
         initialize_project=lambda: _format_bootstrap_result(init_project_guidance(workspace_ctx)),
         format_action_event=_format_action_event,
         label=label,
@@ -1029,6 +1555,12 @@ async def _chat_loop(
             if command == "/worktree":
                 console.print(
                     f"[dim]{_resolve_worktree_command(worktree_state, command_arg)}[/dim]"
+                )
+                continue
+            if command == "/work-loop":
+                console.print(
+                    _resolve_work_loop_command(workspace_ctx, command_arg),
+                    markup=False,
                 )
                 continue
             if command == "/model":

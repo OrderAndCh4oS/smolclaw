@@ -10,6 +10,12 @@ class CompositeLlm:
         self.completion_provider = completion_provider
         self.embedding_provider = embedding_provider
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.close()
+
     @property
     def completion_model(self):
         return self.completion_provider.completion_model

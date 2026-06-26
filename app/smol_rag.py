@@ -109,6 +109,12 @@ class SmolRag:
             input_docs_dir=self.input_docs_dir,
         )
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.close()
+
     # --- Store property accessors for backward compatibility ---
     @property
     def embeddings_db(self):

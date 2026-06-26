@@ -3,6 +3,7 @@ import tempfile
 import shutil
 
 import pytest
+import pytest_asyncio
 import numpy as np
 from unittest.mock import AsyncMock
 
@@ -20,7 +21,7 @@ def rag_temp_dir():
     shutil.rmtree(d, ignore_errors=True)
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def test_rag(rag_temp_dir, mock_openai_llm):
     """Create a SmolRag instance with mock LLM and temp storage."""
     db_path = os.path.join(rag_temp_dir, "test.db")
@@ -41,8 +42,10 @@ async def test_rag(rag_temp_dir, mock_openai_llm):
         excerpt_size=500,
         overlap=50,
     )
-    yield rag
-    await rag.close()
+    try:
+        yield rag
+    finally:
+        await rag.close()
 
 
 class TestIngestText:

@@ -3,6 +3,8 @@ import json
 import os
 
 import aiosqlite
+
+from app.aiosqlite_lifecycle import close_aiosqlite_connection
 import numpy as np
 
 
@@ -23,6 +25,12 @@ class SqliteVectorStore:
         self._matrix = np.empty((0, self.dimensions), dtype=np.float32)
         self._index: dict[str, int] = {}
         self._ignored_incompatible_rows = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.close()
 
     async def _get_db(self):
         if self._db is None:
@@ -208,6 +216,6 @@ class SqliteVectorStore:
     async def close(self):
         async with self._lock:
             if self._db is not None:
-                await self._db.close()
+                await close_aiosqlite_connection(self._db)
                 self._db = None
                 self._loaded = False

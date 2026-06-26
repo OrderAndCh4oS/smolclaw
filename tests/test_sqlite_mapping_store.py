@@ -2,15 +2,19 @@
 import asyncio
 import os
 import pytest
+import pytest_asyncio
 
 from app.sqlite_mapping_store import SqliteMappingStore
 
 
-@pytest.fixture
-def mapping_store(temp_dir):
+@pytest_asyncio.fixture
+async def mapping_store(temp_dir):
     db_path = os.path.join(temp_dir, "test.db")
     store = SqliteMappingStore(db_path, "test_map", "left_col", "right_col")
-    yield store
+    try:
+        yield store
+    finally:
+        await store.close()
 
 
 class TestMappingStoreBaseline:

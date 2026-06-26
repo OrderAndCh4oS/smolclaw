@@ -23,6 +23,6 @@ def test_pyproject_is_dependency_source_of_truth():
 
     assert not (repo_root / "requirements.txt").exists()
     assert "pytest==8.4.2" not in dependencies
-    assert "pytest-asyncio==0.26.0" not in dependencies
+    assert "pytest-asyncio==1.4.0" not in dependencies
     assert "pytest==8.4.2" in dev_dependencies
-    assert "pytest-asyncio==0.26.0" in dev_dependencies
+    assert "pytest-asyncio==1.4.0" in dev_dependencies

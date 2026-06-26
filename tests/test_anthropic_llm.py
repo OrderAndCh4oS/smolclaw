@@ -1,3 +1,4 @@
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -29,41 +30,50 @@ def _make_response(content_blocks):
 
 class TestAnthropicGetCompletion:
     @pytest.mark.asyncio
-    async def test_get_completion_basic(self):
+    async def test_get_completion_basic(self, temp_dir):
         mock_client = MagicMock()
         mock_client.messages.create = MagicMock(return_value=_make_response([_make_text_block("Hello there")]))
         with patch("app.anthropic_llm.anthropic.Anthropic", return_value=mock_client):
 
-            llm = AnthropicLlm(completion_model="claude-sonnet-4-20250514")
-            result = await llm.get_completion("Hi", use_cache=False)
+            async with AnthropicLlm(
+                completion_model="claude-sonnet-4-20250514",
+                db_path=os.path.join(temp_dir, "anthropic.db"),
+            ) as llm:
+                result = await llm.get_completion("Hi", use_cache=False)
             assert result == "Hello there"
             mock_client.messages.create.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_get_completion_with_context(self):
+    async def test_get_completion_with_context(self, temp_dir):
         mock_client = MagicMock()
         mock_client.messages.create = MagicMock(return_value=_make_response([_make_text_block("response")]))
         with patch("app.anthropic_llm.anthropic.Anthropic", return_value=mock_client):
 
-            llm = AnthropicLlm(completion_model="claude-sonnet-4-20250514")
-            await llm.get_completion("query", context="You are helpful", use_cache=False)
+            async with AnthropicLlm(
+                completion_model="claude-sonnet-4-20250514",
+                db_path=os.path.join(temp_dir, "anthropic.db"),
+            ) as llm:
+                await llm.get_completion("query", context="You are helpful", use_cache=False)
             call_kwargs = mock_client.messages.create.call_args.kwargs
             assert call_kwargs["system"] == "You are helpful"
 
     @pytest.mark.asyncio
-    async def test_get_completion_error(self):
+    async def test_get_completion_error(self, temp_dir):
         mock_client = MagicMock()
         mock_client.messages.create = MagicMock(side_effect=RuntimeError("API error"))
         with patch("app.anthropic_llm.anthropic.Anthropic", return_value=mock_client):
 
-            llm = AnthropicLlm(completion_model="claude-sonnet-4-20250514")
-            with pytest.raises(RuntimeError, match="API error"):
-                await llm.get_completion("Hi", use_cache=False)
+            async with AnthropicLlm(
+                completion_model="claude-sonnet-4-20250514",
+                db_path=os.path.join(temp_dir, "anthropic.db"),
+            ) as llm:
+                with pytest.raises(RuntimeError, match="API error"):
+                    await llm.get_completion("Hi", use_cache=False)
 
 
 class TestAnthropicGetToolCompletion:
     @pytest.mark.asyncio
-    async def test_tool_completion_with_tool_calls(self):
+    async def test_tool_completion_with_tool_calls(self, temp_dir):
         mock_client = MagicMock()
         mock_client.messages.create = MagicMock(return_value=_make_response([
             _make_text_block("Let me read that"),
@@ -71,14 +81,17 @@ class TestAnthropicGetToolCompletion:
         ]))
         with patch("app.anthropic_llm.anthropic.Anthropic", return_value=mock_client):
 
-            llm = AnthropicLlm(completion_model="claude-sonnet-4-20250514")
-            result = await llm.get_tool_completion(
-                messages=[{"role": "user", "content": "read /tmp/test"}],
-                tools=[{
-                    "type": "function",
-                    "function": {"name": "read_file", "description": "Read a file", "parameters": {}},
-                }],
-            )
+            async with AnthropicLlm(
+                completion_model="claude-sonnet-4-20250514",
+                db_path=os.path.join(temp_dir, "anthropic.db"),
+            ) as llm:
+                result = await llm.get_tool_completion(
+                    messages=[{"role": "user", "content": "read /tmp/test"}],
+                    tools=[{
+                        "type": "function",
+                        "function": {"name": "read_file", "description": "Read a file", "parameters": {}},
+                    }],
+                )
             assert result["has_tool_calls"] is True
             assert len(result["tool_calls"]) == 1
             assert result["tool_calls"][0]["id"] == "tu_1"
@@ -87,32 +100,38 @@ class TestAnthropicGetToolCompletion:
             assert result["content"] == "Let me read that"
 
     @pytest.mark.asyncio
-    async def test_tool_completion_without_tools(self):
+    async def test_tool_completion_without_tools(self, temp_dir):
         mock_client = MagicMock()
         mock_client.messages.create = MagicMock(return_value=_make_response([
             _make_text_block("Just a response"),
         ]))
         with patch("app.anthropic_llm.anthropic.Anthropic", return_value=mock_client):
 
-            llm = AnthropicLlm(completion_model="claude-sonnet-4-20250514")
-            result = await llm.get_tool_completion(
-                messages=[{"role": "user", "content": "hello"}],
-            )
+            async with AnthropicLlm(
+                completion_model="claude-sonnet-4-20250514",
+                db_path=os.path.join(temp_dir, "anthropic.db"),
+            ) as llm:
+                result = await llm.get_tool_completion(
+                    messages=[{"role": "user", "content": "hello"}],
+                )
             assert result["has_tool_calls"] is False
             assert result["tool_calls"] is None
             assert result["content"] == "Just a response"
 
     @pytest.mark.asyncio
-    async def test_tool_completion_error(self):
+    async def test_tool_completion_error(self, temp_dir):
         mock_client = MagicMock()
         mock_client.messages.create = MagicMock(side_effect=RuntimeError("API fail"))
         with patch("app.anthropic_llm.anthropic.Anthropic", return_value=mock_client):
 
-            llm = AnthropicLlm(completion_model="claude-sonnet-4-20250514")
-            with pytest.raises(RuntimeError, match="API fail"):
-                await llm.get_tool_completion(
-                    messages=[{"role": "user", "content": "hi"}],
-                )
+            async with AnthropicLlm(
+                completion_model="claude-sonnet-4-20250514",
+                db_path=os.path.join(temp_dir, "anthropic.db"),
+            ) as llm:
+                with pytest.raises(RuntimeError, match="API fail"):
+                    await llm.get_tool_completion(
+                        messages=[{"role": "user", "content": "hi"}],
+                    )
 
 
 class TestMessageTranslation:
@@ -217,15 +236,21 @@ class TestToolSchemaTranslation:
 
 class TestEmbeddingNotImplemented:
     @pytest.mark.asyncio
-    async def test_get_embedding_raises(self):
+    async def test_get_embedding_raises(self, temp_dir):
         with patch("app.anthropic_llm.anthropic.Anthropic", return_value=MagicMock()):
-            llm = AnthropicLlm(completion_model="claude-sonnet-4-20250514")
-            with pytest.raises(NotImplementedError):
-                await llm.get_embedding("test")
+            async with AnthropicLlm(
+                completion_model="claude-sonnet-4-20250514",
+                db_path=os.path.join(temp_dir, "anthropic.db"),
+            ) as llm:
+                with pytest.raises(NotImplementedError):
+                    await llm.get_embedding("test")
 
     @pytest.mark.asyncio
-    async def test_get_embeddings_raises(self):
+    async def test_get_embeddings_raises(self, temp_dir):
         with patch("app.anthropic_llm.anthropic.Anthropic", return_value=MagicMock()):
-            llm = AnthropicLlm(completion_model="claude-sonnet-4-20250514")
-            with pytest.raises(NotImplementedError):
-                await llm.get_embeddings(["test"])
+            async with AnthropicLlm(
+                completion_model="claude-sonnet-4-20250514",
+                db_path=os.path.join(temp_dir, "anthropic.db"),
+            ) as llm:
+                with pytest.raises(NotImplementedError):
+                    await llm.get_embeddings(["test"])

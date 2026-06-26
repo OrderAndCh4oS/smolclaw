@@ -4,6 +4,8 @@ import os
 
 import aiosqlite
 
+from app.aiosqlite_lifecycle import close_aiosqlite_connection
+
 
 class SqliteKvStore:
     """Async KV store backed by a SQLite table."""
@@ -13,6 +15,12 @@ class SqliteKvStore:
         self.table = table
         self._db = None
         self._init_lock = asyncio.Lock()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.close()
 
     async def _get_db(self):
         if self._db is None:
@@ -70,5 +78,5 @@ class SqliteKvStore:
 
     async def close(self):
         if self._db is not None:
-            await self._db.close()
+            await close_aiosqlite_connection(self._db)
             self._db = None

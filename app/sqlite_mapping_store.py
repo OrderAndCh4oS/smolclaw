@@ -3,6 +3,8 @@ import os
 
 import aiosqlite
 
+from app.aiosqlite_lifecycle import close_aiosqlite_connection
+
 
 class SqliteMappingStore:
     """Relational many-to-many (or 1:1) mapping store backed by SQLite.
@@ -18,6 +20,12 @@ class SqliteMappingStore:
         self.right_col = right_col
         self._db = None
         self._init_lock = asyncio.Lock()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.close()
 
     async def _get_db(self):
         if self._db is None:
@@ -138,5 +146,5 @@ class SqliteMappingStore:
 
     async def close(self):
         if self._db is not None:
-            await self._db.close()
+            await close_aiosqlite_connection(self._db)
             self._db = None
