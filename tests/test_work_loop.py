@@ -1,9 +1,11 @@
 import os
+import subprocess
 
 from typer.testing import CliRunner
 
 from app.work_loop import (
     CommandResult,
+    RunWorkspaceManager,
     WorkLoopControl,
     WorkLoopJobSupervisor,
     JiraCandidate,
@@ -25,6 +27,32 @@ from app.work_loop import (
     summarize_status_checks,
 )
 from app.workspace import WorkspaceContext
+
+
+def _run_git(args, cwd):
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    return result
+
+
+def _git_repo(temp_dir):
+    repo = os.path.join(temp_dir, "repo")
+    os.makedirs(repo, exist_ok=True)
+    _run_git(["init"], repo)
+    _run_git(["config", "user.email", "test@example.invalid"], repo)
+    _run_git(["config", "user.name", "Test User"], repo)
+    with open(os.path.join(repo, "app.py"), "w", encoding="utf-8") as handle:
+        handle.write("print('base')\n")
+    _run_git(["add", "app.py"], repo)
+    _run_git(["commit", "-m", "initial"], repo)
+    return repo
 
 
 class FakeCommandRunner:
@@ -149,6 +177,23 @@ def test_work_loop_ledger_lists_and_formats_status(temp_dir):
     status = format_work_item_status(item)
     assert "Ticket: APP-123" in status
     assert "PR: https://github.com/example/repo/pull/7" in status
+
+
+def test_run_workspace_cleanup_removes_git_worktree_metadata(temp_dir):
+    repo = _git_repo(temp_dir)
+    workspace = WorkspaceContext.from_root(repo).ensure_dirs()
+    item = WorkItem(
+        jira_key="APP-7",
+        title="Clean worktree",
+        workspace_path=os.path.join(temp_dir, "work-loop-run"),
+    )
+    _run_git(["worktree", "add", "--detach", item.workspace_path, "HEAD"], repo)
+
+    RunWorkspaceManager(workspace).cleanup(item)
+
+    assert not os.path.exists(item.workspace_path)
+    listed = _run_git(["worktree", "list", "--porcelain"], repo).stdout
+    assert item.workspace_path not in listed
 
 
 def test_jira_backlog_jql_and_candidate_filtering():

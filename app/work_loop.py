@@ -1033,6 +1033,15 @@ class RunWorkspaceManager:
 
     def cleanup(self, item: WorkItem):
         if item.workspace_path:
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                subprocess.run(
+                    ["git", "worktree", "remove", "--force", item.workspace_path],
+                    cwd=self.workspace.root_dir,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                    timeout=30,
+                )
             shutil.rmtree(item.workspace_path, ignore_errors=True)
 
 
