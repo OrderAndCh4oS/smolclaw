@@ -145,6 +145,49 @@ class TestPolicyPermissionMiddleware:
         assert len(approval_store.list("session-a", status="pending")) == 1
 
     @pytest.mark.asyncio
+    async def test_policy_approved_run_command_ignores_output_limit_variations(self, temp_dir):
+        approval_store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+        shared_state = {
+            "approval_store": approval_store,
+            "session_key": "session-a",
+        }
+        policy = PermissionPolicy(rules=(
+            PermissionRule(subject="command", pattern="npm install*", action="ask"),
+        ))
+
+        def policy_for(arguments):
+            effects = {"command_write"}
+            if arguments.get("network_access"):
+                effects.add("network")
+            return ToolCallPolicy(effects=frozenset(effects))
+
+        chain = MiddlewareChain([
+            PolicyPermissionMiddleware("full", policy=policy, shared_state=shared_state),
+        ])
+        tool = PolicyTool("run_command", policy_fn=policy_for)
+
+        first = await chain.run(tool, {
+            "command": "npm install left-pad",
+            "cwd": ".",
+            "max_output_chars": 20000,
+            "network_access": True,
+            "timeout_seconds": 120,
+        })
+        pending = approval_store.list("session-a", status="pending")
+        approval_store.approve("session-a", pending[0].id)
+        second = await chain.run(tool, {
+            "command": "npm install left-pad",
+            "cwd": ".",
+            "max_output_chars": 60000,
+            "network_access": True,
+            "timeout_seconds": 600,
+        })
+
+        assert first.startswith("Error: Approval required")
+        assert second == "run_command executed"
+        assert approval_store.list("session-a", status="pending") == []
+
+    @pytest.mark.asyncio
     async def test_policy_cannot_override_secret_hard_deny(self, temp_dir):
         workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
         policy = PermissionPolicy(rules=(

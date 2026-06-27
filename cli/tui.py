@@ -40,6 +40,7 @@ from app.pricing import format_costs
 from app.work_loop import WorkLoopJobSupervisor, terminate_active_work_loop_processes
 from app.workspace import WorkspaceContext
 from cli.commands import (
+    APPROVAL_CONTINUATION_PROMPT,
     GOAL_COMMAND_HELP,
     SLASH_COMMANDS_HELP,
     SlashCommandDispatcher,
@@ -309,6 +310,7 @@ class CoderTui:
         self._shutdown_started = False
         self._shutdown_complete = False
         self._shutdown_forced = False
+        self._approval_continuation_pending = False
         self._slash_dispatcher = self._build_slash_dispatcher()
 
     async def run(self):
@@ -696,6 +698,9 @@ class CoderTui:
             )
             if result is not _TASK_FAILED:
                 self._append("system", str(result))
+                if command_arg.split(maxsplit=1)[0:1] == ["approve"] and str(result).startswith("Approved "):
+                    self._approval_continuation_pending = True
+                    await self._continue_after_approval_if_no_pending()
             return
         if command == "/memory":
             memory_parts = command_arg.split(maxsplit=1)
@@ -1099,7 +1104,8 @@ class CoderTui:
         if resolved is _TASK_FAILED:
             return
         if action == "approve":
-            self._append("system", f"Approved {resolved.id}. Retry the same tool call to continue.")
+            self._approval_continuation_pending = True
+            self._append("system", f"Approved {resolved.id}. Continuing automatically.")
         else:
             self._append("system", f"Denied {resolved.id}.")
         refreshed = await self._load_pending_approvals()
@@ -1108,6 +1114,7 @@ class CoderTui:
         if not refreshed:
             self._close_approval_review()
             self._append("system", "No pending approval requests.")
+            await self._continue_after_approval_if_ready()
             return
         self.state.approval_review_items = list(refreshed)
         self.state.approval_review_index = min(
@@ -1120,6 +1127,27 @@ class CoderTui:
         )
         self.state.approval_review_visible = True
         self._invalidate()
+
+    async def _continue_after_approval_if_no_pending(self):
+        refreshed = await self._load_pending_approvals()
+        if refreshed is _TASK_FAILED:
+            return
+        if refreshed:
+            return
+        self._close_approval_review()
+        self._append("system", "No pending approval requests.")
+        await self._continue_after_approval_if_ready()
+
+    async def _continue_after_approval_if_ready(self):
+        if not self._approval_continuation_pending:
+            return
+        self._approval_continuation_pending = False
+        if self._is_active():
+            self._append("system", "Approval granted; continuation will wait until the current action finishes.")
+            self._approval_continuation_pending = True
+            return
+        self._append("system", "Continuing after approval.")
+        await self._start_agent_turn(APPROVAL_CONTINUATION_PROMPT)
 
     async def _start_agent_turn(self, prompt: str):
         if self._agent_task is not None and not self._agent_task.done():

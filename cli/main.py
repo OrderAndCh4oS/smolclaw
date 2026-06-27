@@ -73,6 +73,7 @@ from app.work_loop import (
     terminate_active_work_loop_processes,
 )
 from cli.commands import (
+    APPROVAL_CONTINUATION_PROMPT,
     SLASH_COMMANDS_HELP,
     SlashCommandDispatcher,
     _InteractiveWorktreeState,
@@ -1621,7 +1622,14 @@ async def _tui_chat_loop(
             worktree_state.context.cleanup()
 
 
-async def _run_approval_review_prompt(approval_store, session_key: str, prompt_session, console) -> None:
+async def _run_approval_review_prompt(
+    approval_store,
+    session_key: str,
+    prompt_session,
+    console,
+    *,
+    on_approved=None,
+) -> None:
     while True:
         pending = approval_store.list(session_key, status="pending")
         if not pending:
@@ -1663,7 +1671,10 @@ async def _run_approval_review_prompt(approval_store, session_key: str, prompt_s
         try:
             if action in {"a", "approve"}:
                 resolved = approval_store.approve(session_key, request.id)
-                console.print(f"[dim]Approved {resolved.id}. Retry the same tool call to continue.[/dim]")
+                console.print(f"[dim]Approved {resolved.id}.[/dim]")
+                if not approval_store.list(session_key, status="pending") and on_approved is not None:
+                    console.print("[dim]Continuing after approval.[/dim]")
+                    await on_approved()
                 continue
             if action in {"d", "deny"}:
                 resolved = approval_store.deny(session_key, request.id)
@@ -1870,11 +1881,18 @@ async def _chat_loop(
                         agent.session.key,
                         prompt_session,
                         console,
+                        on_approved=lambda: _run_agent_turn(APPROVAL_CONTINUATION_PROMPT),
                     )
                     continue
-                console.print(
-                    f"[dim]{_resolve_approval_command(approval_store, agent.session.key, command_arg)}[/dim]"
-                )
+                approval_output = _resolve_approval_command(approval_store, agent.session.key, command_arg)
+                console.print(f"[dim]{approval_output}[/dim]")
+                if (
+                    command_arg.split(maxsplit=1)[0:1] == ["approve"]
+                    and approval_output.startswith("Approved ")
+                    and not approval_store.list(agent.session.key, status="pending")
+                ):
+                    console.print("[dim]Continuing after approval.[/dim]")
+                    await _run_agent_turn(APPROVAL_CONTINUATION_PROMPT)
                 continue
             if command == "/memory":
                 memory_parts = command_arg.split(maxsplit=1)

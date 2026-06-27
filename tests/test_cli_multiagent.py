@@ -536,7 +536,7 @@ class TestCliMultiagent:
         assert "Scope: once" in detail
         assert "Run: run-123" in detail
         assert "\"command\": \"npm install left-pad\"" in detail
-        assert approved == f"Approved {request.id}. Retry the same tool call to continue."
+        assert approved == f"Approved {request.id}."
         assert denied == f"Denied {request.id}."
 
     @pytest.mark.asyncio

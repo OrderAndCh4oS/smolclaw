@@ -26,6 +26,12 @@ from app.tools.memory_tools import ContradictionReviewTool
 from app.utilities import extract_json_from_text
 
 
+APPROVAL_CONTINUATION_PROMPT = (
+    "The requested approval was granted. Continue from the pending tool call, "
+    "retry the approved exact call if still needed, and proceed with the user's task."
+)
+
+
 SLASH_COMMANDS_HELP = "\n".join([
     "Slash commands:",
     "  / or /help or /commands  Show this command list",
@@ -355,7 +361,7 @@ def _resolve_approval_command(
     try:
         if subcommand == "approve":
             request = approval_store.approve(session_key, approval_id)
-            return f"Approved {request.id}. Retry the same tool call to continue."
+            return f"Approved {request.id}."
         request = approval_store.deny(session_key, approval_id)
         return f"Denied {request.id}."
     except KeyError as exc:

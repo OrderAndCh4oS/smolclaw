@@ -19,10 +19,27 @@ ApprovalScope = Literal["once"]
 def approval_arguments_hash(tool_name: str, arguments: Mapping[str, Any]) -> str:
     payload = {
         "tool": tool_name,
+        "arguments": _approval_fingerprint_arguments(tool_name, arguments),
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _legacy_approval_arguments_hash(tool_name: str, arguments: Mapping[str, Any]) -> str:
+    payload = {
+        "tool": tool_name,
         "arguments": _json_safe(arguments),
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _approval_argument_hashes(tool_name: str, arguments: Mapping[str, Any]) -> tuple[str, ...]:
+    primary = approval_arguments_hash(tool_name, arguments)
+    legacy = _legacy_approval_arguments_hash(tool_name, arguments)
+    if legacy == primary:
+        return (primary,)
+    return (primary, legacy)
 
 
 def approval_request_id(session_key: str, tool_name: str, arguments_hash: str) -> str:
@@ -127,11 +144,21 @@ class ApprovalRequestStore:
     ) -> ApprovalRequest:
         arguments_hash = approval_arguments_hash(tool_name, arguments)
         approval_id = approval_request_id(session_key, tool_name, arguments_hash)
+        candidate_hashes = set(_approval_argument_hashes(tool_name, arguments))
+        candidate_ids = {
+            approval_request_id(session_key, tool_name, candidate_hash)
+            for candidate_hash in candidate_hashes
+        }
         requests = self._load(session_key)
         now = time.time()
         for index, existing in enumerate(requests):
-            if existing.id == approval_id:
-                requested_effects = tuple(granted_effects or existing.granted_effects)
+            if existing.id in candidate_ids or _request_matches_arguments(
+                existing,
+                tool_name,
+                arguments,
+                candidate_hashes,
+            ):
+                requested_effects = tuple(sorted(set(existing.granted_effects).union(granted_effects)))
                 expands_effects = bool(
                     granted_effects
                     and not set(granted_effects).issubset(set(existing.granted_effects))
@@ -183,13 +210,12 @@ class ApprovalRequestStore:
         arguments: Mapping[str, Any],
         required_effects: tuple[str, ...] = (),
     ) -> ApprovalRequest | None:
-        arguments_hash = approval_arguments_hash(tool_name, arguments)
+        candidate_hashes = set(_approval_argument_hashes(tool_name, arguments))
         required_effect_set = set(required_effects)
         requests = self._load(session_key)
         for index, request in enumerate(requests):
             if (
-                request.tool_name == tool_name
-                and request.arguments_hash == arguments_hash
+                _request_matches_arguments(request, tool_name, arguments, candidate_hashes)
                 and request.status == "approved"
             ):
                 if required_effect_set and not required_effect_set.issubset(set(request.granted_effects)):
@@ -242,6 +268,36 @@ def _json_safe(value: Any) -> Any:
         return json.loads(json.dumps(value, sort_keys=True, default=str))
     except TypeError:
         return str(value)
+
+
+def _approval_fingerprint_arguments(tool_name: str, arguments: Mapping[str, Any]) -> Any:
+    safe_arguments = _json_safe(arguments)
+    if tool_name != "run_command" or not isinstance(safe_arguments, Mapping):
+        return safe_arguments
+    fingerprint: dict[str, Any] = {}
+    command = safe_arguments.get("command")
+    if command is not None:
+        fingerprint["command"] = command
+    fingerprint["cwd"] = safe_arguments.get("cwd") or "."
+    return fingerprint
+
+
+def _request_matches_arguments(
+    request: ApprovalRequest,
+    tool_name: str,
+    arguments: Mapping[str, Any],
+    candidate_hashes: set[str],
+) -> bool:
+    if request.tool_name != tool_name:
+        return False
+    if request.arguments_hash in candidate_hashes:
+        return True
+    if not isinstance(request.arguments_preview, Mapping):
+        return False
+    return (
+        _approval_fingerprint_arguments(tool_name, request.arguments_preview)
+        == _approval_fingerprint_arguments(tool_name, arguments)
+    )
 
 
 def _truncate(value: Any, *, max_chars: int) -> Any:

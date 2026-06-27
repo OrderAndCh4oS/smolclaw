@@ -107,6 +107,129 @@ def test_approval_hash_and_id_are_stable():
     assert approval_request_id("session", "read_file", first_hash).startswith("apr-")
 
 
+def test_run_command_approval_hash_ignores_operational_display_arguments():
+    first_hash = approval_arguments_hash(
+        "run_command",
+        {
+            "command": "npm install left-pad",
+            "cwd": ".",
+            "max_output_chars": 20000,
+            "network_access": True,
+            "timeout_seconds": 120,
+        },
+    )
+    second_hash = approval_arguments_hash(
+        "run_command",
+        {
+            "command": "npm install left-pad",
+            "cwd": ".",
+            "max_output_chars": 60000,
+            "network_access": False,
+            "timeout_seconds": 600,
+        },
+    )
+    default_cwd_hash = approval_arguments_hash(
+        "run_command",
+        {"command": "npm install left-pad"},
+    )
+    changed_command_hash = approval_arguments_hash(
+        "run_command",
+        {
+            "command": "npm install is-odd",
+            "cwd": ".",
+            "max_output_chars": 20000,
+            "network_access": True,
+            "timeout_seconds": 120,
+        },
+    )
+
+    assert first_hash == second_hash
+    assert first_hash == default_cwd_hash
+    assert changed_command_hash != first_hash
+
+
+def test_run_command_approval_consumes_with_changed_output_limits(temp_dir):
+    store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+    request = store.request(
+        "session-a",
+        tool_name="run_command",
+        arguments={
+            "command": "npm install left-pad",
+            "cwd": ".",
+            "max_output_chars": 20000,
+            "network_access": True,
+            "timeout_seconds": 120,
+        },
+        granted_effects=("command_write", "network"),
+    )
+
+    store.approve("session-a", request.id)
+    consumed = store.consume_approved(
+        "session-a",
+        tool_name="run_command",
+        arguments={
+            "command": "npm install left-pad",
+            "cwd": ".",
+            "max_output_chars": 60000,
+            "network_access": True,
+            "timeout_seconds": 600,
+        },
+        required_effects=("command_write", "network"),
+    )
+
+    assert consumed is not None
+    assert consumed.id == request.id
+
+
+def test_run_command_approval_consumes_with_default_cwd_variation(temp_dir):
+    store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+    request = store.request(
+        "session-a",
+        tool_name="run_command",
+        arguments={"command": "npm install left-pad"},
+        granted_effects=("command_write",),
+    )
+
+    store.approve("session-a", request.id)
+    consumed = store.consume_approved(
+        "session-a",
+        tool_name="run_command",
+        arguments={"command": "npm install left-pad", "cwd": "."},
+        required_effects=("command_write",),
+    )
+
+    assert consumed is not None
+    assert consumed.id == request.id
+
+
+def test_run_command_repeated_request_does_not_downgrade_granted_effects(temp_dir):
+    store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+    request = store.request(
+        "session-a",
+        tool_name="run_command",
+        arguments={
+            "command": "npm install left-pad",
+            "cwd": ".",
+            "network_access": True,
+        },
+        granted_effects=("command_write", "network"),
+    )
+    repeated = store.request(
+        "session-a",
+        tool_name="run_command",
+        arguments={
+            "command": "npm install left-pad",
+            "cwd": ".",
+            "network_access": False,
+        },
+        granted_effects=("command_write",),
+    )
+
+    assert repeated.id == request.id
+    assert repeated.granted_effects == ("command_write", "network")
+    assert len(store.list("session-a")) == 1
+
+
 def test_approval_formatters_show_status_and_detail(temp_dir):
     store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
     request = store.request(
