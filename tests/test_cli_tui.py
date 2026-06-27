@@ -7,7 +7,16 @@ import sys
 import time
 import pytest
 
-from cli.tui import ActivityEntry, CoderTui, DETAILS_HEIGHT, TranscriptEntry, UiState, _fit_line
+from cli.tui import (
+    APPROVAL_PANEL_HEIGHT,
+    ActivityEntry,
+    CoderTui,
+    DETAILS_HEIGHT,
+    TranscriptEntry,
+    UiState,
+    _fit_line,
+)
+from app.approvals import ApprovalRequestStore
 from app.model_settings import RuntimeModelSettings
 
 
@@ -16,6 +25,7 @@ def _fake_tui(
     resolve_work_loop_command=None,
     terminal_size_provider=None,
     shutdown_phase_timeout=8.0,
+    approval_store=None,
 ):
     agent = MagicMock()
     agent.llm.completion_model = "gpt-test"
@@ -38,7 +48,7 @@ def _fake_tui(
         session_export_hook=MagicMock(),
         smol_rag=MagicMock(),
         checkpoint_store=checkpoint_store,
-        approval_store=MagicMock(),
+        approval_store=approval_store or MagicMock(),
         workspace_root=".",
         log_dir="./.smolclaw/stores/logs",
         model="fallback-model",
@@ -357,6 +367,89 @@ async def test_tui_approval_command_shows_approval_status():
 
 
 @pytest.mark.asyncio
+async def test_tui_approval_review_opens_selectable_panel(temp_dir):
+    approval_store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+    request = approval_store.request(
+        "session",
+        tool_name="run_command",
+        arguments={"command": "npm install"},
+        reason="network access requires approval",
+        granted_effects=("network",),
+    )
+    tui = _fake_tui(approval_store=approval_store)
+
+    await tui.submit("/approval review")
+
+    rendered = "".join(text for _, text in tui._render_approval_review())
+    assert tui.state.approval_review_visible is True
+    assert request.id in rendered
+    assert "Approve once" in rendered
+    assert "Deny" in rendered
+    assert "Provide or request further information" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_approval_review_approves_selected_request(temp_dir):
+    approval_store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+    request = approval_store.request(
+        "session",
+        tool_name="run_command",
+        arguments={"command": "npm install"},
+        reason="network access requires approval",
+    )
+    tui = _fake_tui(approval_store=approval_store)
+    await tui.submit("/approval review")
+
+    await tui._resolve_selected_approval("approve")
+
+    assert approval_store.get("session", request.id).status == "approved"
+    assert tui.state.approval_review_visible is False
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert f"Approved {request.id}" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_approval_dialog_info_option_leaves_request_pending(temp_dir):
+    approval_store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+    request = approval_store.request(
+        "session",
+        tool_name="run_command",
+        arguments={"command": "npm install"},
+        reason="network access requires approval",
+    )
+    tui = _fake_tui(approval_store=approval_store)
+    await tui.submit("/approval review")
+    tui.state.approval_choice_index = 2
+
+    await tui._choose_selected_approval_option()
+
+    assert approval_store.get("session", request.id).status == "pending"
+    assert tui.state.approval_review_visible is False
+    rendered = "".join(text for _, text in tui._render_transcript())
+    assert "Type the extra context or ask what information is needed" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_agent_turn_opens_approval_dialog_when_approval_is_required(temp_dir):
+    approval_store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+    request = approval_store.request(
+        "session",
+        tool_name="run_command",
+        arguments={"command": "npm install"},
+        reason="network access requires approval",
+    )
+    tui = _fake_tui(approval_store=approval_store)
+    tui.agent.process = AsyncMock(return_value="Blocked pending approval.")
+
+    await tui.submit("install dependencies")
+
+    rendered = "".join(text for _, text in tui._render_approval_review())
+    assert tui.state.approval_review_visible is True
+    assert request.id in rendered
+    assert "Provide or request further information" in rendered
+
+
+@pytest.mark.asyncio
 async def test_tui_memory_list_command_shows_memory_review():
     tui = _fake_tui()
 
@@ -475,10 +568,11 @@ def test_tui_layout_keeps_bars_and_input_exact_height():
     tui = _fake_tui()
 
     app = tui._build_app()
-    top_bar, transcript, details, bottom_bar, input_area = app.layout.container.children
+    top_bar, transcript, approval_review, details, bottom_bar, input_area = app.layout.container.children
     prompt_window, input_window = input_area.children
 
     assert top_bar.height.min == top_bar.height.max == 1
+    assert approval_review.content.height.min == approval_review.content.height.max == APPROVAL_PANEL_HEIGHT
     assert details.content.height.min == details.content.height.max == DETAILS_HEIGHT
     assert bottom_bar.height.min == bottom_bar.height.max == 1
     assert input_area.height.min == input_area.height.max == 3

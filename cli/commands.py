@@ -5,7 +5,12 @@ from typing import Awaitable, Callable
 
 import typer
 
-from app.approvals import ApprovalRequestStore, format_approval_detail, format_approval_status
+from app.approvals import (
+    ApprovalRequestStore,
+    format_approval_detail,
+    format_approval_review,
+    format_approval_status,
+)
 from app.goal import GoalState
 from app.run_trace import RunTraceStore
 from app.run_views import (
@@ -48,6 +53,7 @@ SLASH_COMMANDS_HELP = "\n".join([
     "  /work-loop stop          Stop work-loop subprocesses before the next step",
     "  /work-loop pause|resume|state     Control or inspect work-loop kill state",
     "  /approval status         Show pending approval requests",
+    "  /approval review         Open selectable approval dialog",
     "  /approval detail <id>    Show one approval request in detail",
     "  /approval approve <id>   Approve one exact pending tool call",
     "  /approval deny <id>      Deny one pending tool call",
@@ -336,12 +342,14 @@ def _resolve_approval_command(
     approval_id = parts[1].strip() if len(parts) > 1 else ""
     if subcommand in ("", "status"):
         return format_approval_status(approval_store, session_key)
+    if subcommand == "review":
+        return format_approval_review(approval_store, session_key)
     if subcommand == "detail":
         if not approval_id:
             return "Usage: /approval detail <id>"
         return format_approval_detail(approval_store, session_key, approval_id)
     if subcommand not in {"approve", "deny"}:
-        return "Usage: /approval status|detail <id>|approve <id>|deny <id>"
+        return "Usage: /approval status|review|detail <id>|approve <id>|deny <id>"
     if not approval_id:
         return f"Usage: /approval {subcommand} <id>"
     try:

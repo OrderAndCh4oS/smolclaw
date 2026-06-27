@@ -264,8 +264,35 @@ def format_approval_status(store: ApprovalRequestStore, session_key: str) -> str
         rule = _format_rule(request)
         rule_suffix = f" ({rule})" if rule else ""
         lines.append(f"- {request.id}: {request.tool_name}{rule_suffix}{reason}")
-    lines.append("Use /approval detail <id>, /approval approve <id>, or /approval deny <id>.")
+    lines.append(
+        "Use /approval review, /approval detail <id>, /approval approve <id>, or /approval deny <id>."
+    )
     return "\n".join(lines)
+
+
+def format_approval_review(store: ApprovalRequestStore, session_key: str) -> str:
+    pending = store.list(session_key, status="pending")
+    if not pending:
+        return "No pending approval requests."
+    lines = [
+        "Approval review:",
+        "Select a request, inspect the exact arguments, then approve or deny it.",
+    ]
+    for index, request in enumerate(pending, start=1):
+        lines.append(f"{index}. {format_approval_review_option(request)}")
+    lines.append("Actions: approve, deny, detail, skip, quit.")
+    return "\n".join(lines)
+
+
+def format_approval_review_option(request: ApprovalRequest) -> str:
+    rule = _format_rule(request)
+    rule_suffix = f" ({rule})" if rule else ""
+    reason = f" - {request.reason}" if request.reason else ""
+    run = f" run:{request.run_id}" if request.run_id else ""
+    effects = f" effects:{','.join(sorted(request.granted_effects))}" if request.granted_effects else ""
+    preview = _format_arguments_preview(request.arguments_preview)
+    preview_suffix = f" args:{preview}" if preview else ""
+    return f"{request.id}: {request.tool_name}{rule_suffix}{run}{effects}{reason}{preview_suffix}"
 
 
 def format_approval_detail(store: ApprovalRequestStore, session_key: str, approval_id: str) -> str:
@@ -304,6 +331,30 @@ def _format_rule(request: ApprovalRequest) -> str:
     if request.matched_pattern:
         return request.matched_pattern
     return ""
+
+
+def _format_arguments_preview(arguments_preview: Any) -> str:
+    if isinstance(arguments_preview, Mapping):
+        command = arguments_preview.get("command")
+        if isinstance(command, str) and command:
+            return _truncate_text(command, 80)
+        path = arguments_preview.get("path")
+        if isinstance(path, str) and path:
+            return _truncate_text(path, 80)
+        if arguments_preview.get("truncated") is True:
+            preview = arguments_preview.get("preview")
+            if isinstance(preview, str):
+                return _truncate_text(preview, 80)
+    if isinstance(arguments_preview, str):
+        return _truncate_text(arguments_preview, 80)
+    return ""
+
+
+def _truncate_text(value: str, max_chars: int) -> str:
+    value = value.replace("\n", " ")
+    if len(value) <= max_chars:
+        return value
+    return value[: max_chars - 3] + "..."
 
 
 def _format_expiry(expires_at: float | None) -> str:

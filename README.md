@@ -178,6 +178,7 @@ Inside the TUI:
 /model subagents gpt-5.5 medium
 /undo
 /approval status
+/approval review
 /approval approve apr-...
 /goal start Add a regression test for the parser
 /goal run 3

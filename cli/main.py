@@ -24,7 +24,11 @@ from rich.markdown import Markdown
 
 from app import diagnostics
 from app.agent_loop import AgentLoop
-from app.approvals import ApprovalRequestStore
+from app.approvals import (
+    ApprovalRequestStore,
+    format_approval_detail,
+    format_approval_review_option,
+)
 from app.bootstrap import init_project_guidance
 from app.checkpoints import CheckpointStore
 from app.command_adapters import build_command_adapter_bundle
@@ -1617,6 +1621,60 @@ async def _tui_chat_loop(
             worktree_state.context.cleanup()
 
 
+async def _run_approval_review_prompt(approval_store, session_key: str, prompt_session, console) -> None:
+    while True:
+        pending = approval_store.list(session_key, status="pending")
+        if not pending:
+            console.print("[dim]No pending approval requests.[/dim]")
+            return
+        console.print("[bold]Approval review[/bold]")
+        for index, request in enumerate(pending, start=1):
+            console.print(f"[dim]{index}. {format_approval_review_option(request)}[/dim]")
+        selection = (await prompt_session.prompt_async("approval select [number/id/q]> ")).strip()
+        if selection.lower() in {"", "q", "quit", "exit"}:
+            console.print("[dim]Approval review closed.[/dim]")
+            return
+        request = None
+        if selection.isdigit():
+            index = int(selection) - 1
+            if 0 <= index < len(pending):
+                request = pending[index]
+        if request is None:
+            request = next((item for item in pending if item.id == selection), None)
+        if request is None:
+            console.print("[red]No matching approval request.[/red]")
+            continue
+        console.print(f"[dim]{format_approval_detail(approval_store, session_key, request.id)}[/dim]")
+        action = (
+            await prompt_session.prompt_async(
+                "approval action [a]pprove/[d]eny/[i]nfo/[s]kip/[q]uit> "
+            )
+        ).strip().lower()
+        if action in {"q", "quit", "exit"}:
+            console.print("[dim]Approval review closed.[/dim]")
+            return
+        if action in {"i", "info", "information"}:
+            console.print(
+                "[dim]Approval left pending. Type the extra context or ask what information is needed.[/dim]"
+            )
+            return
+        if action in {"", "s", "skip"}:
+            continue
+        try:
+            if action in {"a", "approve"}:
+                resolved = approval_store.approve(session_key, request.id)
+                console.print(f"[dim]Approved {resolved.id}. Retry the same tool call to continue.[/dim]")
+                continue
+            if action in {"d", "deny"}:
+                resolved = approval_store.deny(session_key, request.id)
+                console.print(f"[dim]Denied {resolved.id}.[/dim]")
+                continue
+        except KeyError as exc:
+            console.print(f"[red]Error: {exc}[/red]")
+            continue
+        console.print("[red]Choose approve, deny, skip, or quit.[/red]")
+
+
 async def _chat_loop(
     session_key: str,
     workspace: str,
@@ -1806,6 +1864,14 @@ async def _chat_loop(
                 )
                 continue
             if command == "/approval":
+                if command_arg.split(maxsplit=1)[0:1] == ["review"]:
+                    await _run_approval_review_prompt(
+                        approval_store,
+                        agent.session.key,
+                        prompt_session,
+                        console,
+                    )
+                    continue
                 console.print(
                     f"[dim]{_resolve_approval_command(approval_store, agent.session.key, command_arg)}[/dim]"
                 )

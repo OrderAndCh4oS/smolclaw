@@ -522,6 +522,7 @@ class TestCliMultiagent:
         )
 
         status = _resolve_approval_command(approval_store, "default", "status")
+        review = _resolve_approval_command(approval_store, "default", "review")
         detail = _resolve_approval_command(approval_store, "default", f"detail {request.id}")
         approved = _resolve_approval_command(approval_store, "default", f"approve {request.id}")
         denied = _resolve_approval_command(approval_store, "default", f"deny {request.id}")
@@ -529,6 +530,8 @@ class TestCliMultiagent:
         assert request.id in status
         assert "run_command" in status
         assert "command:npm install*" in status
+        assert "Approval review:" in review
+        assert "Actions: approve, deny, detail, skip, quit." in review
         assert f"Approval: {request.id}" in detail
         assert "Scope: once" in detail
         assert "Run: run-123" in detail

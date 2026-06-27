@@ -24,6 +24,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.styles import Style
 
 from app import diagnostics
+from app.approvals import ApprovalRequest, format_approval_detail, format_approval_review_option
 from app.checkpoints import CheckpointStore
 from app.model_settings import (
     apply_subagent_model_selection,
@@ -53,6 +54,14 @@ from cli.commands import (
 
 SPINNER_FRAMES = ("|", "/", "-", "\\")
 DETAILS_HEIGHT = 4
+APPROVAL_PANEL_HEIGHT = 10
+APPROVAL_REVIEW_OPTIONS = (
+    ("approve", "Approve once", "Allow this exact tool call one time."),
+    ("deny", "Deny", "Reject this pending tool call."),
+    ("info", "Provide or request further information", "Close this dialog and type context or a question."),
+    ("detail", "Show exact request details", "Print the full approval request in the transcript."),
+    ("close", "Close", "Leave the request pending."),
+)
 MAX_ACTIVITY_ENTRIES = 80
 TRANSCRIPT_RENDER_MARGIN = 80
 SHUTDOWN_PHASE_TIMEOUT = 8.0
@@ -144,6 +153,10 @@ class UiState:
     safety_state: str = "safety:gated"
     run_state: str = "idle"
     details_visible: bool = False
+    approval_review_visible: bool = False
+    approval_review_index: int = 0
+    approval_choice_index: int = 0
+    approval_review_items: list[ApprovalRequest] = field(default_factory=list)
     transcript: list[TranscriptEntry] = field(default_factory=list)
     activity_log: list[ActivityEntry] = field(default_factory=list)
 
@@ -325,10 +338,14 @@ class CoderTui:
 
     def _build_app(self) -> Application:
         key_bindings = KeyBindings()
+        approval_review_visible = Condition(lambda: self.state.approval_review_visible)
 
         @key_bindings.add("enter")
         def _(event):
             text = self.input_buffer.text.strip()
+            if self.state.approval_review_visible and not text:
+                asyncio.create_task(self._choose_selected_approval_option())
+                return
             if not text:
                 return
             self.input_buffer.set_document(Document(""))
@@ -360,6 +377,26 @@ class CoderTui:
         @key_bindings.add("pagedown")
         def _(event):
             self._scroll_page(up=False)
+
+        @key_bindings.add("up", filter=approval_review_visible)
+        def _(event):
+            self._move_approval_choice(-1)
+
+        @key_bindings.add("down", filter=approval_review_visible)
+        def _(event):
+            self._move_approval_choice(1)
+
+        @key_bindings.add("a", filter=approval_review_visible)
+        def _(event):
+            asyncio.create_task(self._resolve_selected_approval("approve"))
+
+        @key_bindings.add("d", filter=approval_review_visible)
+        def _(event):
+            asyncio.create_task(self._resolve_selected_approval("deny"))
+
+        @key_bindings.add("escape", filter=approval_review_visible)
+        def _(event):
+            self._close_approval_review()
 
         @key_bindings.add(Keys.ScrollUp)
         @key_bindings.add(Keys.ShiftUp)
@@ -404,6 +441,18 @@ class CoderTui:
             ),
             filter=Condition(lambda: self.state.details_visible),
         )
+        approval_review_window = ConditionalContainer(
+            Window(
+                FormattedTextControl(self._render_approval_review),
+                height=Dimension.exact(APPROVAL_PANEL_HEIGHT),
+                wrap_lines=False,
+                always_hide_cursor=True,
+                dont_extend_height=True,
+                ignore_content_height=True,
+                style="class:approval",
+            ),
+            filter=approval_review_visible,
+        )
         input_window = Window(
             BufferControl(buffer=self.input_buffer),
             height=Dimension.exact(3),
@@ -433,6 +482,7 @@ class CoderTui:
                 style="class:bar.top",
             ),
             self._transcript_window,
+            approval_review_window,
             details_window,
             Window(
                 FormattedTextControl(self._render_bottom_bar),
@@ -457,6 +507,11 @@ class CoderTui:
             "details.title": "ansibrightblack reverse",
             "details.tool": "ansiyellow",
             "details.error": "ansired",
+            "approval": "ansibrightblack",
+            "approval.title": "reverse",
+            "approval.selected": "reverse",
+            "approval.action": "ansigreen bold reverse",
+            "approval.danger": "ansired bold reverse",
         })
         return Application(
             layout=Layout(root, focused_element=input_area),
@@ -630,6 +685,9 @@ class CoderTui:
                 self._append("system", str(result))
             return
         if command == "/approval":
+            if command_arg.split(maxsplit=1)[0:1] == ["review"]:
+                await self._open_approval_review()
+                return
             result = await self._run_status_task(
                 activity="approving",
                 active_tool="approval",
@@ -895,6 +953,174 @@ class CoderTui:
         self._append("system" if result.ok else "error", _format_undo_result(result))
         self._schedule_git_refresh()
 
+    async def _open_approval_review(self, *, quiet_when_empty: bool = False):
+        requests = await self._load_pending_approvals()
+        if requests is _TASK_FAILED:
+            return
+        pending_requests = list(requests or [])
+        if not pending_requests:
+            self._close_approval_review()
+            if not quiet_when_empty:
+                self._append("system", "No pending approval requests.")
+            return
+        was_visible = self.state.approval_review_visible
+        self.state.approval_review_items = pending_requests
+        self.state.approval_review_index = min(
+            self.state.approval_review_index,
+            max(0, len(self.state.approval_review_items) - 1),
+        )
+        self.state.approval_choice_index = min(
+            self.state.approval_choice_index,
+            max(0, len(self._approval_options()) - 1),
+        )
+        self.state.approval_review_visible = True
+        if not was_visible:
+            self._append(
+                "system",
+                "Approval required. Use Up/Down to choose an option, Enter to select, Esc to leave pending.",
+            )
+        self._invalidate()
+
+    async def _load_pending_approvals(self):
+        return await self._run_status_task(
+            activity="approving",
+            active_tool="approval",
+            boundary="tui.approval",
+            worker_fn=lambda: self.approval_store.list(self.agent.session.key, status="pending"),
+        )
+
+    def _selected_approval(self) -> ApprovalRequest | None:
+        if not self.state.approval_review_items:
+            return None
+        index = min(
+            max(0, self.state.approval_review_index),
+            len(self.state.approval_review_items) - 1,
+        )
+        self.state.approval_review_index = index
+        return self.state.approval_review_items[index]
+
+    def _move_approval_selection(self, delta: int):
+        if not self.state.approval_review_items:
+            return
+        count = len(self.state.approval_review_items)
+        self.state.approval_review_index = (self.state.approval_review_index + delta) % count
+        self.state.approval_choice_index = 0
+        self._invalidate()
+
+    def _approval_options(self) -> tuple[tuple[str, str, str], ...]:
+        options = list(APPROVAL_REVIEW_OPTIONS)
+        if len(self.state.approval_review_items) > 1:
+            options.insert(4, ("next", "Review next pending request", "Switch to the next approval request."))
+        return tuple(options)
+
+    def _selected_approval_option(self) -> tuple[str, str, str]:
+        options = self._approval_options()
+        if not options:
+            return ("close", "Close", "Leave the request pending.")
+        index = min(max(0, self.state.approval_choice_index), len(options) - 1)
+        self.state.approval_choice_index = index
+        return options[index]
+
+    def _move_approval_choice(self, delta: int):
+        options = self._approval_options()
+        if not options:
+            return
+        self.state.approval_choice_index = (self.state.approval_choice_index + delta) % len(options)
+        self._invalidate()
+
+    def _close_approval_review(self):
+        self.state.approval_review_visible = False
+        self.state.approval_review_index = 0
+        self.state.approval_choice_index = 0
+        self.state.approval_review_items = []
+        self._invalidate()
+
+    async def _choose_selected_approval_option(self):
+        option, _label, _description = self._selected_approval_option()
+        if option == "approve":
+            await self._resolve_selected_approval("approve")
+            return
+        if option == "deny":
+            await self._resolve_selected_approval("deny")
+            return
+        if option == "detail":
+            await self._show_selected_approval_detail()
+            return
+        if option == "info":
+            self._close_approval_review()
+            self._append(
+                "system",
+                "Approval left pending. Type the extra context or ask what information is needed.",
+            )
+            return
+        if option == "next":
+            self._move_approval_selection(1)
+            return
+        self._close_approval_review()
+        self._append("system", "Approval request left pending.")
+
+    async def _show_selected_approval_detail(self):
+        request = self._selected_approval()
+        if request is None:
+            self._append("system", "No pending approval requests.")
+            return
+        result = await self._run_status_task(
+            activity="approving",
+            active_tool="approval",
+            boundary="tui.approval",
+            worker_fn=lambda: format_approval_detail(
+                self.approval_store,
+                self.agent.session.key,
+                request.id,
+            ),
+        )
+        if result is not _TASK_FAILED:
+            self._append("system", str(result))
+
+    async def _resolve_selected_approval(self, action: str):
+        request = self._selected_approval()
+        if request is None:
+            self._append("system", "No pending approval requests.")
+            return
+        if action not in {"approve", "deny"}:
+            self._append("error", f"Unsupported approval action: {action}")
+            return
+        if action == "approve":
+            worker_fn = lambda: self.approval_store.approve(self.agent.session.key, request.id)
+        else:
+            worker_fn = lambda: self.approval_store.deny(self.agent.session.key, request.id)
+        resolved = await self._run_status_task(
+            activity="approving",
+            active_tool="approval",
+            boundary="tui.approval",
+            worker_fn=worker_fn,
+            user_error_exceptions=(KeyError,),
+        )
+        if resolved is _TASK_FAILED:
+            return
+        if action == "approve":
+            self._append("system", f"Approved {resolved.id}. Retry the same tool call to continue.")
+        else:
+            self._append("system", f"Denied {resolved.id}.")
+        refreshed = await self._load_pending_approvals()
+        if refreshed is _TASK_FAILED:
+            return
+        if not refreshed:
+            self._close_approval_review()
+            self._append("system", "No pending approval requests.")
+            return
+        self.state.approval_review_items = list(refreshed)
+        self.state.approval_review_index = min(
+            self.state.approval_review_index,
+            len(self.state.approval_review_items) - 1,
+        )
+        self.state.approval_choice_index = min(
+            self.state.approval_choice_index,
+            len(self._approval_options()) - 1,
+        )
+        self.state.approval_review_visible = True
+        self._invalidate()
+
     async def _start_agent_turn(self, prompt: str):
         if self._agent_task is not None and not self._agent_task.done():
             self._append("system", "Agent is already running.")
@@ -948,6 +1174,7 @@ class CoderTui:
             self.state.active_tool = "idle"
             self.state.activity = "idle"
             await self._refresh_goal_state()
+            await self._open_approval_review(quiet_when_empty=True)
             self._schedule_git_refresh()
             self._invalidate()
 
@@ -1288,6 +1515,46 @@ class CoderTui:
             parts.insert(2, cost_text)
         return [("", _fit_line("  " + "  ".join(parts), width))]
 
+    def _render_approval_review(self) -> StyleAndTextTuples:
+        width = self._terminal_width()
+        items = self.state.approval_review_items
+        count = len(items)
+        title = _fit_line(f"  approval required  {count} pending", width)
+        output: StyleAndTextTuples = [("class:approval.title", f"{title}\n")]
+        if not items:
+            output.append(("class:approval", f"{_fit_line('  No pending approval requests.', width)}\n"))
+            output.append(("class:approval", "\n" * (APPROVAL_PANEL_HEIGHT - 2)))
+            return output
+
+        selected_request_index = min(max(0, self.state.approval_review_index), count - 1)
+        selected_request = items[selected_request_index]
+        request_line = format_approval_review_option(selected_request) if selected_request is not None else ""
+        output.append(("class:approval", f"{_fit_line('  Request: ' + request_line, width)}\n"))
+        output.append(("class:approval", f"{_fit_line('  Use Up/Down to choose. Enter selects. Esc leaves pending.', width)}\n"))
+
+        options = self._approval_options()
+        selected_choice = min(max(0, self.state.approval_choice_index), len(options) - 1)
+        visible_rows = APPROVAL_PANEL_HEIGHT - 5
+        start = max(0, min(selected_choice - visible_rows // 2, len(options) - visible_rows))
+        end = min(len(options), start + visible_rows)
+        for index in range(start, end):
+            option, label, description = options[index]
+            marker = ">" if index == selected_choice else " "
+            line = f" {marker} {label} - {description}"
+            style = "class:approval.selected" if index == selected_choice else "class:approval"
+            if option == "deny":
+                style = "class:approval.danger" if index == selected_choice else "class:approval"
+            if option == "approve":
+                style = "class:approval.action" if index == selected_choice else "class:approval"
+            output.append((style, f"{_fit_line(line, width)}\n"))
+        missing_rows = visible_rows - (end - start)
+        if missing_rows > 0:
+            output.append(("class:approval", "\n" * missing_rows))
+        _option, label, description = options[selected_choice]
+        output.append(("class:approval", f"{_fit_line('  Selected: ' + label + ' - ' + description, width)}\n"))
+        output.append(("class:approval", _fit_line("  Exact-call approvals are one-shot; approved calls must be retried.", width)))
+        return output
+
     def _render_details(self) -> StyleAndTextTuples:
         width = self._terminal_width()
         body_height = DETAILS_HEIGHT - 1
@@ -1432,7 +1699,8 @@ class CoderTui:
 
     def _transcript_height(self) -> int:
         details_height = DETAILS_HEIGHT if self.state.details_visible else 0
-        return max(1, self._terminal_height() - 5 - details_height)
+        approval_height = APPROVAL_PANEL_HEIGHT if self.state.approval_review_visible else 0
+        return max(1, self._terminal_height() - 5 - details_height - approval_height)
 
     def _max_scroll_offset(self) -> int:
         return max(0, len(self._transcript_lines(self._terminal_width())) - self._transcript_height())

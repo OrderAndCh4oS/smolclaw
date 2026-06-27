@@ -7,6 +7,8 @@ from app.approvals import (
     approval_arguments_hash,
     approval_request_id,
     format_approval_detail,
+    format_approval_review,
+    format_approval_review_option,
     format_approval_status,
 )
 
@@ -123,7 +125,7 @@ def test_approval_formatters_show_status_and_detail(temp_dir):
 
     assert request.id in status
     assert "command:npm install*" in status
-    assert "Use /approval detail" in status
+    assert "Use /approval review" in status
     assert f"Approval: {request.id}" in detail
     assert "Tool: run_command" in detail
     assert "Scope: once" in detail
@@ -134,3 +136,25 @@ def test_approval_formatters_show_status_and_detail(temp_dir):
     assert "Expiry: none" in detail
     assert "Arguments hash:" in detail
     assert "\"command\": \"npm install left-pad\"" in detail
+
+
+def test_approval_review_formatter_shows_numbered_exact_call_options(temp_dir):
+    store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+    request = store.request(
+        "session-a",
+        tool_name="run_command",
+        arguments={"command": "npm install left-pad"},
+        reason="dependency changes need approval",
+        run_id="run-123",
+        granted_effects=("network", "command_write"),
+    )
+
+    review = format_approval_review(store, "session-a")
+    option = format_approval_review_option(request)
+
+    assert "Approval review:" in review
+    assert f"1. {request.id}: run_command" in review
+    assert "Actions: approve, deny, detail, skip, quit." in review
+    assert "run:run-123" in option
+    assert "effects:command_write,network" in option
+    assert "args:npm install left-pad" in option
