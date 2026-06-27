@@ -66,6 +66,26 @@ Inside an isolated chat or TUI session, use:
 
 `/worktree apply` applies the isolated diff back to the base repository. `/worktree discard` schedules the isolated worktree for cleanup when the session exits.
 
+Normal `--worktree` mode requires a clean git repository and uses `git worktree`
+from `HEAD`. If the base repository is dirty, SmolClaw refuses normal worktree
+creation unless `--copy-dirty-worktree` is supplied. Dirty-copy mode copies the
+working tree into a temporary repository and records preflight metadata in
+`/worktree status` and non-interactive `run_status`.
+
+Dirty-copy mode excludes common state, cache, build, and secret-like paths by
+default: `.git`, `.smolclaw`, virtualenvs, package caches, build outputs,
+`.env*`, private-key-like files, and similar noisy roots. Excluded paths and
+large-copy thresholds are reported as warnings. Private-key-like paths and very
+large copies are refused by default rather than copied.
+
+Apply-back is review-gated for broad or risky isolated diffs. Small diffs can be
+applied with `/worktree apply`; larger diffs, deletions, binary-looking changes,
+or secret-like paths return a review summary and require:
+
+```text
+/worktree apply --confirm
+```
+
 If you keep project notes or external material in `.smolclaw/research/`, you can ingest them:
 
 ```bash

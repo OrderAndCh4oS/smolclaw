@@ -174,7 +174,7 @@ needs stronger guardrails and review.
 - `WorktreeRunner` creates isolated git worktrees or dirty copies.
 - `chat --worktree` and `run --worktree` keep source root separate from original workspace state root.
 - `/worktree status`, `/worktree diff`, `/worktree apply`, and `/worktree discard` exist.
-- Dirty-copy behavior is explicit but not fully productized.
+- Dirty-copy behavior has preflight metadata, default exclusions, warnings, private-key refusal, and review-gated broad apply-back.
 
 ### Implementation Details
 
@@ -185,7 +185,7 @@ needs stronger guardrails and review.
    - known cache/build directory detection;
    - secret-path warnings;
    - large binary detection.
-2. Add configurable thresholds with safe defaults.
+2. Add injectable thresholds with safe defaults.
 3. Record isolation metadata in trace summaries and eval reports:
    - isolation mode;
    - dirty-copy flag;
@@ -197,7 +197,7 @@ needs stronger guardrails and review.
    - summarize changed files;
    - show added/deleted/modified counts;
    - warn on large diffs;
-   - require explicit confirmation for broad apply-back;
+   - require `/worktree apply --confirm` for broad apply-back;
    - keep `.smolclaw/` excluded from exported diffs.
 5. Add regression tests for state placement:
    - sessions;
@@ -217,7 +217,7 @@ needs stronger guardrails and review.
 ### Acceptance Criteria
 
 - Dirty-copy mode refuses or warns on threshold violations.
-- Trace/eval summaries show isolation metadata.
+- Run status and trace summaries show isolation metadata.
 - Apply-back review lists risk indicators before applying broad diffs.
 - Tests prove state writes stay under the original workspace state root for every worktree entrypoint.
 

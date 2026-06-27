@@ -24,6 +24,7 @@ from cli.main import (
 from app.hooks import ON_SESSION_END, HookRunner
 from app.session import SessionManager
 from app.workspace import WorkspaceContext
+from app.worktree import WorktreeIsolationMetadata
 from unittest.mock import ANY, AsyncMock, MagicMock
 
 
@@ -202,6 +203,15 @@ class TestCliMultiagent:
         fake_ctx = MagicMock()
         fake_ctx.path = worktree_path
         fake_ctx.diff.return_value = "diff --git a/app.py b/app.py"
+        fake_ctx.isolation_metadata = WorktreeIsolationMetadata(
+            mode="dirty-copy",
+            dirty_copy=True,
+            copied_file_count=2,
+            copied_byte_count=42,
+            excluded_path_count=1,
+            warning_count=1,
+            warnings=("Dirty copy excluded 1 path(s).",),
+        )
         fake_agent = MagicMock()
 
         async def fake_process(_message):
@@ -257,6 +267,10 @@ class TestCliMultiagent:
         assert payload["run_status"]["worktree_path"] == worktree_path
         assert payload["run_status"]["worktree_has_diff"] is True
         assert payload["run_status"]["worktree_diff_size"] == len("diff --git a/app.py b/app.py")
+        assert payload["run_status"]["worktree_mode"] == "dirty-copy"
+        assert payload["run_status"]["worktree_dirty_copy"] is True
+        assert payload["run_status"]["worktree_copied_file_count"] == 2
+        assert payload["run_status"]["worktree_warning_count"] == 1
         assert os.path.realpath(payload["trace_path"]).startswith(
             os.path.realpath(build_workspace_paths(temp_dir).traces_dir)
         )

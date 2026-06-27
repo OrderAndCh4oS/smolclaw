@@ -1399,12 +1399,22 @@ async def _run_once(
         trace_store = RunTraceStore(paths.traces_dir)
         current_goal = goal_store.load(agent.session.key)
         worktree_diff = worktree_ctx.diff() if worktree_ctx is not None else None
+        worktree_metadata = (
+            worktree_ctx.isolation_metadata.to_dict()
+            if worktree_ctx is not None and hasattr(worktree_ctx, "isolation_metadata")
+            else None
+        )
+        latest_trace = trace_store.latest_summary(agent.session.key)
+        if latest_trace is not None and worktree_metadata:
+            latest_trace.metadata["worktree"] = worktree_metadata
+            trace_store.save_summary(latest_trace)
         run_status_view = build_run_status_view(
             session_key=agent.session.key,
             trace_store=trace_store,
             goal_store=goal_store,
             worktree_path=worktree_ctx.path if worktree_ctx is not None else None,
             worktree_diff=worktree_diff,
+            worktree_metadata=worktree_metadata,
         )
         return {
             "session_key": agent.session.key,

@@ -405,7 +405,8 @@ def _format_worktree_status(worktree_state: _InteractiveWorktreeState | None) ->
     if worktree_state is None:
         return "No active isolated worktree."
     ctx = worktree_state.context
-    return "\n".join([
+    metadata = getattr(ctx, "isolation_metadata", None)
+    lines = [
         "Worktree: active",
         f"Mode: {_worktree_mode_name(ctx)}",
         f"Run id: {ctx.run_id}",
@@ -415,7 +416,17 @@ def _format_worktree_status(worktree_state: _InteractiveWorktreeState | None) ->
         f"Keep on exit: {'yes' if worktree_state.keep_on_exit else 'no'}",
         f"Discard on exit: {'yes' if worktree_state.discard_on_exit else 'no'}",
         f"Apply count: {worktree_state.applied_count}",
-    ])
+    ]
+    if metadata is not None and getattr(metadata, "dirty_copy", False):
+        lines.extend([
+            f"Copied files: {getattr(metadata, 'copied_file_count', 0)}",
+            f"Copied bytes: {getattr(metadata, 'copied_byte_count', 0)}",
+            f"Excluded paths: {getattr(metadata, 'excluded_path_count', 0)}",
+            f"Warnings: {getattr(metadata, 'warning_count', 0)}",
+        ])
+        for warning in list(getattr(metadata, "warnings", ()) or ())[:5]:
+            lines.append(f"- {warning}")
+    return "\n".join(lines)
 
 
 def _resolve_worktree_command(
@@ -433,14 +444,16 @@ def _resolve_worktree_command(
         diff = ctx.diff()
         return diff if diff.strip() else "No isolated changes."
     if subcommand == "apply":
-        result = ctx.apply_back()
+        options = parts[1].split() if len(parts) > 1 else []
+        confirm = "--confirm" in options or "confirm" in options
+        result = ctx.apply_back(confirm=confirm)
         if result.startswith("Applied "):
             worktree_state.applied_count += 1
         return result
     if subcommand == "discard":
         worktree_state.discard_on_exit = True
         return "Discard scheduled. The isolated worktree will be removed when the session exits."
-    return "Usage: /worktree status|diff|apply|discard"
+    return "Usage: /worktree status|diff|apply [--confirm]|discard"
 
 
 def _parse_goal_run_count(value: str) -> int:

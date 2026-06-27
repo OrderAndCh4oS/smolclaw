@@ -38,6 +38,13 @@ class RunStatusView:
     worktree_path: str | None = None
     worktree_has_diff: bool | None = None
     worktree_diff_size: int | None = None
+    worktree_mode: str | None = None
+    worktree_dirty_copy: bool | None = None
+    worktree_copied_file_count: int = 0
+    worktree_copied_byte_count: int = 0
+    worktree_excluded_path_count: int = 0
+    worktree_warning_count: int = 0
+    worktree_warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -66,6 +73,7 @@ def build_run_status_view(
     goal_store=None,
     worktree_path: str | None = None,
     worktree_diff: str | None = None,
+    worktree_metadata: dict[str, Any] | None = None,
 ) -> RunStatusView:
     summary = trace_store.latest_summary(session_key) if trace_store is not None else None
     ledger = goal_store.load(session_key) if goal_store is not None else None
@@ -81,6 +89,9 @@ def build_run_status_view(
     )
     pending_approvals = getattr(ledger, "pending_approvals", 0) if ledger else 0
     worktree_has_diff, worktree_diff_size = _worktree_diff_metadata(worktree_diff)
+    if worktree_metadata is None and summary is not None:
+        worktree_metadata = dict(getattr(summary, "metadata", {}) or {}).get("worktree")
+    worktree_metadata = worktree_metadata or {}
     return RunStatusView(
         session_key=session_key,
         trace_run_id=summary.run_id if summary else None,
@@ -112,6 +123,13 @@ def build_run_status_view(
         worktree_path=worktree_path,
         worktree_has_diff=worktree_has_diff,
         worktree_diff_size=worktree_diff_size,
+        worktree_mode=worktree_metadata.get("mode"),
+        worktree_dirty_copy=worktree_metadata.get("dirty_copy"),
+        worktree_copied_file_count=int(worktree_metadata.get("copied_file_count") or 0),
+        worktree_copied_byte_count=int(worktree_metadata.get("copied_byte_count") or 0),
+        worktree_excluded_path_count=int(worktree_metadata.get("excluded_path_count") or 0),
+        worktree_warning_count=int(worktree_metadata.get("warning_count") or 0),
+        worktree_warnings=list(worktree_metadata.get("warnings") or []),
     )
 
 
@@ -124,10 +142,14 @@ def build_run_status_view_from_artifacts(
     ledger_path: str | None = None,
     worktree_path: str | None = None,
     worktree_diff: str | None = None,
+    worktree_metadata: dict[str, Any] | None = None,
 ) -> RunStatusView:
     verification = getattr(trace_summary, "verification", []) if trace_summary else []
     pending_approvals = getattr(ledger, "pending_approvals", 0) if ledger else 0
     worktree_has_diff, worktree_diff_size = _worktree_diff_metadata(worktree_diff)
+    if worktree_metadata is None and trace_summary is not None:
+        worktree_metadata = dict(getattr(trace_summary, "metadata", {}) or {}).get("worktree")
+    worktree_metadata = worktree_metadata or {}
     return RunStatusView(
         session_key=session_key,
         trace_run_id=getattr(trace_summary, "run_id", None) if trace_summary else None,
@@ -159,7 +181,15 @@ def build_run_status_view_from_artifacts(
         worktree_path=worktree_path,
         worktree_has_diff=worktree_has_diff,
         worktree_diff_size=worktree_diff_size,
+        worktree_mode=worktree_metadata.get("mode"),
+        worktree_dirty_copy=worktree_metadata.get("dirty_copy"),
+        worktree_copied_file_count=int(worktree_metadata.get("copied_file_count") or 0),
+        worktree_copied_byte_count=int(worktree_metadata.get("copied_byte_count") or 0),
+        worktree_excluded_path_count=int(worktree_metadata.get("excluded_path_count") or 0),
+        worktree_warning_count=int(worktree_metadata.get("warning_count") or 0),
+        worktree_warnings=list(worktree_metadata.get("warnings") or []),
     )
+
 
 def format_goal_status(goal: GoalLedger | None) -> str:
     if goal is None:
@@ -371,6 +401,18 @@ def format_run_status_view(view: RunStatusView) -> str:
         lines.append(f"Verification records: {view.verification_count}")
     if view.worktree_path:
         lines.append(f"Worktree path: {view.worktree_path}")
+        if view.worktree_mode:
+            lines.append(f"Worktree mode: {view.worktree_mode}")
+        if view.worktree_dirty_copy is not None:
+            lines.append(f"Dirty copy: {'yes' if view.worktree_dirty_copy else 'no'}")
+        if view.worktree_dirty_copy:
+            lines.extend([
+                f"Copied files: {view.worktree_copied_file_count}",
+                f"Copied bytes: {view.worktree_copied_byte_count}",
+                f"Excluded paths: {view.worktree_excluded_path_count}",
+                f"Warnings: {view.worktree_warning_count}",
+            ])
+            lines.extend(f"- {warning}" for warning in view.worktree_warnings[:5])
         if view.worktree_has_diff is not None:
             diff_state = "present" if view.worktree_has_diff else "none"
             lines.append(f"Worktree diff: {diff_state} ({view.worktree_diff_size or 0} bytes)")

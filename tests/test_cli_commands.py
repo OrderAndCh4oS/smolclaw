@@ -17,6 +17,7 @@ from cli.commands import (
     _resolve_worktree_command,
     parse_slash_command,
 )
+from app.worktree import WorktreeIsolationMetadata
 
 
 def test_parse_slash_command_splits_name_and_argument():
@@ -162,9 +163,24 @@ def test_worktree_command_state_lives_with_command_resolver():
     ctx.run_id = "run-1"
     ctx.path = "/tmp/worktree"
     ctx.base_repo = "/repo"
+    ctx.isolation_metadata = WorktreeIsolationMetadata(
+        mode="dirty-copy",
+        dirty_copy=True,
+        copied_file_count=2,
+        copied_byte_count=20,
+        excluded_path_count=1,
+        warning_count=1,
+        warnings=("Dirty copy excluded 1 path(s).",),
+    )
     state = _InteractiveWorktreeState(context=ctx, state_root="/repo/.smolclaw")
 
-    assert "Worktree: active" in _resolve_worktree_command(state, "status")
+    status = _resolve_worktree_command(state, "status")
+    assert "Worktree: active" in status
+    assert "Copied files: 2" in status
+    assert "Dirty copy excluded 1 path(s)." in status
     assert "diff --git" in _resolve_worktree_command(state, "diff")
     assert _resolve_worktree_command(state, "apply") == "Applied 1 file."
-    assert state.applied_count == 1
+    ctx.apply_back.assert_called_with(confirm=False)
+    assert _resolve_worktree_command(state, "apply --confirm") == "Applied 1 file."
+    ctx.apply_back.assert_called_with(confirm=True)
+    assert state.applied_count == 2

@@ -68,6 +68,15 @@ def test_run_status_view_combines_trace_and_ledger_state(temp_dir):
         goal_store=goal_store,
         worktree_path="/tmp/smolclaw-worktree",
         worktree_diff="diff --git a/parser.py b/parser.py\n",
+        worktree_metadata={
+            "mode": "dirty-copy",
+            "dirty_copy": True,
+            "copied_file_count": 12,
+            "copied_byte_count": 345,
+            "excluded_path_count": 3,
+            "warning_count": 1,
+            "warnings": ["Dirty copy excluded 3 path(s)."],
+        },
     )
     output = format_run_status_view(view)
     encoded = json.loads(json.dumps(view.to_dict()))
@@ -79,6 +88,10 @@ def test_run_status_view_combines_trace_and_ledger_state(temp_dir):
     assert view.pending_approvals == 2
     assert view.goal_pending_approvals == 2
     assert view.worktree_has_diff is True
+    assert view.worktree_mode == "dirty-copy"
+    assert view.worktree_dirty_copy is True
+    assert view.worktree_copied_file_count == 12
+    assert view.worktree_warning_count == 1
     assert encoded["worktree_diff_size"] == len("diff --git a/parser.py b/parser.py\n")
     assert view.changed_files == ["parser.py"]
     assert view.verification_summaries == ["pytest passed"]
@@ -86,6 +99,9 @@ def test_run_status_view_combines_trace_and_ledger_state(temp_dir):
     assert "Commands: pytest" in output
     assert "Checkpoints: chk-1" in output
     assert "Pending approvals: 2" in output
+    assert "Worktree mode: dirty-copy" in output
+    assert "Copied files: 12" in output
+    assert "- Dirty copy excluded 3 path(s)." in output
     assert "Worktree diff: present" in output
     assert "Verification:" in output
     assert "- pytest passed" in output

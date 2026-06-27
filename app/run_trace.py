@@ -91,6 +91,7 @@ class RunTraceSummary:
     stop_reason: str | None = None
     trace_path: str | None = None
     malformed_events: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -111,6 +112,7 @@ class RunTraceSummary:
             "stop_reason": self.stop_reason,
             "trace_path": self.trace_path,
             "malformed_events": self.malformed_events,
+            "metadata": _json_safe(dict(self.metadata)),
         }
 
     @classmethod
@@ -132,6 +134,7 @@ class RunTraceSummary:
             stop_reason=data.get("stop_reason"),
             trace_path=data.get("trace_path"),
             malformed_events=int(data.get("malformed_events") or 0),
+            metadata=dict(data.get("metadata") or {}),
         )
 
 
@@ -233,6 +236,7 @@ class RunTraceStore:
             session_key=session_key,
             goal_id=goal_id,
             trace_path=self.trace_path(session_key, run_id),
+            metadata=dict(metadata or {}),
         )
         recorder = RunTraceRecorder(self, summary)
         recorder.append("run.started", metadata or {})
