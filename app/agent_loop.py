@@ -40,6 +40,7 @@ class AgentLoop:
         safety_state=None,
         model_settings=None,
         trace_store=None,
+        trace_metadata=None,
         runtime_shared_state=None,
     ):
         self.llm = llm
@@ -57,6 +58,7 @@ class AgentLoop:
         self.safety_state = safety_state
         self.model_settings = model_settings
         self.trace_store = trace_store
+        self.trace_metadata = dict(trace_metadata or {})
         self.runtime_shared_state = runtime_shared_state if runtime_shared_state is not None else {}
         self.runtime_state = RuntimeSharedState(self.runtime_shared_state)
         if not self.behaviors:
@@ -214,14 +216,16 @@ class AgentLoop:
         if self.trace_store is None:
             return None
         goal = self.goal_store.load(self.session.key) if self.goal_store is not None else None
+        metadata = {
+            "message_length": len(user_content or ""),
+            "model": getattr(self.llm, "completion_model", "unknown"),
+            "has_active_goal": bool(goal is not None and goal.status == "active"),
+        }
+        metadata.update(self.trace_metadata)
         recorder = self.trace_store.start_run(
             self.session.key,
             goal_id=getattr(goal, "goal_id", None),
-            metadata={
-                "message_length": len(user_content or ""),
-                "model": getattr(self.llm, "completion_model", "unknown"),
-                "has_active_goal": bool(goal is not None and goal.status == "active"),
-            },
+            metadata=metadata,
         )
         self._trace_recorder = recorder
         self.runtime_state.trace_recorder = recorder

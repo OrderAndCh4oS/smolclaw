@@ -278,6 +278,73 @@ class TestCliMultiagent:
         fake_ctx.cleanup.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_run_once_docker_provider_auto_uses_dirty_copy_isolation(self, temp_dir):
+        from cli.main import DEFAULT_AGENTS_CONFIG, _run_once
+
+        os.makedirs(os.path.join(temp_dir, ".smolclaw"), exist_ok=True)
+        with open(os.path.join(temp_dir, ".smolclaw", "config.yaml"), "w", encoding="utf-8") as handle:
+            handle.write("adapters:\n  command:\n    provider: docker\n")
+        worktree_path = os.path.join(temp_dir, "sandbox-copy")
+        os.makedirs(worktree_path, exist_ok=True)
+        fake_ctx = MagicMock()
+        fake_ctx.path = worktree_path
+        fake_ctx.diff.return_value = ""
+        fake_ctx.isolation_metadata = WorktreeIsolationMetadata(
+            mode="dirty-copy",
+            dirty_copy=True,
+            copied_file_count=1,
+            copied_byte_count=10,
+        )
+        fake_agent = MagicMock()
+
+        async def fake_process(_message):
+            trace_store = RunTraceStore(build_workspace_paths(temp_dir).traces_dir)
+            recorder = trace_store.start_run("default")
+            recorder.finish("complete", stop_reason="assistant_final")
+            return "done"
+
+        fake_agent.process = AsyncMock(side_effect=fake_process)
+        fake_agent.close = AsyncMock()
+        fake_agent.session = MagicMock()
+        fake_agent.session.key = "default"
+        smol_rag = MagicMock()
+        smol_rag.close = AsyncMock()
+        session_manager = MagicMock()
+        built_workspaces = []
+
+        def fake_runtime(workspace_root, *_args, **_kwargs):
+            built_workspaces.append(workspace_root)
+            return _fake_runtime(workspace_root, smol_rag, session_manager)
+
+        runner = MagicMock()
+        runner.create.return_value = fake_ctx
+        deps = CliDependencies(
+            worktree_runner_factory=lambda **_kwargs: runner,
+            runtime_builder=fake_runtime,
+            default_chat_agent_builder=lambda **_kwargs: fake_agent,
+        )
+
+        payload = await _run_once(
+            prompt="hello",
+            session_key="default",
+            workspace=temp_dir,
+            model="model",
+            agents_config=DEFAULT_AGENTS_CONFIG,
+            worktree=False,
+            copy_dirty_worktree=False,
+            deps=deps,
+        )
+
+        runner.create.assert_called_once()
+        assert runner.create.call_args.kwargs["copy_dirty"] is True
+        built_workspace = built_workspaces[0]
+        assert isinstance(built_workspace, WorkspaceContext)
+        assert built_workspace.root_dir == os.path.realpath(worktree_path)
+        assert built_workspace.state_root_dir == os.path.realpath(build_workspace_paths(temp_dir).state_root_dir)
+        assert payload["run_status"]["worktree_mode"] == "dirty-copy"
+        fake_ctx.cleanup.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_tui_chat_loop_worktree_uses_isolated_workspace_and_cleans_up(self, temp_dir):
         from cli.main import DEFAULT_AGENTS_CONFIG, _tui_chat_loop
 

@@ -39,6 +39,120 @@ class AdapterSelection:
 
 
 @dataclass(frozen=True)
+class CommandSandboxConfig:
+    image: str | None = None
+    network: str = "none"
+    approved_network: str = "bridge"
+    cpus: str = "2"
+    memory: str = "2g"
+    pids_limit: int = 256
+    tmpfs_size: str = "512m"
+    read_only_root: bool = True
+    env_allowlist: tuple[str, ...] | None = None
+    network_proxy_env: dict[str, str] = field(default_factory=dict)
+    auto_pull: bool = True
+    auto_build: bool = False
+    build_context: str | None = None
+    build_dockerfile: str | None = None
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: Mapping[str, Any] | None,
+        *,
+        base: "CommandSandboxConfig | None" = None,
+    ) -> "CommandSandboxConfig":
+        baseline = base or cls()
+        if not isinstance(data, Mapping):
+            return baseline
+        network = str(data.get("network") or baseline.network)
+        if network != "none":
+            raise ValueError("Unsupported command sandbox network mode: only 'none' is supported.")
+        approved_network = str(data.get("approved_network") or baseline.approved_network)
+        if approved_network not in {"bridge", "none"}:
+            raise ValueError("Unsupported approved command sandbox network mode: expected 'bridge' or 'none'.")
+        env_allowlist = data.get("env_allowlist", baseline.env_allowlist)
+        if env_allowlist is not None:
+            if isinstance(env_allowlist, str):
+                env_allowlist = (env_allowlist,)
+            else:
+                env_allowlist = tuple(str(item) for item in env_allowlist)
+        network_proxy_env = data.get("network_proxy_env", baseline.network_proxy_env)
+        if not isinstance(network_proxy_env, Mapping):
+            network_proxy_env = {}
+        return cls(
+            image=str(data["image"]) if data.get("image") else baseline.image,
+            network=network,
+            approved_network=approved_network,
+            cpus=str(data.get("cpus") or baseline.cpus),
+            memory=str(data.get("memory") or baseline.memory),
+            pids_limit=int(data.get("pids_limit") or baseline.pids_limit),
+            tmpfs_size=str(data.get("tmpfs_size") or baseline.tmpfs_size),
+            read_only_root=_coerce_bool(data.get("read_only_root", baseline.read_only_root)),
+            env_allowlist=env_allowlist,
+            network_proxy_env={str(key): str(value) for key, value in network_proxy_env.items()},
+            auto_pull=_coerce_bool(data.get("auto_pull", baseline.auto_pull)),
+            auto_build=_coerce_bool(data.get("auto_build", baseline.auto_build)),
+            build_context=str(data["build_context"]) if data.get("build_context") else baseline.build_context,
+            build_dockerfile=str(data["build_dockerfile"]) if data.get("build_dockerfile") else baseline.build_dockerfile,
+        )
+
+    def to_dict(self) -> dict:
+        payload: dict[str, Any] = {
+            "network": self.network,
+            "approved_network": self.approved_network,
+            "cpus": self.cpus,
+            "memory": self.memory,
+            "pids_limit": self.pids_limit,
+            "tmpfs_size": self.tmpfs_size,
+            "read_only_root": self.read_only_root,
+            "auto_pull": self.auto_pull,
+            "auto_build": self.auto_build,
+        }
+        if self.image:
+            payload["image"] = self.image
+        if self.env_allowlist is not None:
+            payload["env_allowlist"] = list(self.env_allowlist)
+        if self.network_proxy_env:
+            payload["network_proxy_env"] = dict(self.network_proxy_env)
+        if self.build_context:
+            payload["build_context"] = self.build_context
+        if self.build_dockerfile:
+            payload["build_dockerfile"] = self.build_dockerfile
+        return payload
+
+
+@dataclass(frozen=True)
+class CommandAdapterConfig(AdapterSelection):
+    sandbox: CommandSandboxConfig = field(default_factory=CommandSandboxConfig)
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: Mapping[str, Any] | None,
+        *,
+        base: "CommandAdapterConfig",
+    ) -> "CommandAdapterConfig":
+        if not isinstance(data, Mapping):
+            return base
+        adapter_data = data.get("default") if isinstance(data.get("default"), Mapping) else data
+        selection = AdapterSelection.from_dict(adapter_data, base=base)
+        sandbox_data = data.get("sandbox") if isinstance(data.get("sandbox"), Mapping) else None
+        return cls(
+            provider=selection.provider,
+            model=selection.model,
+            sandbox=CommandSandboxConfig.from_dict(sandbox_data, base=base.sandbox),
+        )
+
+    def to_dict(self) -> dict:
+        payload = super().to_dict()
+        sandbox = self.sandbox.to_dict()
+        if sandbox:
+            payload["sandbox"] = sandbox
+        return payload
+
+
+@dataclass(frozen=True)
 class LlmAdapterConfig:
     default: AdapterSelection = field(default_factory=lambda: AdapterSelection("openai", DEFAULT_AGENT_MODEL))
     memory_extract: AdapterSelection = field(default_factory=lambda: AdapterSelection("openai", DEFAULT_MEMORY_EXTRACT_MODEL))
@@ -65,7 +179,7 @@ class RuntimeAdapterConfig:
     llm: LlmAdapterConfig = field(default_factory=LlmAdapterConfig)
     task_source: AdapterSelection = field(default_factory=lambda: AdapterSelection("jira"))
     code_review: AdapterSelection = field(default_factory=lambda: AdapterSelection("github"))
-    command: AdapterSelection = field(default_factory=lambda: AdapterSelection("subprocess"))
+    command: CommandAdapterConfig = field(default_factory=lambda: CommandAdapterConfig("subprocess"))
 
     @classmethod
     def from_dict(
@@ -84,7 +198,7 @@ class RuntimeAdapterConfig:
             llm=LlmAdapterConfig.from_dict(adapters.get("llm"), base=baseline.llm),
             task_source=AdapterSelection.from_dict(_default_adapter_data(adapters.get("task_source")), base=baseline.task_source),
             code_review=AdapterSelection.from_dict(_default_adapter_data(adapters.get("code_review")), base=baseline.code_review),
-            command=AdapterSelection.from_dict(_default_adapter_data(adapters.get("command")), base=baseline.command),
+            command=CommandAdapterConfig.from_dict(adapters.get("command"), base=baseline.command),
         )
 
     def with_overrides(
@@ -105,6 +219,14 @@ def _default_adapter_data(value: Any) -> Mapping[str, Any] | None:
     if isinstance(value, Mapping) and isinstance(value.get("default"), Mapping):
         return value["default"]
     return value if isinstance(value, Mapping) else None
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(value)
 
 
 def runtime_config_paths(workspace: WorkspaceContext | None, *, include_user: bool = True) -> list[str]:

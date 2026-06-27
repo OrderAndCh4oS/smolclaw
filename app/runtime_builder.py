@@ -42,7 +42,10 @@ def build_runtime_services(
     ).ensure_dirs()
     diagnostics.configure(workspace.paths.log_dir)
     adapter_config = adapter_config or load_runtime_config(workspace)
-    command_adapters = build_command_adapter_bundle(adapter_config.command)
+    command_adapters = build_command_adapter_bundle(
+        adapter_config.command,
+        workspace=workspace,
+    )
 
     rag = smol_rag or create_smol_rag(
         db_path=workspace.paths.sqlite_db_path,
@@ -74,7 +77,8 @@ def build_runtime_services(
         enable_subagents=enable_subagents,
         llm=llm,
         command_runner=command_adapters.infrastructure_runner,
-        agent_command_runner=command_adapters.agent_runner,
+        agent_command_runner=command_adapters.agent_executor,
+        sandbox_metadata=command_adapters.sandbox_metadata,
         model_settings=model_settings,
         adapter_config=adapter_config,
     )

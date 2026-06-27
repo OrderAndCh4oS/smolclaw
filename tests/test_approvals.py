@@ -22,6 +22,7 @@ def test_approval_request_store_creates_stable_pending_request(temp_dir):
         run_id="run-123",
         matched_subject="command",
         matched_pattern="npm install*",
+        granted_effects=("command_write", "image_management"),
     )
     repeated = store.request(
         "session-a",
@@ -36,6 +37,7 @@ def test_approval_request_store_creates_stable_pending_request(temp_dir):
     assert request.run_id == "run-123"
     assert request.matched_subject == "command"
     assert request.matched_pattern == "npm install*"
+    assert request.granted_effects == ("command_write", "image_management")
     assert len(store.list("session-a")) == 1
 
 
@@ -65,6 +67,29 @@ def test_approval_request_store_approves_and_consumes_exact_call(temp_dir):
     assert store.get("session-a", request.id).status == "used"
 
 
+def test_approval_request_store_reopens_when_required_effects_expand(temp_dir):
+    store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+    request = store.request(
+        "session-a",
+        tool_name="run_command",
+        arguments={"command": "python -m pytest", "network_access": True},
+        granted_effects=("command_read",),
+    )
+
+    store.approve("session-a", request.id)
+    consumed = store.consume_approved(
+        "session-a",
+        tool_name="run_command",
+        arguments={"command": "python -m pytest", "network_access": True},
+        required_effects=("command_read", "network"),
+    )
+    reopened = store.get("session-a", request.id)
+
+    assert consumed is None
+    assert reopened.status == "pending"
+    assert reopened.granted_effects == ("command_read", "network")
+
+
 def test_approval_request_store_rejects_unknown_approval_id(temp_dir):
     store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
 
@@ -90,6 +115,7 @@ def test_approval_formatters_show_status_and_detail(temp_dir):
         run_id="run-123",
         matched_subject="command",
         matched_pattern="npm install*",
+        granted_effects=("command_write",),
     )
 
     status = format_approval_status(store, "session-a")
@@ -104,6 +130,7 @@ def test_approval_formatters_show_status_and_detail(temp_dir):
     assert "Requested action: ask" in detail
     assert "Matched rule: command:npm install*" in detail
     assert "Run: run-123" in detail
+    assert "Granted effects: command_write" in detail
     assert "Expiry: none" in detail
     assert "Arguments hash:" in detail
     assert "\"command\": \"npm install left-pad\"" in detail

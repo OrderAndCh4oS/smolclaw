@@ -319,8 +319,39 @@ def _workspace_for_config(workspace: str | WorkspaceContext) -> WorkspaceContext
 
 
 def _command_adapters_for_workspace(workspace: str | WorkspaceContext):
+    workspace_ctx = _workspace_for_config(workspace)
+    adapter_config = load_runtime_config(workspace_ctx)
+    return build_command_adapter_bundle(adapter_config.command, workspace=workspace_ctx)
+
+
+def _command_provider_for_workspace(workspace: str | WorkspaceContext) -> str:
     adapter_config = load_runtime_config(_workspace_for_config(workspace))
-    return build_command_adapter_bundle(adapter_config.command)
+    return adapter_config.command.provider
+
+
+def _requires_sandbox_source_isolation(workspace: str | WorkspaceContext) -> bool:
+    return _command_provider_for_workspace(workspace) == "docker"
+
+
+def _prepare_isolated_workspace(
+    workspace: str,
+    *,
+    deps: CliDependencies,
+    worktree: bool,
+    copy_dirty_worktree: bool,
+) -> tuple[object | None, str | WorkspaceContext]:
+    sandbox_isolation = _requires_sandbox_source_isolation(workspace)
+    if not (worktree or sandbox_isolation):
+        return None, workspace
+    worktree_ctx = _build_worktree_runner(workspace, deps).create(
+        workspace,
+        f"smolclaw-{uuid.uuid4().hex[:12]}",
+        copy_dirty=copy_dirty_worktree or sandbox_isolation,
+    )
+    return worktree_ctx, WorkspaceContext.from_root(
+        worktree_ctx.path,
+        state_root=_state_root_for_workspace(workspace),
+    )
 
 
 def _build_worktree_runner(workspace: str | WorkspaceContext, deps: CliDependencies):
@@ -1340,15 +1371,12 @@ async def _run_once(
     deps: CliDependencies | None = None,
 ) -> dict:
     deps = get_cli_dependencies(deps)
-    worktree_ctx = None
-    active_workspace: str | WorkspaceContext = workspace
-    if worktree:
-        worktree_ctx = _build_worktree_runner(workspace, deps).create(
-            workspace,
-            f"smolclaw-{uuid.uuid4().hex[:12]}",
-            copy_dirty=copy_dirty_worktree,
-        )
-        active_workspace = WorkspaceContext.from_root(worktree_ctx.path, state_root=_state_root_for_workspace(workspace))
+    worktree_ctx, active_workspace = _prepare_isolated_workspace(
+        workspace,
+        deps=deps,
+        worktree=worktree,
+        copy_dirty_worktree=copy_dirty_worktree,
+    )
     agent = None
     smol_rag = None
     responses: list[str] = []
@@ -1405,8 +1433,12 @@ async def _run_once(
             else None
         )
         latest_trace = trace_store.latest_summary(agent.session.key)
-        if latest_trace is not None and worktree_metadata:
-            latest_trace.metadata["worktree"] = worktree_metadata
+        sandbox_metadata = getattr(getattr(runtime, "env", None), "sandbox_metadata", None)
+        if latest_trace is not None and (worktree_metadata or sandbox_metadata):
+            if worktree_metadata:
+                latest_trace.metadata["worktree"] = worktree_metadata
+            if sandbox_metadata:
+                latest_trace.metadata["sandbox"] = sandbox_metadata
             trace_store.save_summary(latest_trace)
         run_status_view = build_run_status_view(
             session_key=agent.session.key,
@@ -1415,6 +1447,7 @@ async def _run_once(
             worktree_path=worktree_ctx.path if worktree_ctx is not None else None,
             worktree_diff=worktree_diff,
             worktree_metadata=worktree_metadata,
+            sandbox_metadata=sandbox_metadata,
         )
         return {
             "session_key": agent.session.key,
@@ -1460,14 +1493,13 @@ async def _tui_chat_loop(
     deps = get_cli_dependencies(deps)
     console = deps.console
     worktree_state: _InteractiveWorktreeState | None = None
-    active_workspace: str | WorkspaceContext = workspace
-    if worktree:
-        worktree_ctx = _build_worktree_runner(workspace, deps).create(
-            workspace,
-            f"smolclaw-{uuid.uuid4().hex[:12]}",
-            copy_dirty=copy_dirty_worktree,
-        )
-        active_workspace = WorkspaceContext.from_root(worktree_ctx.path, state_root=_state_root_for_workspace(workspace))
+    worktree_ctx, active_workspace = _prepare_isolated_workspace(
+        workspace,
+        deps=deps,
+        worktree=worktree,
+        copy_dirty_worktree=copy_dirty_worktree,
+    )
+    if worktree_ctx is not None:
         worktree_state = _InteractiveWorktreeState(
             context=worktree_ctx,
             state_root=_state_root_for_workspace(workspace),
@@ -1602,14 +1634,13 @@ async def _chat_loop(
     deps = get_cli_dependencies(deps)
     console = deps.console
     worktree_state: _InteractiveWorktreeState | None = None
-    active_workspace: str | WorkspaceContext = workspace
-    if worktree:
-        worktree_ctx = _build_worktree_runner(workspace, deps).create(
-            workspace,
-            f"smolclaw-{uuid.uuid4().hex[:12]}",
-            copy_dirty=copy_dirty_worktree,
-        )
-        active_workspace = WorkspaceContext.from_root(worktree_ctx.path, state_root=_state_root_for_workspace(workspace))
+    worktree_ctx, active_workspace = _prepare_isolated_workspace(
+        workspace,
+        deps=deps,
+        worktree=worktree,
+        copy_dirty_worktree=copy_dirty_worktree,
+    )
+    if worktree_ctx is not None:
         worktree_state = _InteractiveWorktreeState(
             context=worktree_ctx,
             state_root=_state_root_for_workspace(workspace),

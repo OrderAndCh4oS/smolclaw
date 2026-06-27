@@ -234,11 +234,17 @@ review.
 ### Current State
 
 - `CommandRunner` and `CommandAdapterBundle` provide the right injection seam.
-- `SubprocessCommandRunner` is the only supported command provider.
+- `SubprocessCommandRunner` is the default command provider.
+- `DockerCommandRunner` is available through `adapters.command.provider:
+  docker` and runs agent-facing commands in one-shot containers.
 - Worktree mode separates editable source root from durable `.smolclaw` state.
-- Direct local shell capability remains disabled until a sandbox backend exists.
-- Worktree isolation protects the base repo from direct edits but does not
-  isolate host process execution.
+- Docker sandbox mode automatically uses dirty-copy isolated source roots so
+  git metadata stays self-contained in the sandbox copy.
+- Direct shell sessions are available only through the Docker command provider
+  and preserve named session cwd while still using one-shot containers.
+- Worktree isolation protects the base repo from direct edits; Docker command
+  mode also isolates process execution from host secrets, host networking, and
+  non-workspace filesystem paths.
 
 ### Implementation Details
 
@@ -254,12 +260,11 @@ review.
    - `SandboxContext.run_command(args, cwd, env, timeout)`;
    - `SandboxContext.export_diff()`;
    - `SandboxContext.cleanup()`.
-3. Add a Docker/Podman MVP provider:
+3. Add a Docker MVP provider:
    - `DockerCommandRunner`;
    - `DockerSandboxBackend`;
    - `DockerSandboxContext`;
-   - command adapter provider value: `docker`;
-   - optional provider alias: `podman` if invocation differences stay small.
+   - command adapter provider value: `docker`.
 4. Make sandbox mode imply isolated source mode:
    - never mount the base repo as the mutable workspace;
    - create or reuse an isolated worktree/copy;
@@ -281,7 +286,8 @@ review.
    - record redacted env policy decisions in diagnostics.
 7. Add network policy:
    - default: no network;
-   - later: per-command or per-run approval for full network;
+   - per-command approval for the `network` capability;
+   - inject configured proxy variables only for approved network calls;
    - host allowlists can come after the MVP, not before.
 8. Add resource policy:
    - default timeout;
@@ -307,6 +313,42 @@ review.
    - env policy summary;
    - apply-back status.
 
+### Implemented MVP
+
+- `app.sandbox` defines `SandboxPolicy`, environment filtering,
+  `DockerCommandRunner`, `DockerSandboxBackend`, and `DockerSandboxContext`.
+- `app.command_adapters` supports `subprocess` and `docker` providers while
+  keeping trusted infrastructure commands on the local runner.
+- `build_runtime_services` passes the active `WorkspaceContext` into command
+  adapter construction and stores sandbox metadata on `RuntimeEnvironment`.
+- `build_configured_agent` and `AgentLoop` carry sandbox metadata into run trace
+  summaries.
+- CLI one-shot, chat, and TUI entry points automatically create dirty-copy
+  isolated source roots when the configured command provider is `docker`.
+- `RunStatusView`, JSON run payloads, and formatted trace/status output include
+  sandbox provider, image, network, source root, resource limits, env policy,
+  and warnings.
+- `RunCommandTool` and Docker-backed `ShellSessionTool` support
+  `network_access: true`; the policy layer asks for the `network` capability
+  before Docker receives the approved network mode or proxy variables, and the
+  Docker runner rejects network without a scoped grant.
+- Docker image readiness uses local inspect plus approval-gated build/pull when
+  the configured image is missing.
+- Tests cover Docker command construction, cwd containment, secret stripping,
+  adapter routing, runtime metadata, run-status rendering, auto-isolation,
+  network/proxy gating, shell session service delegation, and image build/pull
+  grants.
+
+### Remaining Gaps
+
+- The sandbox does not mount host `.git` internals. This is intentional; Docker
+  mode uses dirty-copy repositories so git operations stay inside the isolated
+  source root.
+- The sandbox is hardened Docker container execution, not a microVM. It still
+  depends on Docker daemon isolation and host Docker configuration.
+- Domain-scoped egress allowlists, deterministic cache volumes, full PTY
+  streaming, and disk budget enforcement remain future hardening work.
+
 ### Impact
 
 - Agent-triggered commands lose direct host authority.
@@ -330,6 +372,88 @@ review.
 - Applying changes back to the base repo requires an explicit apply-back step.
 - Tests cover command construction, cwd containment, env stripping, timeout,
   nonzero exit capture, state-root separation, and apply-back review.
+
+## Phase 4.1 - Sandbox Maturity And Conformance
+
+### Objective
+
+Make the Docker command sandbox practical for real projects without overstating
+its security model. This phase treats the current backend as hardened one-shot
+container execution, not a Docker Sandboxes/OpenCode-style microVM.
+
+### Current State
+
+- `adapters.command.provider: docker` runs agent-facing command/git tools in
+  one-shot containers.
+- Docker mode automatically uses dirty-copy isolated source roots.
+- Docker config supports explicit sandbox policy fields while preserving the
+  legacy `model` image alias.
+- Docker config supports approval-gated network mode, required proxy env
+  injection, and approval-gated image inspect/build/pull.
+- Command execution now uses an explicit `AgentCommandExecutor` contract, with
+  the subprocess-shaped adapter retained only for compatibility.
+- Docker sandbox internals are split into network policy, image manager,
+  command builder, and environment policy services.
+- Tool registration uses capability-specific providers behind the stable
+  `build_tool_registry` composition entrypoint.
+- Runtime shared state exposes a typed invocation context while preserving the
+  existing dictionary wire format.
+- `doctor` reports Docker availability and warns when the generic image is
+  unlikely to contain detected project toolchains.
+- A command-provider conformance test module covers the common command runner
+  contract without requiring live Docker in normal CI.
+
+### Implementation Details
+
+1. Add explicit sandbox config:
+   - `adapters.command.sandbox.image`;
+   - `cpus`, `memory`, `pids_limit`, `tmpfs_size`, `read_only_root`;
+   - `env_allowlist`;
+   - reject default network modes other than `none`;
+   - support `approved_network`, `network_proxy_env`, `auto_pull`,
+     `auto_build`, `build_context`, and `build_dockerfile`.
+2. Keep Docker hardening defaults:
+   - no Docker socket mount;
+   - no host home, host PATH, SSH agent, cloud config, or provider keys;
+   - no raw network;
+   - read-only container root and tmpfs `/tmp`.
+3. Add project-aware image guidance:
+   - detect Python, Node, Rust, and Go markers;
+   - warn when the default Python image is unlikely to fit;
+   - inspect the configured image locally and require an image-management grant
+     before build or pull.
+4. Add Docker diagnostics:
+   - missing Docker executable;
+   - daemon unavailable;
+   - active sandbox image/network/resource policy.
+5. Add provider conformance tests:
+   - cwd containment;
+   - timeout/input/output behavior;
+   - nonzero exit capture;
+   - env policy;
+   - sandbox metadata and network mode.
+
+### Remaining Gaps
+
+- Shell sessions use an explicit Docker shell-session service boundary, but
+  full PTY streaming is not implemented yet.
+- Network access is approval-gated at tool-call granularity and requires proxy
+  config; host allowlists and domain-scoped egress policy remain future work.
+- Docker remains the only sandbox target in the active roadmap.
+- Some runtime-bound tools still receive the compatibility shared-state
+  dictionary during binding; new cross-component keys should go through
+  `RuntimeSharedState` and typed context accessors.
+
+### Acceptance Criteria
+
+- `adapters.command.sandbox` overrides legacy image/resource defaults.
+- Unsupported network modes fail fast.
+- Approved network calls require a scoped grant and proxy config before Docker
+  uses `approved_network`.
+- Docker images can be built or pulled only after image-management approval.
+- `doctor` surfaces Docker sandbox readiness without exposing secrets.
+- Provider conformance tests run in normal CI without live Docker.
+- Optional live Docker smoke tests are opt-in only.
 
 ## Phase 5 - Approval UX And Narrow Session Patterns
 
@@ -1118,7 +1242,8 @@ surface.
 
 ### Current State
 
-- Command provider registry supports `subprocess` only.
+- Command provider registry supports `subprocess` and Docker-backed one-shot
+  container execution.
 - Work-loop task/review providers are Jira and GitHub.
 - Gateway and MCP code paths are dependency-injected but secondary.
 
@@ -1132,12 +1257,8 @@ surface.
    - environment policy;
    - process group behavior if applicable;
    - sandbox boundary.
-2. Add additional command providers only after the Docker/Podman sandbox MVP
-   establishes the provider contract:
-   - macOS sandbox;
-   - remote executor;
-   - container variants;
-   - other explicit backends.
+2. Keep additional command providers out of the active roadmap until Docker
+   sandbox behavior, approvals, diagnostics, and conformance tests are stable.
 3. Define work-loop provider interfaces beyond Jira/GitHub:
    - task source;
    - review source;

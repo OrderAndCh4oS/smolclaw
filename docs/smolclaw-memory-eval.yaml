@@ -231,7 +231,7 @@ questions:
       - Custom Tools And Plugin Surface
       - IDE Integration And File References
   - id: real_sandbox_backend
-    query: What roadmap work describes the real sandbox backend, Docker or Podman command runner, isolated workspace mounts, environment stripping, no-network default, resource limits, and apply-back review?
+    query: What roadmap work describes the real sandbox backend, Docker command runner, isolated workspace mounts, environment stripping, no-network default, resource limits, and apply-back review?
     expected_sources:
       - implementation-roadmap
     expected_entities:

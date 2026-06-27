@@ -64,7 +64,7 @@ class FakeCommandRunner:
     def __init__(self):
         self.calls = []
 
-    def run(self, args, *, cwd=None, input_text=None, timeout=600):
+    def run(self, args, *, cwd=None, input_text=None, timeout=600, network_access=False):
         self.calls.append((list(args), cwd, input_text, timeout))
         if args[:3] == ["git", "worktree", "add"]:
             path = args[-2] if "-b" in args else args[-2]
@@ -174,7 +174,7 @@ class FakeInternalReviewer:
 
 
 class FailingVerificationRunner(FakeCommandRunner):
-    def run(self, args, *, cwd=None, input_text=None, timeout=600):
+    def run(self, args, *, cwd=None, input_text=None, timeout=600, network_access=False):
         if args[:4] == [os.sys.executable, "-m", "cli.main", "run"]:
             self.calls.append((list(args), cwd, input_text, timeout))
             return CommandResult(args=list(args), returncode=0, stdout='{"status":"active"}\n')

@@ -42,8 +42,4 @@ def unsupported_capabilities_for_transport(
     capabilities: Iterable[str],
     transport: Transport,
 ) -> list[str]:
-    unsupported = []
-    for capability in capabilities:
-        if capability == CAPABILITY_SHELL and transport == "direct":
-            unsupported.append(capability)
-    return unsupported
+    return []

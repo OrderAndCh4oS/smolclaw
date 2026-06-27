@@ -6,6 +6,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, MutableMapping
 
+from app.execution_grants import ExecutionGrant
+
 from app.tools.base import (
     ACTIVE_TOOL_CALL_ID_STATE_KEY,
     ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY,
@@ -20,6 +22,24 @@ APPROVAL_STORE_STATE_KEY = "approval_store"
 CHECKPOINT_STORE_STATE_KEY = "checkpoint_store"
 PERMISSION_POLICY_STATE_KEY = "permission_policy"
 ALLOW_DENIED_COMMAND_ONCE_STATE_KEY = "allow_denied_command_once"
+ACTIVE_EXECUTION_GRANT_STATE_KEY = "active_execution_grant"
+
+
+@dataclass(frozen=True)
+class RuntimeInvocationContext:
+    """Typed snapshot of cross-component invocation state."""
+
+    trace_recorder: Any = None
+    session_key: str | None = None
+    approval_store: Any = None
+    checkpoint_store: Any = None
+    trace_store: Any = None
+    safety_state: Any = None
+    permission_policy: Any = None
+    active_tool_call_id: str | None = None
+    active_tool_trace_event_id: str | None = None
+    active_execution_grant: ExecutionGrant | None = None
+    allow_denied_command_once: bool = False
 
 
 @dataclass
@@ -115,6 +135,32 @@ class RuntimeSharedState:
     def allow_denied_command_once(self) -> bool:
         return bool(self.values.get(ALLOW_DENIED_COMMAND_ONCE_STATE_KEY))
 
+    @property
+    def active_execution_grant(self):
+        return self.values.get(ACTIVE_EXECUTION_GRANT_STATE_KEY)
+
+    @property
+    def invocation_context(self) -> RuntimeInvocationContext:
+        grant = self.active_execution_grant
+        if grant is not None and not isinstance(grant, ExecutionGrant):
+            raise TypeError(
+                "Runtime shared state key "
+                f"'{ACTIVE_EXECUTION_GRANT_STATE_KEY}' expected ExecutionGrant, got {type(grant).__name__}."
+            )
+        return RuntimeInvocationContext(
+            trace_recorder=self.trace_recorder,
+            session_key=self.session_key,
+            approval_store=self.approval_store,
+            checkpoint_store=self.checkpoint_store,
+            trace_store=self.trace_store,
+            safety_state=self.safety_state,
+            permission_policy=self.permission_policy,
+            active_tool_call_id=self.active_tool_call_id,
+            active_tool_trace_event_id=self.active_tool_trace_event_id,
+            active_execution_grant=grant,
+            allow_denied_command_once=self.allow_denied_command_once,
+        )
+
     def get_typed(self, key: str, expected_type: type, default=None):
         value = self.values.get(key, default)
         if value is default or isinstance(value, expected_type):
@@ -153,6 +199,15 @@ class RuntimeSharedState:
             yield
         finally:
             self._restore(ALLOW_DENIED_COMMAND_ONCE_STATE_KEY, previous)
+
+    @contextmanager
+    def scoped_execution_grant(self, grant: ExecutionGrant):
+        previous = self.values.get(ACTIVE_EXECUTION_GRANT_STATE_KEY)
+        self.values[ACTIVE_EXECUTION_GRANT_STATE_KEY] = grant
+        try:
+            yield
+        finally:
+            self._restore(ACTIVE_EXECUTION_GRANT_STATE_KEY, previous)
 
     def _set_or_clear(self, key: str, value) -> None:
         if value is None:

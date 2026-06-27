@@ -43,6 +43,7 @@ class ApprovalRequest:
     requested_action: str = "ask"
     matched_subject: str | None = None
     matched_pattern: str | None = None
+    granted_effects: tuple[str, ...] = ()
     expires_at: float | None = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
@@ -61,6 +62,7 @@ class ApprovalRequest:
             "requested_action": self.requested_action,
             "matched_subject": self.matched_subject,
             "matched_pattern": self.matched_pattern,
+            "granted_effects": list(self.granted_effects),
             "expires_at": self.expires_at,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -81,6 +83,7 @@ class ApprovalRequest:
             requested_action=str(data.get("requested_action") or "ask"),
             matched_subject=str(data["matched_subject"]) if data.get("matched_subject") else None,
             matched_pattern=str(data["matched_pattern"]) if data.get("matched_pattern") else None,
+            granted_effects=tuple(str(effect) for effect in data.get("granted_effects") or ()),
             expires_at=float(data["expires_at"]) if data.get("expires_at") else None,
             created_at=float(data.get("created_at") or time.time()),
             updated_at=float(data.get("updated_at") or time.time()),
@@ -119,6 +122,7 @@ class ApprovalRequestStore:
         requested_action: str = "ask",
         matched_subject: str | None = None,
         matched_pattern: str | None = None,
+        granted_effects: tuple[str, ...] = (),
         expires_at: float | None = None,
     ) -> ApprovalRequest:
         arguments_hash = approval_arguments_hash(tool_name, arguments)
@@ -127,7 +131,12 @@ class ApprovalRequestStore:
         now = time.time()
         for index, existing in enumerate(requests):
             if existing.id == approval_id:
-                if existing.status == "used":
+                requested_effects = tuple(granted_effects or existing.granted_effects)
+                expands_effects = bool(
+                    granted_effects
+                    and not set(granted_effects).issubset(set(existing.granted_effects))
+                )
+                if existing.status == "used" or expands_effects:
                     existing.status = "pending"
                 existing.reason = reason or existing.reason
                 existing.run_id = run_id or existing.run_id
@@ -135,6 +144,7 @@ class ApprovalRequestStore:
                 existing.requested_action = requested_action or existing.requested_action
                 existing.matched_subject = matched_subject or existing.matched_subject
                 existing.matched_pattern = matched_pattern or existing.matched_pattern
+                existing.granted_effects = requested_effects
                 existing.expires_at = expires_at if expires_at is not None else existing.expires_at
                 existing.updated_at = now
                 requests[index] = existing
@@ -151,6 +161,7 @@ class ApprovalRequestStore:
             requested_action=requested_action,
             matched_subject=matched_subject,
             matched_pattern=matched_pattern,
+            granted_effects=tuple(granted_effects),
             expires_at=expires_at,
             run_id=run_id,
         )
@@ -164,8 +175,16 @@ class ApprovalRequestStore:
     def deny(self, session_key: str, approval_id: str) -> ApprovalRequest:
         return self._set_status(session_key, approval_id, "denied")
 
-    def consume_approved(self, session_key: str, *, tool_name: str, arguments: Mapping[str, Any]) -> ApprovalRequest | None:
+    def consume_approved(
+        self,
+        session_key: str,
+        *,
+        tool_name: str,
+        arguments: Mapping[str, Any],
+        required_effects: tuple[str, ...] = (),
+    ) -> ApprovalRequest | None:
         arguments_hash = approval_arguments_hash(tool_name, arguments)
+        required_effect_set = set(required_effects)
         requests = self._load(session_key)
         for index, request in enumerate(requests):
             if (
@@ -173,6 +192,13 @@ class ApprovalRequestStore:
                 and request.arguments_hash == arguments_hash
                 and request.status == "approved"
             ):
+                if required_effect_set and not required_effect_set.issubset(set(request.granted_effects)):
+                    request.status = "pending"
+                    request.granted_effects = tuple(sorted(required_effect_set))
+                    request.updated_at = time.time()
+                    requests[index] = request
+                    self._save(session_key, requests)
+                    return None
                 if request.expires_at is not None and request.expires_at < time.time():
                     request.status = "denied"
                     request.updated_at = time.time()
@@ -261,6 +287,8 @@ def format_approval_detail(store: ApprovalRequestStore, session_key: str, approv
         lines.append(f"Matched rule: {rule}")
     if request.run_id:
         lines.append(f"Run: {request.run_id}")
+    if request.granted_effects:
+        lines.append(f"Granted effects: {', '.join(sorted(request.granted_effects))}")
     lines.append(f"Expiry: {_format_expiry(request.expires_at)}")
     lines.append(f"Arguments: {json.dumps(request.arguments_preview, sort_keys=True, default=str)}")
     if request.status == "pending":

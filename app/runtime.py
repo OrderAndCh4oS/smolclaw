@@ -1,7 +1,8 @@
 import os
 from dataclasses import dataclass, field, replace
-from typing import Callable, Dict, Optional, Sequence
+from typing import Any, Callable, Dict, Optional, Sequence
 
+from app.agent_command import AgentCommandExecutor
 from app.agent_config import AgentConfig
 from app.agent_factory import _make_promote_hook, build_agent_loop
 from app.context_assembly import ContextAssembler
@@ -55,7 +56,8 @@ class RuntimeEnvironment:
     llm: object = None
     llm_factory: Callable[..., object] | None = None
     command_runner: object = None
-    agent_command_runner: Callable[..., object] | None = None
+    agent_command_runner: AgentCommandExecutor | Callable[..., object] | None = None
+    sandbox_metadata: dict[str, Any] | None = None
     model_settings: RuntimeModelSettings = field(default_factory=RuntimeModelSettings)
     adapter_config: RuntimeAdapterConfig = field(default_factory=RuntimeAdapterConfig)
 
@@ -234,4 +236,5 @@ def build_configured_agent(
         model_settings=env.model_settings,
         adapter_config=env.adapter_config,
         llm=env.llm,
+        trace_metadata={"sandbox": env.sandbox_metadata} if env.sandbox_metadata else None,
     )

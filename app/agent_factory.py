@@ -2,7 +2,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from itertools import count
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import quote
 
 from app.agent_config import AgentConfig
@@ -64,6 +64,7 @@ class ChildAgentFactory:
     promote_accessed_excerpts: Optional[Callable[..., object]] = None
     model_settings: RuntimeModelSettings | None = None
     adapter_config: RuntimeAdapterConfig | None = None
+    trace_metadata: dict[str, Any] | None = None
     registry_factory: Optional[Callable[[AgentConfig], ToolRegistry]] = None
     loop_registrar: Optional[Callable[[AgentLoop], None]] = None
     context_builder_factory: Optional[Callable[[AgentConfig], ContextBuilder]] = None
@@ -130,6 +131,7 @@ class ChildAgentFactory:
             promote_accessed_excerpts=self.promote_accessed_excerpts,
             model_settings=self.model_settings,
             adapter_config=self.adapter_config,
+            trace_metadata=self.trace_metadata,
             is_child_agent=True,
         )
         if self.loop_registrar:
@@ -159,6 +161,7 @@ def build_agent_loop(
     model_selection: ModelSelection | None = None,
     model_settings: RuntimeModelSettings | None = None,
     adapter_config: RuntimeAdapterConfig | None = None,
+    trace_metadata: dict[str, Any] | None = None,
     llm=None,
     is_child_agent: bool = False,
 ) -> AgentLoop:
@@ -247,6 +250,7 @@ def build_agent_loop(
         hook_runner_configurers_resolver=child_hook_runner_configurers_resolver,
         model_settings=model_settings,
         adapter_config=adapter_config,
+        trace_metadata=trace_metadata,
     )
     filtered_registry = master_registry.project_for_agent(
         config.tools,
@@ -333,6 +337,7 @@ def build_agent_loop(
         safety_state=safety_state,
         model_settings=model_settings,
         trace_store=trace_store,
+        trace_metadata=trace_metadata,
         runtime_shared_state=runtime_ctx.shared_state,
     )
     for resource in runtime_ctx.owned_resources:

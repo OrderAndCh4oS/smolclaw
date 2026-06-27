@@ -1,7 +1,7 @@
 # SmolClaw System Design Specification
 
 Status: source-derived design spec
-Last reviewed: 2026-06-26
+Last reviewed: 2026-06-27
 
 This document describes the current SmolClaw architecture as implemented in the
 repository. It is intended for developers who need to modify the system safely,
@@ -33,10 +33,10 @@ SmolClaw is a local-first coding assistant harness. The current project goals ar
 
 Non-goals for the current phase:
 
-- SmolClaw is not a general-purpose shell sandbox. Direct arbitrary shell execution remains disabled.
+- SmolClaw does not expose host shell sessions. Direct shell capability is available only through the Docker command provider and runs through named Docker-backed command sessions.
 - The gateway and MCP surfaces are secondary to local reliability, although they are maintained.
 - Work-loop automation currently targets Jira and GitHub only.
-- The command adapter provider registry supports `subprocess` only today; unsupported providers fail fast.
+- The command adapter provider registry supports `subprocess` and Docker-backed sandboxed command execution; unsupported providers fail fast.
 
 ## 2. System Context
 
@@ -172,8 +172,9 @@ repair, and test behavior without opaque services.
 ### Fail Fast At Adapter Boundaries
 
 Unsupported provider config should fail when the runtime or work-loop is built,
-not halfway through agent execution. The command adapter currently supports only
-`subprocess`; task-source and review adapters support only `jira` and `github`.
+not halfway through agent execution. The command adapter currently supports
+`subprocess` and `docker`; task-source and review adapters support only `jira`
+and `github`.
 
 ## 5. Workspace And State Model
 
@@ -270,6 +271,7 @@ Runtime build sequence:
 - optional LLM factory;
 - infrastructure command runner;
 - agent-facing subprocess-compatible command runner;
+- sandbox metadata when a sandboxed command provider is active;
 - model settings;
 - adapter config.
 
@@ -281,16 +283,75 @@ tools. Infrastructure consumers such as worktrees and work-loops use
 
 There are two command seams:
 
-1. Infrastructure command runner: `CommandRunner.run(args, cwd, input_text, timeout)` returning `CommandResult`.
-2. Agent-facing command callable: a `subprocess.run`-compatible callable used by `RunCommandTool` and git tools.
+1. Infrastructure command runner: `CommandRunner.run(args, cwd, input_text, timeout, network_access)` returning `CommandResult`.
+2. Agent-facing command executor: `AgentCommandExecutor.run(AgentCommandRequest)` returning `CommandResult`.
 
 `app.command_adapters.build_command_adapter_bundle` creates both from the same
-provider selection. Today:
+provider selection. Supported providers:
 
-- supported provider: `subprocess`;
-- unsupported providers raise `ValueError`;
-- `SubprocessCommandRunner` owns `Popen`, captured output, timeouts, process groups, and active process termination;
-- `AgentSubprocessAdapter` exposes the `CommandRunner` through the subset of `subprocess.run` used by command tools.
+- `subprocess`: infrastructure and agent commands use the local `SubprocessCommandRunner`;
+- `docker`: infrastructure commands remain local, while agent-facing commands run through `DockerCommandRunner` in one-shot containers.
+
+Unsupported providers raise `ValueError`. `SubprocessCommandRunner` owns
+`Popen`, captured output, timeouts, process groups, and active process
+termination. `CommandRunnerAgentExecutor` exposes any `CommandRunner` through
+the agent command executor contract. `AgentSubprocessAdapter` remains as a
+compatibility wrapper for callers that still need the subset of
+`subprocess.run` used by older tool wiring.
+
+`RunCommandTool` delegates command classification to
+`CommandPolicyClassifier`. That service owns the allowlist, mutation
+classification, and approval-bypass eligibility rules used by both call-policy
+calculation and execution.
+
+Docker command execution uses:
+
+- an isolated source root mounted as `/workspace`;
+- a sandbox-local `HOME` and container PATH;
+- allowlisted non-secret environment variables only;
+- `--network none` by default;
+- approval-gated `approved_network` for calls that declare `network_access: true`;
+- required proxy environment configuration before approved network calls run;
+- proxy values passed through the host runner environment rather than rendered
+  into Docker command arguments;
+- `--cap-drop ALL`;
+- `--security-opt no-new-privileges`;
+- CPU, memory, process, and tmpfs limits;
+- a read-only container root filesystem with `/workspace` mounted read-write.
+
+Docker sandbox config lives under `adapters.command.sandbox`. Supported fields
+are `image`, `network`, `approved_network`, `network_proxy_env`, `cpus`,
+`memory`, `pids_limit`, `tmpfs_size`, `read_only_root`, `env_allowlist`,
+`auto_pull`, `auto_build`, `build_context`, and `build_dockerfile`. The legacy
+`adapters.command.model` remains an image alias, but `sandbox.image` takes
+precedence. The only supported default sandbox network mode is `none`.
+`approved_network` can be `bridge` or `none` and is used only after the tool call
+declares the `network` effect, the approval middleware creates an execution
+grant, and `network_proxy_env` is configured.
+
+Docker image readiness starts with local `docker image inspect`. If the image is
+absent and `auto_build` or `auto_pull` is configured, command tools declare the
+`image_management` effect and the approval middleware must create a scoped
+execution grant before `DockerCommandRunner` can build or pull. A successful
+readiness check is cached for the runner lifetime. Build and pull failures are
+returned as command errors before any agent command runs.
+
+`DockerCommandRunner` is the enforcement point, but its internals are split by
+responsibility:
+
+- `DockerNetworkPolicy` validates network grants and proxy requirements;
+- `DockerImageManager` performs local inspect and approval-gated build/pull;
+- `DockerCommandBuilder` builds Docker argv and separates proxy values into the
+  host runner environment;
+- `SandboxEnvironmentPolicy` filters host environment variables before command
+  construction.
+
+This is hardened one-shot container execution, not a microVM sandbox. The
+implementation intentionally does not mount the Docker socket, host home, SSH
+agent, cloud config, provider keys, or host PATH. `doctor` reports the active
+command provider, checks Docker availability when Docker mode is configured, and
+warns when the generic default image is unlikely to contain detected project
+toolchains.
 
 Consumers:
 
@@ -298,6 +359,11 @@ Consumers:
 - `WorktreeRunner` and `WorktreeContext` carry an injected runner.
 - `WorkLoopRunner`, Jira adapter, GitHub adapter, git operations, verification, internal review, and run workspace cleanup use injected runners.
 - Agent command tools receive the agent-facing runner through tool registry construction.
+- `run_command` accepts `network_access` and adds the `network` effect when set.
+- `shell_session` is registered only when the command provider exposes explicit
+  shell-session support; the tool delegates to a `ShellSessionService` and
+  `ShellSessionStore` instead of checking implementation class names or storing
+  cwd state inline.
 - Eval runners accept command runners.
 - TUI git state accepts a provider; production TUI receives the configured agent runner.
 
@@ -526,13 +592,28 @@ Deferred tool search uses deterministic lexical ranking. Exact name matches rank
 above prefix/name-token matches, which rank above description-only matches.
 Ties are sorted by tool name.
 
-`build_tool_registry` maps capabilities and transport to concrete tools.
+`build_tool_registry` is the stable composition entrypoint. It validates
+transport/capability compatibility, builds a `ToolProviderContext`, delegates
+registration to capability-specific `ToolProvider` implementations, and then
+installs middleware.
+
+Capability providers:
+
+- `FilesystemToolProvider`;
+- `WebToolProvider`;
+- `CommandToolProvider`;
+- `ShellToolProvider`;
+- `MemoryToolProvider`;
+- `GoalToolProvider`;
+- `OrchestrationToolProvider`;
+- `SubagentToolProvider`.
 
 Direct transport:
 
 - filesystem tools;
 - web tools;
 - command/git tools;
+- Docker-backed shell sessions when the command provider is `docker`;
 - memory tools;
 - goal tools;
 - orchestration tools;
@@ -545,8 +626,8 @@ MCP transport:
 - HTTP fetch wrapper;
 - web search wrapper.
 
-Direct local shell execution remains disabled until a real sandbox backend
-exists.
+Direct host shell sessions remain disabled. Direct shell capability is exposed
+only as `shell_session` when the command provider is Docker-backed.
 
 ## 15. Tool Families
 
@@ -957,12 +1038,14 @@ git diff --check
 
 ## 24. Known Gaps And Problem Areas
 
-### Command Provider Depth
+### Sandbox Provider Depth
 
-The command adapter config is now respected everywhere the runtime builds command
-runners, but only `subprocess` is implemented. A real sandbox, remote executor,
-or container-backed provider would require a new `CommandRunner` implementation
-and policy review.
+The command adapter config is respected everywhere the runtime builds command
+runners. Docker-backed command execution, approval-gated network/proxy support,
+approval-gated image build/pull, and Docker-backed shell-session services are
+implemented. Remaining gaps are image/toolchain maturity, domain-scoped egress
+policy, full PTY streaming, stronger disk/cache controls, and a stronger
+isolation backend than ordinary Docker daemon container isolation.
 
 ### Work-Loop Provider Breadth
 

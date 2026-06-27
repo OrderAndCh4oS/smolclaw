@@ -145,6 +145,21 @@ class TestRuntimeProviders:
         with pytest.raises(ValueError, match="Unsupported command adapter provider 'remote'"):
             build_runtime_services(temp_dir, adapter_config=adapter_config)
 
+    def test_runtime_services_builds_docker_agent_runner_from_active_workspace(self, temp_dir):
+        adapter_config = RuntimeAdapterConfig.from_dict({
+            "adapters": {"command": {"provider": "docker", "model": "smolclaw-dev:latest"}}
+        })
+
+        runtime = build_runtime_services(
+            WorkspaceContext.from_root(temp_dir),
+            adapter_config=adapter_config,
+        )
+
+        assert runtime.env.sandbox_metadata["provider"] == "docker"
+        assert runtime.env.sandbox_metadata["image"] == "smolclaw-dev:latest"
+        assert runtime.env.sandbox_metadata["source_root"] == os.path.realpath(temp_dir)
+        assert runtime.env.agent_command_runner.runner.workspace.root_dir == os.path.realpath(temp_dir)
+
     @pytest.mark.asyncio
     async def test_master_registry_uses_agent_command_runner(self, mock_smol_rag, sessions_dir, temp_dir):
         calls = []
@@ -311,6 +326,36 @@ class TestRuntimeProviders:
 
         assert loop.tool_registry._tools["read_file"].__class__.__name__ == "McpFileReadTool"
         assert loop.tool_registry._tools["web_fetch"].__class__.__name__ == "McpHttpFetchTool"
+
+    def test_build_configured_agent_passes_sandbox_trace_metadata(
+        self, mock_smol_rag, sessions_dir, temp_dir
+    ):
+        env = RuntimeEnvironment(
+            smol_rag=mock_smol_rag,
+            session_manager=SessionManager(sessions_dir),
+            workspace=WorkspaceContext.from_root(temp_dir).ensure_dirs(),
+            llm=_make_loop_llm(),
+            sandbox_metadata={
+                "provider": "docker",
+                "image": "smolclaw-dev:latest",
+            },
+        )
+        config = AgentConfig(
+            name="reader",
+            model="gpt-test",
+            persona="You are Reader.",
+            tools=["read_file"],
+            capabilities=["filesystem"],
+        )
+
+        loop = build_configured_agent(config, env)
+
+        assert loop.trace_metadata == {
+            "sandbox": {
+                "provider": "docker",
+                "image": "smolclaw-dev:latest",
+            }
+        }
 
     def test_build_configured_agent_rejects_unsatisfied_tools_for_transport(
         self, mock_smol_rag, sessions_dir, temp_dir

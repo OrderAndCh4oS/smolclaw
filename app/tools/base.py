@@ -15,6 +15,8 @@ ToolEffect = Literal[
     "runtime_state_write",
     "command_read",
     "command_write",
+    "image_management",
+    "shell_session",
     "network",
     "delegation",
 ]

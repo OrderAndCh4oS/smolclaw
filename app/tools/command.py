@@ -3,8 +3,13 @@ import re
 import shlex
 import subprocess
 from collections.abc import Callable
+from dataclasses import replace
 
+from app.agent_command import AgentCommandExecutor, AgentCommandRequest, coerce_agent_command_executor
+from app.command_policy import CommandPolicyClassifier, DENIED_COMMAND_TOKENS
+from app.execution_grants import IMAGE_MANAGEMENT_EFFECT, NETWORK_EFFECT, SHELL_SESSION_EFFECT
 from app.runtime_state import RuntimeSharedState
+from app.shell_sessions import DockerShellSessionService, ShellSessionService
 from app.tools.base import Tool, ToolCallPolicy, ToolRuntimeContext
 from app.tools.permissions import COMMAND_EXECUTION, SHELL_READ, SHELL_WRITE
 from app.workspace import WorkspaceContext
@@ -29,31 +34,76 @@ def _validate_git_ref(value: str, *, label: str) -> str | None:
 
 
 def _coerce_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
     return bool(value)
 
 
 class _WorkspaceCommandMixin:
-    def __init__(self, workspace: WorkspaceContext | str, command_runner: Callable | None = None):
+    def __init__(
+        self,
+        workspace: WorkspaceContext | str,
+        command_runner: Callable | None = None,
+        command_executor: AgentCommandExecutor | None = None,
+        shared_state: dict | None = None,
+    ):
         if isinstance(workspace, WorkspaceContext):
             self.workspace = workspace
         else:
             self.workspace = WorkspaceContext.from_root(workspace)
         self.command_runner = command_runner or subprocess.run
+        self.command_executor = coerce_agent_command_executor(
+            self.command_runner,
+            command_executor=command_executor,
+        )
+        self.shared_state = shared_state if shared_state is not None else {}
+        self.runtime_state = RuntimeSharedState(self.shared_state)
+
+    def bind(self, runtime_ctx: ToolRuntimeContext) -> Tool:
+        return self.__class__(
+            runtime_ctx.workspace or self.workspace,
+            command_runner=self.command_runner,
+            command_executor=self.command_executor,
+            shared_state=runtime_ctx.shared_state,
+        )
+
+    def get_call_policy(self, arguments: dict | None = None) -> ToolCallPolicy:
+        return self._with_provider_effects(self.default_call_policy)
 
     def _resolve_cwd(self, cwd: str | None = None) -> tuple[str | None, str | None]:
         return self.workspace.resolve_contained_path(cwd or ".", label="cwd")
 
-    def _run(self, args: list[str], cwd: str, timeout: int = 30, max_output_chars: int = 20000) -> str:
+    def _run(
+        self,
+        args: list[str],
+        cwd: str,
+        timeout: int = 30,
+        max_output_chars: int = 20000,
+        network_access: bool = False,
+    ) -> str:
         try:
-            result = self.command_runner(
-                args,
-                cwd=cwd,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=timeout,
-                check=False,
-            )
+            run_kwargs = {
+                "cwd": cwd,
+                "text": True,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+                "timeout": timeout,
+                "check": False,
+            }
+            if network_access:
+                run_kwargs["network_access"] = True
+            execution_grant = self.runtime_state.active_execution_grant
+            if execution_grant is not None:
+                run_kwargs["execution_grant"] = execution_grant
+            result = self.command_executor.run(AgentCommandRequest(
+                args=list(args),
+                cwd=run_kwargs["cwd"],
+                timeout=run_kwargs["timeout"],
+                network_access=bool(run_kwargs.get("network_access")),
+                execution_grant=run_kwargs.get("execution_grant"),
+            ))
         except FileNotFoundError:
             return f"Error: command not found: {args[0]}"
         except subprocess.TimeoutExpired as e:
@@ -86,6 +136,16 @@ class _WorkspaceCommandMixin:
         if isinstance(value, bytes):
             return value.decode("utf-8", errors="replace")
         return str(value)
+
+    def _with_provider_effects(self, policy: ToolCallPolicy) -> ToolCallPolicy:
+        effects = set(policy.effects)
+        if self._requires_image_management_approval():
+            effects.add(IMAGE_MANAGEMENT_EFFECT)
+        return replace(policy, effects=frozenset(effects))
+
+    def _requires_image_management_approval(self) -> bool:
+        checker = getattr(self.command_executor, "requires_image_management_approval", None)
+        return bool(checker()) if callable(checker) else False
 
 
 class GitStatusTool(_WorkspaceCommandMixin, Tool):
@@ -434,33 +494,31 @@ class GitCheckoutTool(_WorkspaceCommandMixin, Tool):
 
 
 class RunCommandTool(_WorkspaceCommandMixin, Tool):
-    DENIED_TOKENS = {
-        "rm",
-        "mv",
-        "install",
-        "add",
-        "checkout",
-        "clean",
-        "reset",
-        "restore",
-        "switch",
-    }
+    DENIED_TOKENS = set(DENIED_COMMAND_TOKENS)
 
     def __init__(
         self,
         workspace: WorkspaceContext | str,
         shared_state: dict | None = None,
         command_runner: Callable | None = None,
+        command_executor: AgentCommandExecutor | None = None,
+        command_classifier: CommandPolicyClassifier | None = None,
     ):
-        super().__init__(workspace, command_runner=command_runner)
-        self.shared_state = shared_state if shared_state is not None else {}
-        self.runtime_state = RuntimeSharedState(self.shared_state)
+        super().__init__(
+            workspace,
+            command_runner=command_runner,
+            command_executor=command_executor,
+            shared_state=shared_state,
+        )
+        self.command_classifier = command_classifier or CommandPolicyClassifier()
 
     def bind(self, runtime_ctx: ToolRuntimeContext) -> Tool:
         return RunCommandTool(
             runtime_ctx.workspace or self.workspace,
             shared_state=runtime_ctx.shared_state,
             command_runner=self.command_runner,
+            command_executor=self.command_executor,
+            command_classifier=self.command_classifier,
         )
 
     @property
@@ -473,13 +531,16 @@ class RunCommandTool(_WorkspaceCommandMixin, Tool):
     def get_call_policy(self, arguments: dict | None = None) -> ToolCallPolicy:
         command = (arguments or {}).get("command") or ""
         tags = {COMMAND_EXECUTION}
-        mutates = self._command_may_mutate(command)
+        mutates = self.command_classifier.may_mutate(command)
         tags.add(SHELL_WRITE if mutates else SHELL_READ)
-        return ToolCallPolicy(
-            effects=frozenset({"command_write" if mutates else "command_read"}),
+        effects = {"command_write" if mutates else "command_read"}
+        if _coerce_bool((arguments or {}).get("network_access")):
+            effects.add(NETWORK_EFFECT)
+        return self._with_provider_effects(ToolCallPolicy(
+            effects=frozenset(effects),
             mutates_state=mutates,
             tags=frozenset(tags),
-        )
+        ))
 
     @property
     def name(self) -> str:
@@ -514,6 +575,11 @@ class RunCommandTool(_WorkspaceCommandMixin, Tool):
                     "minimum": 1000,
                     "maximum": 100000,
                 },
+                "network_access": {
+                    "type": "boolean",
+                    "description": "Request approved Docker sandbox network access for this command",
+                    "default": False,
+                },
             },
             "required": ["command"],
         }
@@ -528,81 +594,157 @@ class RunCommandTool(_WorkspaceCommandMixin, Tool):
             return f"Error: invalid command: {e}"
         if not args:
             return "Error: command is required"
-        allowed, reason = self._is_allowed(args)
+        allowed, reason = self.command_classifier.is_allowed(args)
         if not allowed:
-            if self._has_approved_bypass() and self._is_approval_bypassable(args):
+            if self._has_approved_bypass() and self.command_classifier.is_approval_bypassable(args):
                 allowed = True
             else:
                 return f"Denied: command is not allowlisted: {reason}"
         timeout = self._coerce_int(kwargs.get("timeout_seconds", 120), minimum=1, maximum=600, default=120)
         max_output_chars = self._coerce_int(kwargs.get("max_output_chars", 20000), minimum=1000, maximum=100000, default=20000)
-        return self._run(args, cwd, timeout=timeout, max_output_chars=max_output_chars)
-
-    def _is_allowed(self, args: list[str]) -> tuple[bool, str]:
-        if any(token in self.DENIED_TOKENS for token in args):
-            return False, "contains a denied token"
-
-        if args[0] == "git":
-            return len(args) > 1 and args[1] in {"status", "diff", "log", "show", "branch"}, "git command must be read-only"
-        if args[0] == "pytest":
-            return True, ""
-        if args[:3] == ["python", "-m", "pytest"]:
-            return True, ""
-        if args[0] in {"npm", "pnpm", "yarn", "bun"}:
-            return self._package_command_allowed(args)
-        if args[0] == "cargo":
-            return len(args) > 1 and args[1] in {"test", "check"}, "cargo command must be test or check"
-        if args[:2] == ["go", "test"]:
-            return True, ""
-        return False, f"unsupported command family: {args[0]}"
+        return self._run(
+            args,
+            cwd,
+            timeout=timeout,
+            max_output_chars=max_output_chars,
+            network_access=_coerce_bool(kwargs.get("network_access")),
+        )
 
     def _has_approved_bypass(self) -> bool:
         return self.runtime_state.allow_denied_command_once
 
+    def _is_allowed(self, args: list[str]) -> tuple[bool, str]:
+        return self.command_classifier.is_allowed(args)
+
     def _is_approval_bypassable(self, args: list[str]) -> bool:
-        if args[0] in {"npm", "pnpm", "yarn", "bun"} and len(args) > 1:
-            return args[1] in {"install", "i", "add", "view"}
-        if args[:2] == ["node", "-e"]:
-            return True
-        return False
+        return self.command_classifier.is_approval_bypassable(args)
 
     def _command_may_mutate(self, command: str) -> bool:
-        try:
-            args = shlex.split(command)
-        except ValueError:
-            return True
-        if not args:
-            return False
-        if any(marker in command for marker in (">", ">>", "2>", ">|")):
-            return True
-        if any(token in self.DENIED_TOKENS for token in args):
-            return True
-        if args[0] == "git":
-            return not (len(args) > 1 and args[1] in {"status", "diff", "log", "show", "branch"})
-        if args[0] in {"pytest", "cargo"}:
-            return False
-        if args[:3] == ["python", "-m", "pytest"]:
-            return False
-        if args[:2] == ["go", "test"]:
-            return False
-        if args[0] in {"npm", "pnpm", "yarn", "bun"}:
-            return not self._package_command_is_read_only(args)
-        return True
+        return self.command_classifier.may_mutate(command)
 
     def _package_command_allowed(self, args: list[str]) -> tuple[bool, str]:
-        if len(args) >= 2 and args[1] == "test":
-            return True, ""
-        if len(args) >= 3 and args[1] == "run" and not args[2].startswith("-"):
-            return True, ""
-        return False, f"{args[0]} command must be test or run <script>"
+        return self.command_classifier.package_command_allowed(args)
 
     def _package_command_is_read_only(self, args: list[str]) -> bool:
-        if len(args) >= 2 and args[1] == "test":
-            return True
-        return len(args) >= 3 and args[1] == "run" and args[2] in {"test", "check", "lint"}
+        return self.command_classifier.package_command_is_read_only(args)
 
     def _coerce_int(self, value, *, minimum: int, maximum: int, default: int) -> int:
         try:
             return min(max(int(value), minimum), maximum)
         except (TypeError, ValueError):
             return default
+
+
+class ShellSessionTool(Tool):
+    def __init__(
+        self,
+        workspace: WorkspaceContext | str,
+        service_factory: Callable[[WorkspaceContext, dict], ShellSessionService],
+        shared_state: dict | None = None,
+    ):
+        self.workspace = workspace if isinstance(workspace, WorkspaceContext) else WorkspaceContext.from_root(workspace)
+        self.service_factory = service_factory
+        self.shared_state = shared_state if shared_state is not None else {}
+        self.runtime_state = RuntimeSharedState(self.shared_state)
+
+    def bind(self, runtime_ctx: ToolRuntimeContext) -> Tool:
+        return ShellSessionTool(
+            runtime_ctx.workspace or self.workspace,
+            service_factory=self.service_factory,
+            shared_state=runtime_ctx.shared_state,
+        )
+
+    @property
+    def default_call_policy(self) -> ToolCallPolicy:
+        return ToolCallPolicy(
+            effects=frozenset({"command_write", SHELL_SESSION_EFFECT}),
+            mutates_state=True,
+            tags=frozenset({COMMAND_EXECUTION, SHELL_WRITE}),
+        )
+
+    def get_call_policy(self, arguments: dict | None = None) -> ToolCallPolicy:
+        effects = {"command_write", SHELL_SESSION_EFFECT}
+        if _coerce_bool((arguments or {}).get("network_access")):
+            effects.add(NETWORK_EFFECT)
+        if self._requires_image_management_approval():
+            effects.add(IMAGE_MANAGEMENT_EFFECT)
+        return ToolCallPolicy(
+            effects=frozenset(effects),
+            mutates_state=True,
+            tags=frozenset({COMMAND_EXECUTION, SHELL_WRITE}),
+        )
+
+    @property
+    def name(self) -> str:
+        return "shell_session"
+
+    @property
+    def description(self) -> str:
+        return "Run shell code in a named Docker sandbox session."
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "Named shell session",
+                    "default": "default",
+                },
+                "command": {"type": "string", "description": "Shell command or script to run"},
+                "cwd": {
+                    "type": "string",
+                    "description": "Workspace-relative starting directory for new sessions",
+                    "default": ".",
+                },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "description": "Timeout in seconds",
+                    "default": 120,
+                    "minimum": 1,
+                    "maximum": 600,
+                },
+                "max_output_chars": {
+                    "type": "integer",
+                    "description": "Maximum output characters",
+                    "default": 20000,
+                    "minimum": 1000,
+                    "maximum": 100000,
+                },
+                "network_access": {
+                    "type": "boolean",
+                    "description": "Request approved Docker sandbox network access for this command",
+                    "default": False,
+                },
+            },
+            "required": ["command"],
+        }
+
+    async def execute(self, **kwargs) -> str:
+        command = str(kwargs.get("command") or "")
+        if not command.strip():
+            return "Error: command is required"
+        session_id = str(kwargs.get("session_id") or "default").strip() or "default"
+        timeout = RunCommandTool._coerce_int(self, kwargs.get("timeout_seconds", 120), minimum=1, maximum=600, default=120)
+        max_output_chars = RunCommandTool._coerce_int(self, kwargs.get("max_output_chars", 20000), minimum=1000, maximum=100000, default=20000)
+        service = self.service_factory(self.workspace, self.shared_state)
+        result = service.execute(
+            session_id=session_id,
+            command=command,
+            cwd=kwargs.get("cwd"),
+            timeout=timeout,
+            network_access=_coerce_bool(kwargs.get("network_access")),
+            execution_grant=self.runtime_state.active_execution_grant,
+        )
+        return _WorkspaceCommandMixin._format_output(
+            self,
+            result.exit_code,
+            result.output,
+            max_output_chars,
+            timed_out=result.timed_out,
+        )
+
+    def _requires_image_management_approval(self) -> bool:
+        service = self.service_factory(self.workspace, self.shared_state)
+        return service.requires_image_management_approval()

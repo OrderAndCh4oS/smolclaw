@@ -249,10 +249,103 @@ class TestPolicyPermissionMiddleware:
             for rule in policy.rules
             if rule.subject == "command"
         }
+        capability_rules = {
+            rule.pattern: rule.action
+            for rule in policy.rules
+            if rule.subject == "capability"
+        }
 
         assert command_rules["npm install*"] == "ask"
         assert command_rules["npm i*"] == "ask"
         assert command_rules["node -e*"] == "ask"
+        assert capability_rules["network"] == "ask"
+        assert capability_rules["image_management"] == "ask"
+        assert capability_rules["shell_session"] == "ask"
+
+    @pytest.mark.asyncio
+    async def test_network_effect_requires_approval(self):
+        chain = MiddlewareChain([
+            PolicyPermissionMiddleware("execute", policy=PermissionPolicy()),
+        ])
+        tool = PolicyTool(
+            "run_command",
+            policy=ToolCallPolicy(effects=frozenset({"command_read", "network"})),
+        )
+
+        result = await chain.run(tool, {"command": "python -m pytest", "network_access": True})
+
+        assert str(result).startswith("Error: Approval required")
+        assert "network access requires approval" in result
+
+    @pytest.mark.asyncio
+    async def test_approved_call_scopes_execution_grant(self, temp_dir):
+        approval_store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+        shared_state = {
+            "approval_store": approval_store,
+            "session_key": "session-a",
+        }
+        observed = []
+
+        class GrantTool(PolicyTool):
+            async def execute(self, **kwargs):
+                observed.append(shared_state.get("active_execution_grant"))
+                return "ok"
+
+        tool = GrantTool(
+            "run_command",
+            policy=ToolCallPolicy(effects=frozenset({"command_read", "network"})),
+        )
+        chain = MiddlewareChain([
+            PolicyPermissionMiddleware("execute", policy=PermissionPolicy(), shared_state=shared_state),
+        ])
+
+        first = await chain.run(tool, {"command": "python -m pytest", "network_access": True})
+        pending = approval_store.list("session-a", status="pending")
+        approval_store.approve("session-a", pending[0].id)
+        second = await chain.run(tool, {"command": "python -m pytest", "network_access": True})
+
+        assert str(first).startswith("Error: Approval required")
+        assert second == "ok"
+        assert observed[0].allows("network")
+        assert shared_state.get("active_execution_grant") is None
+
+    @pytest.mark.asyncio
+    async def test_approved_call_requires_stored_effect_coverage(self, temp_dir):
+        approval_store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+        shared_state = {
+            "approval_store": approval_store,
+            "session_key": "session-a",
+        }
+        observed = []
+        arguments = {"command": "python -m pytest", "network_access": True}
+        stale_request = approval_store.request(
+            "session-a",
+            tool_name="run_command",
+            arguments=arguments,
+            granted_effects=("command_read",),
+        )
+        approval_store.approve("session-a", stale_request.id)
+
+        class GrantTool(PolicyTool):
+            async def execute(self, **kwargs):
+                observed.append(shared_state.get("active_execution_grant"))
+                return "ok"
+
+        tool = GrantTool(
+            "run_command",
+            policy=ToolCallPolicy(effects=frozenset({"command_read", "network"})),
+        )
+        chain = MiddlewareChain([
+            PolicyPermissionMiddleware("execute", policy=PermissionPolicy(), shared_state=shared_state),
+        ])
+
+        result = await chain.run(tool, arguments)
+        request = approval_store.get("session-a", stale_request.id)
+
+        assert str(result).startswith("Error: Approval required")
+        assert observed == []
+        assert request.status == "pending"
+        assert set(request.granted_effects) == {"command_read", "network"}
 
     @pytest.mark.asyncio
     async def test_policy_approval_required_normalizes_as_denied(self):

@@ -228,6 +228,52 @@ adapters:
       provider: subprocess
 ```
 
+To run agent command and git tools through the Docker sandbox, set the command
+provider to `docker`. The legacy `model` field selects the container image;
+`sandbox.image` takes precedence when both are present. When omitted, SmolClaw
+uses its default Python image and `doctor` warns when project markers suggest a
+different toolchain is needed.
+
+```yaml
+adapters:
+  command:
+    default:
+      provider: docker
+      model: legacy-image:latest
+    sandbox:
+      image: smolclaw-dev:latest
+      cpus: "2"
+      memory: 2g
+      pids_limit: 256
+      tmpfs_size: 512m
+      read_only_root: true
+      approved_network: bridge
+      network_proxy_env:
+        HTTPS_PROXY: http://proxy.local:8080
+      auto_pull: true
+      auto_build: false
+      build_context: .
+      build_dockerfile: Dockerfile.sandbox
+      env_allowlist:
+        - CI
+        - LANG
+        - LC_ALL
+        - TERM
+```
+
+Docker sandbox networking defaults to `none` for every agent command. Commands
+and shell sessions can request `network_access: true`; in `execute` and `full`
+permission modes that declares the `network` capability and creates an approval
+request before Docker receives the approved network mode. `network_proxy_env`
+must be configured for approved network calls. Proxy values are passed to the
+Docker CLI through the host runner environment, while Docker command arguments
+contain only proxy variable names.
+
+Docker image readiness starts with local `docker image inspect`. If the image is
+missing and `auto_build` or `auto_pull` is configured, SmolClaw asks for
+`image_management` approval before running `docker build` or `docker pull`.
+Successful readiness is cached for the runner lifetime.
+
 Claude completions can be paired with Voyage embeddings:
 
 ```yaml

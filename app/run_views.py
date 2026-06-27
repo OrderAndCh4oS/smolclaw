@@ -45,6 +45,15 @@ class RunStatusView:
     worktree_excluded_path_count: int = 0
     worktree_warning_count: int = 0
     worktree_warnings: list[str] = field(default_factory=list)
+    sandbox_provider: str | None = None
+    sandbox_image: str | None = None
+    sandbox_network: str | None = None
+    sandbox_source_root: str | None = None
+    sandbox_state_root: str | None = None
+    sandbox_container_workspace: str | None = None
+    sandbox_resource_limits: dict[str, Any] = field(default_factory=dict)
+    sandbox_env_policy: dict[str, Any] = field(default_factory=dict)
+    sandbox_warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -74,6 +83,7 @@ def build_run_status_view(
     worktree_path: str | None = None,
     worktree_diff: str | None = None,
     worktree_metadata: dict[str, Any] | None = None,
+    sandbox_metadata: dict[str, Any] | None = None,
 ) -> RunStatusView:
     summary = trace_store.latest_summary(session_key) if trace_store is not None else None
     ledger = goal_store.load(session_key) if goal_store is not None else None
@@ -90,8 +100,13 @@ def build_run_status_view(
     pending_approvals = getattr(ledger, "pending_approvals", 0) if ledger else 0
     worktree_has_diff, worktree_diff_size = _worktree_diff_metadata(worktree_diff)
     if worktree_metadata is None and summary is not None:
-        worktree_metadata = dict(getattr(summary, "metadata", {}) or {}).get("worktree")
+        summary_metadata = dict(getattr(summary, "metadata", {}) or {})
+        worktree_metadata = summary_metadata.get("worktree")
+    if sandbox_metadata is None and summary is not None:
+        summary_metadata = dict(getattr(summary, "metadata", {}) or {})
+        sandbox_metadata = summary_metadata.get("sandbox")
     worktree_metadata = worktree_metadata or {}
+    sandbox_metadata = sandbox_metadata or {}
     return RunStatusView(
         session_key=session_key,
         trace_run_id=summary.run_id if summary else None,
@@ -130,6 +145,15 @@ def build_run_status_view(
         worktree_excluded_path_count=int(worktree_metadata.get("excluded_path_count") or 0),
         worktree_warning_count=int(worktree_metadata.get("warning_count") or 0),
         worktree_warnings=list(worktree_metadata.get("warnings") or []),
+        sandbox_provider=sandbox_metadata.get("provider"),
+        sandbox_image=sandbox_metadata.get("image"),
+        sandbox_network=sandbox_metadata.get("network"),
+        sandbox_source_root=sandbox_metadata.get("source_root"),
+        sandbox_state_root=sandbox_metadata.get("state_root"),
+        sandbox_container_workspace=sandbox_metadata.get("container_workspace"),
+        sandbox_resource_limits=dict(sandbox_metadata.get("resource_limits") or {}),
+        sandbox_env_policy=dict(sandbox_metadata.get("env_policy") or {}),
+        sandbox_warnings=list(sandbox_metadata.get("warnings") or []),
     )
 
 
@@ -143,13 +167,19 @@ def build_run_status_view_from_artifacts(
     worktree_path: str | None = None,
     worktree_diff: str | None = None,
     worktree_metadata: dict[str, Any] | None = None,
+    sandbox_metadata: dict[str, Any] | None = None,
 ) -> RunStatusView:
     verification = getattr(trace_summary, "verification", []) if trace_summary else []
     pending_approvals = getattr(ledger, "pending_approvals", 0) if ledger else 0
     worktree_has_diff, worktree_diff_size = _worktree_diff_metadata(worktree_diff)
     if worktree_metadata is None and trace_summary is not None:
-        worktree_metadata = dict(getattr(trace_summary, "metadata", {}) or {}).get("worktree")
+        summary_metadata = dict(getattr(trace_summary, "metadata", {}) or {})
+        worktree_metadata = summary_metadata.get("worktree")
+    if sandbox_metadata is None and trace_summary is not None:
+        summary_metadata = dict(getattr(trace_summary, "metadata", {}) or {})
+        sandbox_metadata = summary_metadata.get("sandbox")
     worktree_metadata = worktree_metadata or {}
+    sandbox_metadata = sandbox_metadata or {}
     return RunStatusView(
         session_key=session_key,
         trace_run_id=getattr(trace_summary, "run_id", None) if trace_summary else None,
@@ -188,6 +218,15 @@ def build_run_status_view_from_artifacts(
         worktree_excluded_path_count=int(worktree_metadata.get("excluded_path_count") or 0),
         worktree_warning_count=int(worktree_metadata.get("warning_count") or 0),
         worktree_warnings=list(worktree_metadata.get("warnings") or []),
+        sandbox_provider=sandbox_metadata.get("provider"),
+        sandbox_image=sandbox_metadata.get("image"),
+        sandbox_network=sandbox_metadata.get("network"),
+        sandbox_source_root=sandbox_metadata.get("source_root"),
+        sandbox_state_root=sandbox_metadata.get("state_root"),
+        sandbox_container_workspace=sandbox_metadata.get("container_workspace"),
+        sandbox_resource_limits=dict(sandbox_metadata.get("resource_limits") or {}),
+        sandbox_env_policy=dict(sandbox_metadata.get("env_policy") or {}),
+        sandbox_warnings=list(sandbox_metadata.get("warnings") or []),
     )
 
 
@@ -416,6 +455,23 @@ def format_run_status_view(view: RunStatusView) -> str:
         if view.worktree_has_diff is not None:
             diff_state = "present" if view.worktree_has_diff else "none"
             lines.append(f"Worktree diff: {diff_state} ({view.worktree_diff_size or 0} bytes)")
+    if view.sandbox_provider:
+        lines.append(f"Sandbox: {view.sandbox_provider}")
+        if view.sandbox_image:
+            lines.append(f"Sandbox image: {view.sandbox_image}")
+        if view.sandbox_network:
+            lines.append(f"Sandbox network: {view.sandbox_network}")
+        if view.sandbox_container_workspace:
+            lines.append(f"Sandbox workspace: {view.sandbox_container_workspace}")
+        if view.sandbox_source_root:
+            lines.append(f"Sandbox source root: {view.sandbox_source_root}")
+        limits = _format_mapping(view.sandbox_resource_limits)
+        if limits:
+            lines.append(f"Sandbox limits: {limits}")
+        env_policy = _format_env_policy(view.sandbox_env_policy)
+        if env_policy:
+            lines.append(f"Sandbox env: {env_policy}")
+        lines.extend(f"- {warning}" for warning in view.sandbox_warnings[:5])
     if view.ledger_path:
         lines.append(f"Ledger path: {view.ledger_path}")
     if view.trace_path:
@@ -423,3 +479,25 @@ def format_run_status_view(view: RunStatusView) -> str:
     if view.summary_path:
         lines.append(f"Summary path: {view.summary_path}")
     return "\n".join(lines)
+
+
+def _format_mapping(value: dict[str, Any]) -> str:
+    if not value:
+        return ""
+    return ", ".join(f"{key}={value[key]}" for key in sorted(value))
+
+
+def _format_env_policy(value: dict[str, Any]) -> str:
+    if not value:
+        return ""
+    allowed = value.get("allowed_host_keys") or []
+    injected = value.get("injected_keys") or []
+    stripped = int(value.get("stripped_sensitive_count") or 0)
+    parts = [
+        f"allowed_host_keys={len(allowed)}",
+        f"injected_keys={len(injected)}",
+        f"stripped_sensitive={stripped}",
+    ]
+    if value.get("host_path_passthrough") is False:
+        parts.append("host_path_passthrough=no")
+    return ", ".join(parts)

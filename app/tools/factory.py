@@ -10,15 +10,14 @@ from app.runtime_capabilities import (
     CAPABILITY_ORCHESTRATION,
     CAPABILITY_SHELL,
     CAPABILITY_SUBAGENTS,
-    CAPABILITY_WEB,
     DEFAULT_CAPABILITIES,
     unsupported_capabilities_for_transport,
 )
+from app.tool_providers import ToolProviderContext, register_capability_tools
 from app.tools.middleware import (
     MiddlewareFn, TracingMiddleware, logging_middleware,
 )
 from app.tools.registry import ToolRegistry
-from app.utilities import ensure_dir
 from app.workspace import WorkspaceContext
 
 
@@ -62,6 +61,7 @@ def build_tool_registry(
         CAPABILITY_COMMAND,
         CAPABILITY_FILESYSTEM,
         CAPABILITY_MEMORY,
+        CAPABILITY_SHELL,
     }
     if transport == "direct" and any(
         capability_name in requires_local_workspace for capability_name in capability_names
@@ -70,135 +70,23 @@ def build_tool_registry(
             "A workspace is required for direct filesystem and memory capabilities."
         )
 
-    for capability_name in capability_names:
-        if capability_name == CAPABILITY_FILESYSTEM:
-            from app.tools.filesystem import (
-                ApplyPatchTool,
-                EditFileTool,
-                FindFilesTool,
-                GrepSearchTool,
-                ListDirTool,
-                ReadFileTool,
-                WriteFileTool,
-            )
-
-            if transport == "direct":
-                registry.register(ReadFileTool(workspace=workspace), capability_name=capability_name)
-                registry.register(WriteFileTool(workspace=workspace), capability_name=capability_name)
-                registry.register(EditFileTool(workspace=workspace), capability_name=capability_name)
-                registry.register(ListDirTool(workspace=workspace), capability_name=capability_name)
-                registry.register(FindFilesTool(workspace=workspace), capability_name=capability_name)
-                registry.register(ApplyPatchTool(workspace=workspace), capability_name=capability_name)
-                registry.register(GrepSearchTool(workspace=workspace), capability_name=capability_name)
-            else:
-                from app.tools.mcp_tools import (
-                    McpEditFileTool, McpFileReadTool, McpFileWriteTool,
-                )
-
-                registry.register(McpFileReadTool(token_issuer_url, gateway_url), capability_name=capability_name)
-                registry.register(McpFileWriteTool(token_issuer_url, gateway_url), capability_name=capability_name)
-                registry.register(McpEditFileTool(token_issuer_url, gateway_url), capability_name=capability_name)
-        elif capability_name == CAPABILITY_WEB:
-            if transport == "direct":
-                from app.tools.web import WebSearchTool, WebFetchTool
-
-                registry.register(WebSearchTool(), capability_name=capability_name)
-                registry.register(WebFetchTool(), capability_name=capability_name)
-            else:
-                from app.tools.mcp_tools import (
-                    McpHttpFetchTool, McpWebSearchTool,
-                )
-
-                registry.register(McpHttpFetchTool(token_issuer_url, gateway_url), capability_name=capability_name)
-                registry.register(McpWebSearchTool(token_issuer_url, gateway_url), capability_name=capability_name)
-        elif capability_name == CAPABILITY_SHELL:
-            if transport == "direct":
-                raise ValueError(
-                    "Direct local shell execution is disabled until a real sandbox backend exists."
-                )
-            from app.tools.mcp_tools import (
-                McpShellExecTool,
-            )
-            registry.register(McpShellExecTool(token_issuer_url, gateway_url), capability_name=capability_name)
-        elif capability_name == CAPABILITY_COMMAND:
-            if transport == "direct":
-                from app.tools.command import (
-                    GitAddTool,
-                    GitBranchTool,
-                    GitCheckoutTool,
-                    GitCommitTool,
-                    GitDiffTool,
-                    GitPullTool,
-                    GitPushTool,
-                    GitStatusTool,
-                    RunCommandTool,
-                )
-
-                registry.register(GitStatusTool(workspace, command_runner=command_runner), capability_name=capability_name)
-                registry.register(GitDiffTool(workspace, command_runner=command_runner), capability_name=capability_name)
-                registry.register(GitBranchTool(workspace, command_runner=command_runner), capability_name=capability_name)
-                registry.register(GitCheckoutTool(workspace, command_runner=command_runner), capability_name=capability_name)
-                registry.register(GitPullTool(workspace, command_runner=command_runner), capability_name=capability_name)
-                registry.register(GitAddTool(workspace, command_runner=command_runner), capability_name=capability_name)
-                registry.register(GitCommitTool(workspace, command_runner=command_runner), capability_name=capability_name)
-                registry.register(GitPushTool(workspace, command_runner=command_runner), capability_name=capability_name)
-                registry.register(RunCommandTool(workspace, command_runner=command_runner), capability_name=capability_name)
-        elif capability_name == CAPABILITY_GOAL and session_manager:
-            from app.tools.goal import (
-                GoalRecordEvidenceTool,
-                GoalStartTool,
-                GoalStatusTool,
-                GoalUpdateTool,
-            )
-
-            registry.register(GoalStartTool(), capability_name=capability_name)
-            registry.register(GoalStatusTool(), capability_name=capability_name)
-            registry.register(GoalUpdateTool(), capability_name=capability_name)
-            registry.register(GoalRecordEvidenceTool(), capability_name=capability_name)
-        elif capability_name == CAPABILITY_MEMORY and smol_rag is not None:
-            from app.tools.memory_tools import (
-                MemorySearchTool, MemoryGraphQueryTool, MemoryStoreTool,
-                MemoryRelateTool, MemoryRecallTool, MemoryGetTool,
-                ContradictionReviewTool,
-            )
-            from app.tools.research_sources import ResearchSourceStoreTool
-
-            docs_dir = ensure_dir(workspace.paths.memory_docs_dir)
-            research_dir = ensure_dir(workspace.paths.research_dir)
-            registry.register(MemorySearchTool(smol_rag), capability_name=capability_name)
-            registry.register(MemoryGraphQueryTool(smol_rag), capability_name=capability_name)
-            registry.register(MemoryStoreTool(smol_rag, docs_dir, llm=llm), capability_name=capability_name)
-            registry.register(ResearchSourceStoreTool(research_dir, smol_rag=smol_rag), capability_name=capability_name)
-            registry.register(MemoryRelateTool(smol_rag), capability_name=capability_name)
-            registry.register(MemoryRecallTool(smol_rag), capability_name=capability_name)
-            registry.register(MemoryGetTool(smol_rag), capability_name=capability_name)
-            if hasattr(smol_rag, "contradiction_detector") and smol_rag.contradiction_detector:
-                registry.register(ContradictionReviewTool(smol_rag.contradiction_detector), capability_name=capability_name)
-        elif capability_name == CAPABILITY_ORCHESTRATION and agent_configs and session_manager:
-            from app.tools.orchestration_tools import (
-                SequentialPipelineTool, FanoutPipelineTool, RouteTool,
-            )
-
-            registry.register(SequentialPipelineTool(agent_configs, registry, smol_rag, session_manager), capability_name=capability_name)
-            registry.register(FanoutPipelineTool(agent_configs, registry, smol_rag, session_manager), capability_name=capability_name)
-            registry.register(RouteTool(agent_configs, registry, smol_rag, session_manager), capability_name=capability_name)
-        elif capability_name == CAPABILITY_SUBAGENTS and agent_configs:
-            from app.tools.spawn import SpawnTool, GetResultTool, AwaitResultTool
-
-            registry.register(SpawnTool(configs=agent_configs), capability_name=capability_name)
-            registry.register(GetResultTool(configs=agent_configs), capability_name=capability_name)
-            registry.register(AwaitResultTool(configs=agent_configs), capability_name=capability_name)
-        elif capability_name not in {
-            CAPABILITY_FILESYSTEM,
-            CAPABILITY_WEB,
-            CAPABILITY_MEMORY,
-            CAPABILITY_ORCHESTRATION,
-            CAPABILITY_SUBAGENTS,
-            CAPABILITY_SHELL,
-            CAPABILITY_COMMAND,
-            CAPABILITY_GOAL,
-        }:
-            continue
+    register_capability_tools(
+        registry,
+        capability_names=capability_names,
+        context=ToolProviderContext(
+            smol_rag=smol_rag,
+            workspace=workspace,
+            llm=llm,
+            transport=transport,
+            token_issuer_url=token_issuer_url,
+            gateway_url=gateway_url,
+            agent_configs=agent_configs,
+            session_manager=session_manager,
+            hook_runner=hook_runner,
+            enable_subagents=enable_subagents,
+            command_runner=command_runner,
+        ),
+    )
 
     if registry.has_deferred_tools() and not any(
         tool.name == "tool_search" for tool in registry.values()

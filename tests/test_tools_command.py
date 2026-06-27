@@ -3,6 +3,8 @@ import subprocess
 
 import pytest
 
+from app.execution_grants import ExecutionGrant, SHELL_SESSION_EFFECT
+from app.shell_sessions import DockerShellSessionService
 from app.tools.command import (
     GitAddTool,
     GitBranchTool,
@@ -13,6 +15,7 @@ from app.tools.command import (
     GitPushTool,
     GitStatusTool,
     RunCommandTool,
+    ShellSessionTool,
 )
 from app.tools.base import normalize_tool_result
 from app.workspace import WorkspaceContext
@@ -218,3 +221,166 @@ class TestRunCommandTool:
         policy = tool.get_call_policy({"command": "npm run build"})
 
         assert policy.mutates_state is True
+
+    def test_network_access_declares_network_effect(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        tool = RunCommandTool(workspace)
+
+        policy = tool.get_call_policy({"command": "python -m pytest", "network_access": True})
+
+        assert "network" in policy.effects
+
+    def test_image_management_declares_effect_when_provider_requires_it(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+
+        def fake_run(args, **kwargs):
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+        fake_run.requires_image_management_approval = lambda: True
+        tool = RunCommandTool(workspace, command_runner=fake_run)
+
+        policy = tool.get_call_policy({"command": "python -m pytest"})
+
+        assert "image_management" in policy.effects
+
+    @pytest.mark.asyncio
+    async def test_network_access_is_forwarded_to_command_runner(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append((args, kwargs))
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok\n", stderr="")
+
+        tool = RunCommandTool(workspace, command_runner=fake_run)
+
+        result = await tool.execute(command="python -m pytest", network_access=True)
+
+        assert "exit code 0" in result
+        assert calls[0][1]["network_access"] is True
+
+
+class TestShellSessionTool:
+    @pytest.mark.asyncio
+    async def test_persists_session_cwd_from_container_path(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        os.makedirs(os.path.join(temp_dir, "pkg"))
+        calls = []
+
+        class FakeDockerRunner:
+            class policy:
+                container_workspace = "/workspace"
+
+        def fake_run(args, **kwargs):
+            calls.append((args, kwargs))
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout="moved\n__SMOLCLAW_SHELL_CWD__=/workspace/pkg\n",
+                stderr="",
+            )
+
+        fake_run.runner = FakeDockerRunner()
+        shared_state = {}
+        grant = ExecutionGrant(
+            tool_name="shell_session",
+            arguments_hash="hash",
+            approval_id="apr-shell",
+            effects=frozenset({SHELL_SESSION_EFFECT}),
+        )
+        shared_state["active_execution_grant"] = grant
+        tool = ShellSessionTool(
+            workspace,
+            shared_state=shared_state,
+            service_factory=lambda ws, state: DockerShellSessionService(
+                workspace=ws,
+                shared_state=state,
+                command_runner=fake_run,
+            ),
+        )
+
+        first = await tool.execute(command="cd pkg")
+        second = await tool.execute(command="pwd")
+
+        assert "moved" in first
+        assert "__SMOLCLAW_SHELL_CWD__" not in first
+        assert calls[1][1]["cwd"] == os.path.realpath(os.path.join(temp_dir, "pkg"))
+        assert shared_state["shell_sessions"]["default"]["cwd"] == os.path.realpath(os.path.join(temp_dir, "pkg"))
+        assert "exit code 0" in second
+
+    @pytest.mark.asyncio
+    async def test_forwards_network_access(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append((args, kwargs))
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout="__SMOLCLAW_SHELL_CWD__=/tmp\n",
+                stderr="",
+            )
+
+        shared_state = {
+            "active_execution_grant": ExecutionGrant(
+                tool_name="shell_session",
+                arguments_hash="hash",
+                approval_id="apr-shell",
+                effects=frozenset({SHELL_SESSION_EFFECT}),
+            )
+        }
+        tool = ShellSessionTool(
+            workspace,
+            shared_state=shared_state,
+            service_factory=lambda ws, state: DockerShellSessionService(
+                workspace=ws,
+                shared_state=state,
+                command_runner=fake_run,
+            ),
+        )
+
+        await tool.execute(command="curl https://example.com", network_access=True)
+
+        assert calls[0][0][:2] == ["bash", "-lc"]
+        assert calls[0][1]["network_access"] is True
+
+    def test_network_access_declares_network_effect(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        tool = ShellSessionTool(
+            workspace,
+            service_factory=lambda _ws, _state: _FakeShellService(),
+        )
+
+        policy = tool.get_call_policy({"command": "curl https://example.com", "network_access": True})
+
+        assert "network" in policy.effects
+        assert "shell_session" in policy.effects
+
+    @pytest.mark.asyncio
+    async def test_requires_shell_session_grant(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append((args, kwargs))
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+        tool = ShellSessionTool(
+            workspace,
+            service_factory=lambda ws, state: DockerShellSessionService(
+                workspace=ws,
+                shared_state=state,
+                command_runner=fake_run,
+            ),
+        )
+
+        result = await tool.execute(command="pwd")
+
+        assert "Approval required" in result
+        assert calls == []
+
+
+class _FakeShellService:
+    def requires_image_management_approval(self):
+        return False

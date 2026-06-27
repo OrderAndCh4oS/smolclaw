@@ -10,9 +10,10 @@ from typing import Any, Literal, Mapping
 
 import yaml
 
+from app.execution_grants import ExecutionGrant, IMAGE_MANAGEMENT_EFFECT, NETWORK_EFFECT, SHELL_SESSION_EFFECT
 from app.runtime_state import RuntimeSharedState
 from app.workspace import WorkspaceContext
-from app.tools.base import Tool
+from app.tools.base import Tool, tool_policy_effects
 from app.tools.middleware import NextFn
 from app.tools.permissions import (
     PERMISSION_MODES,
@@ -115,20 +116,23 @@ class PolicyPermissionMiddleware(PermissionMiddleware):
             reason = f": {decision.reason}" if decision.reason else ""
             return f"Error: tool '{tool.name}' denied by permission policy{reason}"
         if decision.action == "ask":
-            approved_request = self._consume_approved_request(tool, kwargs)
+            required_effects = tuple(sorted(tool_policy_effects(tool.get_call_policy(dict(kwargs)))))
+            approved_request = self._consume_approved_request(tool, kwargs, required_effects=required_effects)
             if approved_request:
                 self._emit_approval_resolved(tool, "approved", approved_request)
-                return await self._run_with_approved_bypass(tool, kwargs, next_fn)
+                return await self._run_with_approval_grant(tool, kwargs, next_fn, approved_request)
             approval_id = self._create_approval_request(tool, kwargs, decision)
             reason = f": {decision.reason}" if decision.reason else ""
             suffix = f" Approval id: {approval_id}." if approval_id else ""
             return f"Error: Approval required for tool '{tool.name}'{reason}.{suffix}"
         return await next_fn(tool, kwargs)
 
-    async def _run_with_approved_bypass(self, tool: Tool, kwargs: dict[str, Any], next_fn: NextFn):
-        if tool.name != "run_command":
-            return await next_fn(tool, kwargs)
-        with self.runtime_state.approved_command_bypass():
+    async def _run_with_approval_grant(self, tool: Tool, kwargs: dict[str, Any], next_fn: NextFn, approval_request):
+        grant = ExecutionGrant.from_approval(approval_request, effects=approval_request.granted_effects)
+        with self.runtime_state.scoped_execution_grant(grant):
+            if tool.name == "run_command":
+                with self.runtime_state.approved_command_bypass():
+                    return await next_fn(tool, kwargs)
             return await next_fn(tool, kwargs)
 
     def resolve(self, tool: Tool, kwargs: Mapping[str, Any]) -> PolicyDecision:
@@ -183,7 +187,7 @@ class PolicyPermissionMiddleware(PermissionMiddleware):
         matched_subject: str | None = None,
         matched_pattern: str | None = None,
     ):
-        trace_recorder = self.runtime_state.trace_recorder
+        trace_recorder = self.runtime_state.invocation_context.trace_recorder
         if trace_recorder is None:
             return
         trace_recorder.append("permission.decided", {
@@ -195,23 +199,32 @@ class PolicyPermissionMiddleware(PermissionMiddleware):
             "matched_pattern": matched_pattern,
         })
 
-    def _consume_approved_request(self, tool: Tool, kwargs: Mapping[str, Any]):
-        approval_store = self.runtime_state.approval_store
-        session_key = self.runtime_state.session_key
+    def _consume_approved_request(
+        self,
+        tool: Tool,
+        kwargs: Mapping[str, Any],
+        *,
+        required_effects: tuple[str, ...],
+    ):
+        context = self.runtime_state.invocation_context
+        approval_store = context.approval_store
+        session_key = context.session_key
         if approval_store is None or not session_key:
             return None
         return approval_store.consume_approved(
             str(session_key),
             tool_name=tool.name,
             arguments=kwargs,
+            required_effects=required_effects,
         )
 
     def _create_approval_request(self, tool: Tool, kwargs: Mapping[str, Any], decision: PolicyDecision) -> str | None:
-        approval_store = self.runtime_state.approval_store
-        session_key = self.runtime_state.session_key
+        context = self.runtime_state.invocation_context
+        approval_store = context.approval_store
+        session_key = context.session_key
         if approval_store is None or not session_key:
             return None
-        trace_recorder = self.runtime_state.trace_recorder
+        trace_recorder = context.trace_recorder
         run_id = getattr(trace_recorder, "run_id", None)
         request = approval_store.request(
             str(session_key),
@@ -223,6 +236,7 @@ class PolicyPermissionMiddleware(PermissionMiddleware):
             requested_action=decision.action,
             matched_subject=decision.matched_subject,
             matched_pattern=decision.matched_pattern,
+            granted_effects=tuple(sorted(tool_policy_effects(tool.get_call_policy(dict(kwargs))))),
         )
         if trace_recorder is not None:
             trace_recorder.append("approval.requested", {
@@ -233,12 +247,13 @@ class PolicyPermissionMiddleware(PermissionMiddleware):
                 "arguments_hash": request.arguments_hash,
                 "matched_subject": request.matched_subject,
                 "matched_pattern": request.matched_pattern,
+                "granted_effects": list(request.granted_effects),
                 "run_id": request.run_id,
             })
         return request.id
 
     def _emit_approval_resolved(self, tool: Tool, status: str, request=None):
-        trace_recorder = self.runtime_state.trace_recorder
+        trace_recorder = self.runtime_state.invocation_context.trace_recorder
         if trace_recorder is None:
             return
         trace_recorder.append("approval.resolved", {
@@ -247,6 +262,7 @@ class PolicyPermissionMiddleware(PermissionMiddleware):
             "approval_id": getattr(request, "id", None),
             "scope": getattr(request, "scope", None),
             "arguments_hash": getattr(request, "arguments_hash", None),
+            "granted_effects": list(getattr(request, "granted_effects", ()) or ()),
             "run_id": getattr(request, "run_id", None),
         })
 
@@ -265,6 +281,26 @@ def baseline_policy_for_mode(mode: str) -> PermissionPolicy:
         for capability in sorted(config.blocked_capabilities)
     )
     if mode in {"execute", "full"}:
+        rules.extend([
+            PermissionRule(
+                subject="capability",
+                pattern=NETWORK_EFFECT,
+                action="ask",
+                reason="network access requires approval",
+            ),
+            PermissionRule(
+                subject="capability",
+                pattern=IMAGE_MANAGEMENT_EFFECT,
+                action="ask",
+                reason="Docker image build/pull requires approval",
+            ),
+            PermissionRule(
+                subject="capability",
+                pattern=SHELL_SESSION_EFFECT,
+                action="ask",
+                reason="shell session execution requires approval",
+            ),
+        ])
         rules.extend(_approval_command_rules())
     return PermissionPolicy(default_action="allow", rules=tuple(rules))
 

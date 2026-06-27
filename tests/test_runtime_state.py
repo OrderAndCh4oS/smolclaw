@@ -1,8 +1,11 @@
 from app.runtime_state import (
+    ACTIVE_EXECUTION_GRANT_STATE_KEY,
     APPROVAL_STORE_STATE_KEY,
+    RuntimeInvocationContext,
     RuntimeSharedState,
     SESSION_KEY_STATE_KEY,
 )
+from app.execution_grants import ExecutionGrant
 from app.tools.base import (
     ACTIVE_TOOL_CALL_ID_STATE_KEY,
     ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY,
@@ -59,3 +62,33 @@ def test_runtime_shared_state_approved_command_bypass_restores_previous_value():
         assert state.allow_denied_command_once is True
 
     assert state.allow_denied_command_once is False
+
+
+def test_runtime_shared_state_scoped_execution_grant_restores_previous_value():
+    values = {ACTIVE_EXECUTION_GRANT_STATE_KEY: "before"}
+    state = RuntimeSharedState(values)
+
+    with state.scoped_execution_grant("during"):
+        assert state.active_execution_grant == "during"
+
+    assert state.active_execution_grant == "before"
+
+
+def test_runtime_shared_state_exposes_typed_invocation_context():
+    values = {}
+    state = RuntimeSharedState(values)
+    grant = ExecutionGrant(
+        tool_name="run_command",
+        arguments_hash="hash",
+        approval_id="apr-1",
+        effects=frozenset({"network"}),
+    )
+
+    state.session_key = "session-a"
+    with state.scoped_execution_grant(grant):
+        context = state.invocation_context
+
+    assert isinstance(context, RuntimeInvocationContext)
+    assert context.session_key == "session-a"
+    assert context.active_execution_grant is grant
+    assert state.active_execution_grant is None

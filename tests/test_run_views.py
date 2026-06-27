@@ -77,6 +77,26 @@ def test_run_status_view_combines_trace_and_ledger_state(temp_dir):
             "warning_count": 1,
             "warnings": ["Dirty copy excluded 3 path(s)."],
         },
+        sandbox_metadata={
+            "provider": "docker",
+            "image": "smolclaw-dev:latest",
+            "network": "none",
+            "source_root": "/tmp/smolclaw-worktree",
+            "state_root": temp_dir,
+            "container_workspace": "/workspace",
+            "resource_limits": {
+                "cpus": "2",
+                "memory": "2g",
+                "pids": 256,
+            },
+            "env_policy": {
+                "allowed_host_keys": ["CI"],
+                "injected_keys": ["HOME", "PATH"],
+                "stripped_sensitive_count": 3,
+                "host_path_passthrough": False,
+            },
+            "warnings": ["Sandbox mounts only the isolated source root."],
+        },
     )
     output = format_run_status_view(view)
     encoded = json.loads(json.dumps(view.to_dict()))
@@ -92,7 +112,12 @@ def test_run_status_view_combines_trace_and_ledger_state(temp_dir):
     assert view.worktree_dirty_copy is True
     assert view.worktree_copied_file_count == 12
     assert view.worktree_warning_count == 1
+    assert view.sandbox_provider == "docker"
+    assert view.sandbox_image == "smolclaw-dev:latest"
+    assert view.sandbox_network == "none"
+    assert view.sandbox_resource_limits["memory"] == "2g"
     assert encoded["worktree_diff_size"] == len("diff --git a/parser.py b/parser.py\n")
+    assert encoded["sandbox_provider"] == "docker"
     assert view.changed_files == ["parser.py"]
     assert view.verification_summaries == ["pytest passed"]
     assert "Changed files: parser.py" in output
@@ -103,6 +128,12 @@ def test_run_status_view_combines_trace_and_ledger_state(temp_dir):
     assert "Copied files: 12" in output
     assert "- Dirty copy excluded 3 path(s)." in output
     assert "Worktree diff: present" in output
+    assert "Sandbox: docker" in output
+    assert "Sandbox image: smolclaw-dev:latest" in output
+    assert "Sandbox network: none" in output
+    assert "Sandbox limits: cpus=2, memory=2g, pids=256" in output
+    assert "Sandbox env: allowed_host_keys=1, injected_keys=2, stripped_sensitive=3, host_path_passthrough=no" in output
+    assert "- Sandbox mounts only the isolated source root." in output
     assert "Verification:" in output
     assert "- pytest passed" in output
 

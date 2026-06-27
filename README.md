@@ -22,6 +22,9 @@ harness. The active goals are:
   sources, review providers, MCP, and HTTP clients.
 - Preserve user control through permission policies, exact-call approvals,
   checkpoints, undo, traces, goal ledgers, diagnostics, and usage records.
+- Run agent-facing commands and shell sessions through Docker sandboxing when
+  configured, with no default network, approval-gated network/proxy access, and
+  approval-gated Docker image build/pull.
 - Provide durable project memory through SmolRAG with provenance,
   contradiction handling, research sources, and eval coverage.
 - Support multi-agent and work-loop automation without weakening local safety,
@@ -63,6 +66,10 @@ For the current architecture and constraints, see
   - `find_files`
   - `grep_search`
 - Constrained command tools for project checks.
+- Docker command provider for sandboxed agent command/git execution.
+- Docker-backed named command sessions when the shell capability is enabled.
+- Approval-gated Docker network access that requires proxy configuration.
+- Docker image inspect plus approval-gated build/pull for configured sandbox images.
 - Git status and diff helpers.
 - Checkpoints for file mutations and `/undo` for restoring the last SmolClaw change.
 - Permission policies with exact-call approval commands:
@@ -276,10 +283,10 @@ The default deterministic mode checks corpus structure offline, including stale-
 
 The current priorities are:
 
-1. Harden shared run presentation across `/trace`, `/goal status`, eval reports, non-interactive JSON, and TUI drawers.
-2. Expand the eval suite with realistic fixtures and CI score-delta reporting.
-3. Harden worktree dirty-copy behavior and add richer apply-back review.
-4. Improve approval UX while keeping exact-call approvals as the safe default.
+1. Mature the Docker command sandbox with project-aware images, clearer diagnostics, shell ergonomics, and stronger egress controls.
+2. Improve approval UX for command, shell, and network requests while keeping exact-call approvals as the safe default.
+3. Expand the eval suite with realistic fixtures and CI score-delta reporting.
+4. Harden apply-back review for isolated source roots.
 5. Tune target-aware safety using eval-backed fixtures before tightening heuristics.
 
 Implementation details, expected impact, sequencing, and acceptance criteria are
@@ -291,4 +298,4 @@ tracked in [docs/roadmap.md](docs/roadmap.md).
 - Multi-user hostile tenancy in one gateway.
 - Unrestricted host shell access.
 - Autonomous git push without explicit approval.
-- Telegram/Signal control before sandboxing, pairing, and remote-safe permissions are implemented.
+- Telegram/Signal control before pairing and remote-safe permissions are implemented.

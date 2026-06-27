@@ -14,6 +14,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
+from app.execution_grants import ExecutionGrant
+
 
 @dataclass(frozen=True)
 class CommandResult:
@@ -39,6 +41,9 @@ class CommandRunner(Protocol):
         cwd: str | None = None,
         input_text: str | None = None,
         timeout: int = 600,
+        network_access: bool = False,
+        execution_grant: ExecutionGrant | None = None,
+        extra_env: Mapping[str, str] | None = None,
     ) -> CommandResult:
         ...
 
@@ -106,9 +111,15 @@ class SubprocessCommandRunner:
         cwd: str | None = None,
         input_text: str | None = None,
         timeout: int = 600,
+        network_access: bool = False,
+        execution_grant: ExecutionGrant | None = None,
+        extra_env: Mapping[str, str] | None = None,
     ) -> CommandResult:
         process: subprocess.Popen | None = None
         own_process_group = os.name == "posix" and not self.environ.get("SMOLCLAW_WORK_LOOP_JOB_ID")
+        env = dict(self.environ)
+        if extra_env:
+            env.update(extra_env)
         try:
             process = self.process_factory(
                 args,
@@ -118,6 +129,7 @@ class SubprocessCommandRunner:
                 stderr=subprocess.PIPE,
                 text=True,
                 start_new_session=own_process_group,
+                env=env,
             )
             process._smolclaw_own_process_group = own_process_group
             _register_process(process)

@@ -534,6 +534,44 @@ class TestAgentFactory:
         names = [d["function"]["name"] for d in defs]
         assert "tool_search" in names
 
+    def test_build_tool_registry_requires_docker_for_direct_shell(self, mock_smol_rag, temp_dir):
+        with pytest.raises(ValueError, match="Direct shell sessions require"):
+            build_tool_registry(
+                smol_rag=mock_smol_rag,
+                workspace=WorkspaceContext.from_root(temp_dir),
+                llm=None,
+                transport="direct",
+                capability_names=["shell"],
+            )
+
+    def test_build_tool_registry_registers_shell_session_for_docker_runner(self, mock_smol_rag, temp_dir):
+        from app.command_adapters import AgentSubprocessAdapter
+        from app.command_runner import CommandResult
+        from app.sandbox import DockerCommandRunner, SandboxPolicy
+
+        class FakeHostRunner:
+            def run(self, args, *, cwd=None, input_text=None, timeout=600, network_access=False):
+                return CommandResult(args=args, returncode=0, stdout="ok", stderr="")
+
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        command_runner = AgentSubprocessAdapter(DockerCommandRunner(
+            workspace=workspace,
+            policy=SandboxPolicy(auto_pull=False),
+            host_runner=FakeHostRunner(),
+            environ={},
+        ))
+
+        registry = build_tool_registry(
+            smol_rag=mock_smol_rag,
+            workspace=workspace,
+            llm=None,
+            transport="direct",
+            capability_names=["shell"],
+            command_runner=command_runner,
+        )
+
+        assert "shell_session" in registry._tools
+
     @pytest.mark.asyncio
     async def test_build_agent_loop_installs_tool_hooks_on_standard_builder(
         self, mock_smol_rag, sessions_dir
