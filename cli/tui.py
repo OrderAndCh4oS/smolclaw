@@ -24,7 +24,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.styles import Style
 
 from app import diagnostics
-from app.approvals import ApprovalRequest, format_approval_detail, format_approval_review_option
+from app.approvals import ApprovalRequest, PermissionController, format_approval_detail, format_approval_review_option
 from app.checkpoints import CheckpointStore
 from app.model_settings import (
     apply_subagent_model_selection,
@@ -78,6 +78,7 @@ ACTIVE_RUN_STATES = {
     "undoing",
     "clearing",
     "loading",
+    "waiting",
     "stopping",
     "shutting_down",
 }
@@ -263,6 +264,9 @@ class CoderTui:
         self.smol_rag = smol_rag
         self.checkpoint_store = checkpoint_store
         self.approval_store = approval_store
+        runtime_state = getattr(agent, "runtime_state", None)
+        controller = getattr(runtime_state, "permission_controller", None)
+        self.permission_controller = controller if isinstance(controller, PermissionController) else None
         self.workspace_root = os.path.abspath(os.path.expanduser(workspace_root))
         self.log_dir = os.path.abspath(os.path.expanduser(log_dir))
         self.auto_export = auto_export
@@ -312,6 +316,11 @@ class CoderTui:
         self._shutdown_forced = False
         self._approval_continuation_pending = False
         self._slash_dispatcher = self._build_slash_dispatcher()
+
+    def _approval_context_key(self) -> str:
+        runtime_state = getattr(self.agent, "runtime_state", None)
+        key = getattr(runtime_state, "approval_context_key", None)
+        return key if isinstance(key, str) and key else self.agent.session.key
 
     async def run(self):
         self._ui_loop = asyncio.get_running_loop()
@@ -694,7 +703,7 @@ class CoderTui:
                 activity="approving",
                 active_tool="approval",
                 boundary="tui.approval",
-                worker_fn=lambda: self.resolve_approval_command(self.agent.session.key, command_arg),
+                worker_fn=lambda: self.resolve_approval_command(self._approval_context_key(), command_arg),
             )
             if result is not _TASK_FAILED:
                 self._append("system", str(result))
@@ -987,12 +996,25 @@ class CoderTui:
         self._invalidate()
 
     async def _load_pending_approvals(self):
+        if self.permission_controller is not None:
+            return self._pending_approval_requests()
         return await self._run_status_task(
             activity="approving",
             active_tool="approval",
             boundary="tui.approval",
-            worker_fn=lambda: self.approval_store.list(self.agent.session.key, status="pending"),
+            worker_fn=self._pending_approval_requests,
         )
+
+    def _pending_approval_requests(self):
+        if self.permission_controller is not None:
+            return self.permission_controller.list_pending(self._approval_context_key())
+        pending = self.approval_store.list(self._approval_context_key(), status="pending")
+        if pending:
+            return pending
+        list_all = getattr(self.approval_store, "list_all", None)
+        if callable(list_all):
+            return list_all(status="pending")
+        return []
 
     def _selected_approval(self) -> ApprovalRequest | None:
         if not self.state.approval_review_items:
@@ -1075,7 +1097,7 @@ class CoderTui:
             boundary="tui.approval",
             worker_fn=lambda: format_approval_detail(
                 self.approval_store,
-                self.agent.session.key,
+                self._approval_context_key(),
                 request.id,
             ),
         )
@@ -1090,22 +1112,37 @@ class CoderTui:
         if action not in {"approve", "deny"}:
             self._append("error", f"Unsupported approval action: {action}")
             return
-        if action == "approve":
-            worker_fn = lambda: self.approval_store.approve(self.agent.session.key, request.id)
+        if self.permission_controller is not None:
+            try:
+                resolved = self.permission_controller.reply(
+                    request.id,
+                    "once" if action == "approve" else "reject",
+                )
+            except Exception as exc:
+                self._append("error", f"Error: {exc}")
+                return
+        elif action == "approve":
+            worker_fn = lambda: self.approval_store.approve(request.session_key, request.id)
+            resolved = await self._run_status_task(
+                activity="approving",
+                active_tool="approval",
+                boundary="tui.approval",
+                worker_fn=worker_fn,
+                user_error_exceptions=(KeyError,),
+            )
         else:
-            worker_fn = lambda: self.approval_store.deny(self.agent.session.key, request.id)
-        resolved = await self._run_status_task(
-            activity="approving",
-            active_tool="approval",
-            boundary="tui.approval",
-            worker_fn=worker_fn,
-            user_error_exceptions=(KeyError,),
-        )
+            worker_fn = lambda: self.approval_store.deny(request.session_key, request.id)
+            resolved = await self._run_status_task(
+                activity="approving",
+                active_tool="approval",
+                boundary="tui.approval",
+                worker_fn=worker_fn,
+                user_error_exceptions=(KeyError,),
+            )
         if resolved is _TASK_FAILED:
             return
         if action == "approve":
-            self._approval_continuation_pending = True
-            self._append("system", f"Approved {resolved.id}. Continuing automatically.")
+            self._append("system", f"Approved {resolved.id}.")
         else:
             self._append("system", f"Denied {resolved.id}.")
         refreshed = await self._load_pending_approvals()
@@ -1114,7 +1151,6 @@ class CoderTui:
         if not refreshed:
             self._close_approval_review()
             self._append("system", "No pending approval requests.")
-            await self._continue_after_approval_if_ready()
             return
         self.state.approval_review_items = list(refreshed)
         self.state.approval_review_index = min(
@@ -1272,6 +1308,22 @@ class CoderTui:
             if line:
                 self._record_activity("tool", line)
             self._invalidate_throttled()
+            return
+        if event.get("type") == "permission":
+            if event.get("phase") == "requested":
+                request = event.get("request")
+                if request is not None and request not in self.state.approval_review_items:
+                    self.state.approval_review_items = [*self.state.approval_review_items, request]
+                self.state.approval_review_visible = True
+                self.state.run_state = "waiting"
+                self.state.active_tool = "approval"
+                self.state.activity = "waiting for approval"
+                self._append(
+                    "system",
+                    "Approval required. Use Up/Down to choose an option, Enter to select, Esc to leave pending.",
+                )
+                self._invalidate()
+            return
 
     def _begin_exit(self):
         if self._shutdown_task is not None and not self._shutdown_task.done():

@@ -16,7 +16,6 @@ from cli.tui import (
     UiState,
     _fit_line,
 )
-from cli.commands import APPROVAL_CONTINUATION_PROMPT
 from app.approvals import ApprovalRequestStore
 from app.model_settings import RuntimeModelSettings
 
@@ -406,11 +405,9 @@ async def test_tui_approval_review_approves_selected_request(temp_dir):
 
     assert approval_store.get("session", request.id).status == "approved"
     assert tui.state.approval_review_visible is False
-    tui.agent.process.assert_awaited()
-    assert tui.agent.process.await_args.args[0] == APPROVAL_CONTINUATION_PROMPT
+    tui.agent.process.assert_not_awaited()
     rendered = "".join(text for _, text in tui._render_transcript())
     assert f"Approved {request.id}" in rendered
-    assert "Continuing after approval." in rendered
 
 
 @pytest.mark.asyncio
@@ -452,6 +449,25 @@ async def test_tui_agent_turn_opens_approval_dialog_when_approval_is_required(te
     assert tui.state.approval_review_visible is True
     assert request.id in rendered
     assert "Provide or request further information" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_agent_turn_opens_approval_dialog_for_non_context_pending_request(temp_dir):
+    approval_store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+    request = approval_store.request(
+        "child-session",
+        tool_name="run_command",
+        arguments={"command": "npm install"},
+        reason="network access requires approval",
+    )
+    tui = _fake_tui(approval_store=approval_store)
+    tui.agent.process = AsyncMock(return_value="Blocked pending approval.")
+
+    await tui.submit("install dependencies")
+    await tui._resolve_selected_approval("approve")
+
+    assert approval_store.get("child-session", request.id).status == "approved"
+    assert tui.state.approval_review_visible is False
 
 
 @pytest.mark.asyncio

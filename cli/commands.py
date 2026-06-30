@@ -7,6 +7,7 @@ import typer
 
 from app.approvals import (
     ApprovalRequestStore,
+    PermissionController,
     format_approval_detail,
     format_approval_review,
     format_approval_status,
@@ -342,13 +343,28 @@ def _resolve_approval_command(
     approval_store: ApprovalRequestStore,
     session_key: str,
     command_arg: str,
+    approval_controller: PermissionController | None = None,
 ) -> str:
     parts = command_arg.split(maxsplit=1)
     subcommand = parts[0] if parts else "status"
     approval_id = parts[1].strip() if len(parts) > 1 else ""
     if subcommand in ("", "status"):
+        if approval_controller is not None:
+            pending = approval_controller.list_pending(session_key)
+            if not pending:
+                return "No pending approval requests."
+            lines = ["Pending approvals:"]
+            lines.extend(f"- {item.id}: {item.tool_name} - {item.reason}" for item in pending)
+            return "\n".join(lines)
         return format_approval_status(approval_store, session_key)
     if subcommand == "review":
+        if approval_controller is not None:
+            pending = approval_controller.list_pending(session_key)
+            if not pending:
+                return "No pending approval requests."
+            lines = ["Approval review:"]
+            lines.extend(f"{index}. {item.id}: {item.tool_name} - {item.reason}" for index, item in enumerate(pending, 1))
+            return "\n".join(lines)
         return format_approval_review(approval_store, session_key)
     if subcommand == "detail":
         if not approval_id:
@@ -359,6 +375,9 @@ def _resolve_approval_command(
     if not approval_id:
         return f"Usage: /approval {subcommand} <id>"
     try:
+        if approval_controller is not None:
+            request = approval_controller.reply(approval_id, "once" if subcommand == "approve" else "reject")
+            return f"Approved {request.id}." if subcommand == "approve" else f"Denied {request.id}."
         if subcommand == "approve":
             request = approval_store.approve(session_key, approval_id)
             return f"Approved {request.id}."

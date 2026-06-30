@@ -8,6 +8,7 @@ from app.context_builder import ContextBuilder
 from app.goal_ledger import GoalLedgerStore
 from app.run_trace import RunTraceStore
 from app.session import Session, SessionManager
+from app.approvals import ApprovalRequestStore, PermissionController
 from app.tools.base import (
     ACTIVE_TOOL_CALL_ID_STATE_KEY,
     ACTIVE_TOOL_TRACE_EVENT_ID_STATE_KEY,
@@ -15,6 +16,7 @@ from app.tools.base import (
 )
 from app.tools.registry import ToolRegistry
 from app.tools.base import Tool, ToolCallPolicy
+from app.tools.policy import PermissionPolicy, PermissionRule, PolicyPermissionMiddleware
 from app.tools.permissions import FILESYSTEM_WRITE
 from app.tools.safety import SafetyMiddleware, SafetyState
 from app.workspace import WorkspaceContext
@@ -39,6 +41,23 @@ class EchoTool(Tool):
 
     async def execute(self, **kwargs) -> str:
         return f"echo: {kwargs['text']}"
+
+
+class ApprovalRequiredTool(Tool):
+    @property
+    def name(self) -> str:
+        return "approval_required"
+
+    @property
+    def description(self) -> str:
+        return "Always requires approval."
+
+    @property
+    def parameters(self) -> dict:
+        return {"type": "object", "properties": {}}
+
+    async def execute(self, **kwargs) -> str:
+        return "Error: Approval required for tool 'approval_required'. Approval id: apr-test."
 
 
 class MemoryLookupTool(Tool):
@@ -325,6 +344,67 @@ class TestAgentLoop:
         result = await loop.process("do echo")
         assert result == "Done echoing"
         assert llm.get_tool_completion.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_process_resumes_same_tool_call_after_permission_approval(self, temp_dir):
+        llm = MagicMock()
+        llm.get_tool_completion = AsyncMock(side_effect=[
+            {
+                "content": None,
+                "tool_calls": [_make_tool_call("echo", {"text": "hi"})],
+                "has_tool_calls": True,
+            },
+            {
+                "content": "done",
+                "tool_calls": [],
+                "has_tool_calls": False,
+            },
+        ])
+
+        registry = ToolRegistry()
+        registry.register(EchoTool())
+        approval_store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+        controller = PermissionController(approval_store)
+        shared_state = {
+            "approval_store": approval_store,
+            "permission_controller": controller,
+            "session_key": "approval-stop-test",
+        }
+        registry.use(PolicyPermissionMiddleware(
+            "full",
+            policy=PermissionPolicy(rules=(
+                PermissionRule(subject="tool", pattern="echo", action="ask", reason="test approval"),
+            )),
+            shared_state=shared_state,
+        ))
+        trace_store = RunTraceStore(os.path.join(temp_dir, "traces"))
+        loop = AgentLoop(
+            llm=llm,
+            tool_registry=registry,
+            context_builder=ContextBuilder(),
+            session=Session(key="approval-stop-test"),
+            session_manager=SessionManager(temp_dir),
+            trace_store=trace_store,
+            runtime_shared_state=shared_state,
+        )
+
+        events = []
+
+        async def on_event(event):
+            events.append(event)
+            if event.get("type") == "permission":
+                controller.reply(event["approval_id"], "once")
+
+        result = await loop.process("needs approval", on_event=on_event)
+        summary = trace_store.latest_summary("approval-stop-test")
+
+        assert result == "done"
+        assert llm.get_tool_completion.await_count == 2
+        assert any(event.get("type") == "permission" for event in events)
+        assert approval_store.list("approval-stop-test")[0].status == "used"
+        assert summary is not None
+        assert summary.stop_reason == "assistant_final"
+        assert summary.status == "complete"
 
     @pytest.mark.asyncio
     async def test_process_writes_run_trace_for_tool_turn(self, temp_dir):

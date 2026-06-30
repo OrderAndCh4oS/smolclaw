@@ -26,6 +26,7 @@ from app import diagnostics
 from app.agent_loop import AgentLoop
 from app.approvals import (
     ApprovalRequestStore,
+    PermissionController,
     format_approval_detail,
     format_approval_review_option,
 )
@@ -1553,6 +1554,8 @@ async def _tui_chat_loop(
         label = display_label or "SmolClaw"
 
     register_session_end_hooks(agent)
+    controller = getattr(getattr(agent, "runtime_state", None), "permission_controller", None)
+    permission_controller = controller if isinstance(controller, PermissionController) else None
 
     memory_store_tool = deps.memory_store_tool_factory(
         smol_rag=smol_rag,
@@ -1606,7 +1609,12 @@ async def _tui_chat_loop(
             command_arg,
             goal_store=goal_store,
         ),
-        resolve_approval_command=lambda session_key, arg: _resolve_approval_command(approval_store, session_key, arg),
+        resolve_approval_command=lambda session_key, arg: _resolve_approval_command(
+            approval_store,
+            session_key,
+            arg,
+            approval_controller=permission_controller,
+        ),
         resolve_memory_command=lambda arg: _resolve_memory_command(smol_rag, arg),
         resolve_worktree_command=lambda arg: _resolve_worktree_command(worktree_state, arg),
         resolve_work_loop_command=lambda arg: _resolve_work_loop_command(workspace_ctx, arg, deps=deps),
@@ -1628,10 +1636,11 @@ async def _run_approval_review_prompt(
     prompt_session,
     console,
     *,
+    approval_controller=None,
     on_approved=None,
 ) -> None:
     while True:
-        pending = approval_store.list(session_key, status="pending")
+        pending = _pending_approval_requests(approval_store, session_key, approval_controller=approval_controller)
         if not pending:
             console.print("[dim]No pending approval requests.[/dim]")
             return
@@ -1670,20 +1679,42 @@ async def _run_approval_review_prompt(
             continue
         try:
             if action in {"a", "approve"}:
-                resolved = approval_store.approve(session_key, request.id)
+                if approval_controller is not None:
+                    resolved = approval_controller.reply(request.id, "once")
+                else:
+                    resolved = approval_store.approve(request.session_key, request.id)
                 console.print(f"[dim]Approved {resolved.id}.[/dim]")
-                if not approval_store.list(session_key, status="pending") and on_approved is not None:
+                if (
+                    approval_controller is None
+                    and not _pending_approval_requests(approval_store, session_key)
+                    and on_approved is not None
+                ):
                     console.print("[dim]Continuing after approval.[/dim]")
                     await on_approved()
                 continue
             if action in {"d", "deny"}:
-                resolved = approval_store.deny(session_key, request.id)
+                if approval_controller is not None:
+                    resolved = approval_controller.reply(request.id, "reject")
+                else:
+                    resolved = approval_store.deny(request.session_key, request.id)
                 console.print(f"[dim]Denied {resolved.id}.[/dim]")
                 continue
         except KeyError as exc:
             console.print(f"[red]Error: {exc}[/red]")
             continue
         console.print("[red]Choose approve, deny, skip, or quit.[/red]")
+
+
+def _pending_approval_requests(approval_store, session_key: str, *, approval_controller=None):
+    if approval_controller is not None:
+        return approval_controller.list_pending(session_key)
+    pending = approval_store.list(session_key, status="pending")
+    if pending:
+        return pending
+    list_all = getattr(approval_store, "list_all", None)
+    if callable(list_all):
+        return list_all(status="pending")
+    return []
 
 
 async def _chat_loop(
@@ -1758,6 +1789,8 @@ async def _chat_loop(
         label = display_label or "SmolClaw"
 
     register_session_end_hooks(agent)
+    controller = getattr(getattr(agent, "runtime_state", None), "permission_controller", None)
+    permission_controller = controller if isinstance(controller, PermissionController) else None
 
     memory_store_tool = deps.memory_store_tool_factory(
         smol_rag=smol_rag,
@@ -1775,6 +1808,11 @@ async def _chat_loop(
 
     console.print(f"[bold green]{label}[/bold green] ready. Type /help for commands, /quit to exit.\n")
 
+    def _approval_context_key() -> str:
+        runtime_state = getattr(agent, "runtime_state", None)
+        key = getattr(runtime_state, "approval_context_key", None)
+        return key if isinstance(key, str) and key else agent.session.key
+
     async def _run_agent_turn(prompt: str) -> str:
         streamed = False
 
@@ -1787,16 +1825,35 @@ async def _chat_loop(
             console.file.flush()
 
         async def on_event(event: dict):
+            if event.get("type") == "permission" and event.get("phase") == "requested":
+                request = event.get("request")
+                if request is None or permission_controller is None:
+                    return
+                console.print(f"[bold]Approval required[/bold]")
+                console.print(f"[dim]{format_approval_review_option(request)}[/dim]")
+                while True:
+                    action = (
+                        await prompt_session.prompt_async(
+                            "approval action [a]pprove/[d]eny/[q]uit> "
+                        )
+                    ).strip().lower()
+                    if action in {"a", "approve", "allow", "once"}:
+                        permission_controller.reply(request.id, "once")
+                        console.print(f"[dim]Approved {request.id}.[/dim]")
+                        return
+                    if action in {"d", "deny", "reject", "q", "quit"}:
+                        permission_controller.reply(request.id, "reject")
+                        console.print(f"[dim]Denied {request.id}.[/dim]")
+                        return
+                    console.print("[red]Choose approve or deny.[/red]")
+                return
             if not show_actions:
                 return
             line = _format_action_event(event)
             if line:
                 console.print(f"[dim]{line}[/dim]")
 
-        if show_actions:
-            response = await agent.process(prompt, on_output=on_output, on_event=on_event)
-        else:
-            response = await agent.process(prompt, on_output=on_output)
+        response = await agent.process(prompt, on_output=on_output, on_event=on_event)
 
         if streamed:
             console.file.write("\n")
@@ -1807,6 +1864,23 @@ async def _chat_loop(
             console.print(Markdown(response))
             console.print()
         return response
+
+    async def _review_pending_approvals_if_any() -> None:
+        approval_key = _approval_context_key()
+        if not _pending_approval_requests(
+            approval_store,
+            approval_key,
+            approval_controller=permission_controller,
+        ):
+            return
+        await _run_approval_review_prompt(
+            approval_store,
+            approval_key,
+            prompt_session,
+            console,
+            approval_controller=permission_controller,
+            on_approved=lambda: _run_agent_turn(APPROVAL_CONTINUATION_PROMPT),
+        )
 
     should_exit = False
     slash_dispatcher = SlashCommandDispatcher()
@@ -1878,18 +1952,25 @@ async def _chat_loop(
                 if command_arg.split(maxsplit=1)[0:1] == ["review"]:
                     await _run_approval_review_prompt(
                         approval_store,
-                        agent.session.key,
+                        _approval_context_key(),
                         prompt_session,
                         console,
+                        approval_controller=permission_controller,
                         on_approved=lambda: _run_agent_turn(APPROVAL_CONTINUATION_PROMPT),
                     )
                     continue
-                approval_output = _resolve_approval_command(approval_store, agent.session.key, command_arg)
+                approval_output = _resolve_approval_command(
+                    approval_store,
+                    _approval_context_key(),
+                    command_arg,
+                    approval_controller=permission_controller,
+                )
                 console.print(f"[dim]{approval_output}[/dim]")
                 if (
-                    command_arg.split(maxsplit=1)[0:1] == ["approve"]
+                    permission_controller is None
+                    and command_arg.split(maxsplit=1)[0:1] == ["approve"]
                     and approval_output.startswith("Approved ")
-                    and not approval_store.list(agent.session.key, status="pending")
+                    and not _pending_approval_requests(approval_store, _approval_context_key())
                 ):
                     console.print("[dim]Continuing after approval.[/dim]")
                     await _run_agent_turn(APPROVAL_CONTINUATION_PROMPT)
@@ -2014,6 +2095,7 @@ async def _chat_loop(
                             break
                         console.print(f"[bold cyan]Goal turn {turn_index + 1}/{max_turns}[/bold cyan]")
                         await _run_agent_turn(_build_goal_loop_prompt())
+                        await _review_pending_approvals_if_any()
                         goal = goal_store.load(agent.session.key)
                         if goal is None:
                             console.print("[dim]Goal cleared.[/dim]")
@@ -2053,6 +2135,7 @@ async def _chat_loop(
                 continue
 
             await _run_agent_turn(user_input)
+            await _review_pending_approvals_if_any()
     finally:
         try:
             if auto_export:

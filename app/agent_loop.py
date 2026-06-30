@@ -318,7 +318,8 @@ class AgentLoop:
         }, turn_index=turn_index)
         started_at = time.perf_counter()
         try:
-            response = await self._process_impl(user_content, on_output=on_output, on_event=on_event)
+            with self.runtime_state.scoped_event_sink(on_event):
+                response = await self._process_impl(user_content, on_output=on_output, on_event=on_event)
         except Exception as exc:
             self._trace_append("error", {
                 "error_type": exc.__class__.__name__,

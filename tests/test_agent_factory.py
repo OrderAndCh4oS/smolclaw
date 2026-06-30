@@ -1,4 +1,5 @@
 import os
+import subprocess
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -254,6 +255,44 @@ class TestAgentFactory:
         checkpoints_dir = workspace.paths.checkpoints_dir
         checkpoint_files = [name for name in os.listdir(checkpoints_dir) if name.endswith(".json")]
         assert len(checkpoint_files) == 1
+
+    @pytest.mark.asyncio
+    async def test_build_agent_loop_checks_safety_before_permission_approval(
+        self, mock_smol_rag, sessions_dir, temp_dir
+    ):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+
+        def fake_run(args, **kwargs):
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok\n", stderr="")
+
+        master = build_tool_registry(
+            smol_rag=None,
+            workspace=workspace,
+            capability_names=["command"],
+            command_runner=fake_run,
+        )
+        config = AgentConfig(
+            name="coder",
+            model="gpt-5.5",
+            persona="You write code.",
+            tools=["run_command"],
+        )
+        sm = SessionManager(sessions_dir)
+        loop = build_agent_loop(config, master, mock_smol_rag, sm, workspace=workspace)
+
+        result = await loop.tool_registry.execute(
+            "run_command",
+            {
+                "command": "npm install",
+                "cwd": ".",
+                "network_access": True,
+                "timeout_seconds": 600,
+                "max_output_chars": 60000,
+            },
+        )
+
+        assert "safety gate blocked mutation before codebase exploration" in result
+        assert loop.runtime_state.approval_store.list(loop.session.key) == []
 
     @pytest.mark.asyncio
     async def test_build_agent_loop_loads_workspace_permission_policy(
@@ -813,6 +852,27 @@ class TestAgentFactory:
         for ch in '<>:"/\\|?*':
             assert ch not in first
             assert ch not in second
+
+    def test_child_agent_factory_inherits_parent_approval_context(
+        self, master_registry, mock_smol_rag, sessions_dir
+    ):
+        llm = MagicMock()
+        factory = ChildAgentFactory(
+            master_registry=master_registry,
+            smol_rag=mock_smol_rag,
+            workspace=None,
+            session_manager=SessionManager(sessions_dir),
+            parent_session_key="parent-session",
+            llm_factory=lambda **_kwargs: llm,
+        )
+
+        loop = factory.build(
+            AgentConfig(name="worker", model="gpt-test", persona="Worker.", tools=[]),
+            purpose="spawn-sub-1",
+        )
+
+        assert loop.session.key.startswith("parent-session__worker__spawn_sub_1__")
+        assert loop.runtime_state.approval_context_key == "parent-session"
 
     def test_child_agent_factory_resolves_memory_per_child_config(
         self, master_registry, mock_smol_rag, sessions_dir

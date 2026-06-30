@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from app.approvals import ApprovalRequestStore
+from app.approvals import ApprovalRequestStore, PermissionController
 from app.tools.command import RunCommandTool
 from app.tools.base import Tool, ToolCallPolicy, normalize_tool_result
 from app.tools.middleware import MiddlewareChain
@@ -19,6 +19,22 @@ from app.tools.policy import (
 )
 from app.run_trace import RunTraceStore
 from app.workspace import WorkspaceContext
+
+
+def _permission_state(temp_dir, *, session_key="session-a"):
+    approval_store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+    controller = PermissionController(approval_store)
+
+    async def approve_once(event):
+        controller.reply(event["approval_id"], "once")
+
+    shared_state = {
+        "approval_store": approval_store,
+        "permission_controller": controller,
+        "session_key": session_key,
+        "event_sink": approve_once,
+    }
+    return approval_store, controller, shared_state
 
 
 class FakeTool(Tool):
@@ -85,16 +101,13 @@ class TestPolicyPermissionMiddleware:
 
         result = await chain.run(FakeTool("read_file"), {"path": "../shared/config.json"})
 
-        assert result.startswith("Error: Approval required")
-        assert "external shared path" in result
+        normalized = normalize_tool_result(result)
+        assert normalized.status == "denied"
+        assert "no approval UI is available" in normalized.content
 
     @pytest.mark.asyncio
     async def test_policy_ask_creates_pending_approval_and_allows_approved_exact_retry(self, temp_dir):
-        approval_store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
-        shared_state = {
-            "approval_store": approval_store,
-            "session_key": "session-a",
-        }
+        approval_store, _controller, shared_state = _permission_state(temp_dir)
         policy = PermissionPolicy(rules=(
             PermissionRule(
                 subject="command",
@@ -107,28 +120,20 @@ class TestPolicyPermissionMiddleware:
             PolicyPermissionMiddleware("full", policy=policy, shared_state=shared_state),
         ])
 
-        first = await chain.run(FakeTool("run_command"), {"command": "npm install left-pad"})
-        pending = approval_store.list("session-a", status="pending")
-        approval_store.approve("session-a", pending[0].id)
-        second = await chain.run(FakeTool("run_command"), {"command": "npm install left-pad"})
-        third = await chain.run(FakeTool("run_command"), {"command": "npm install left-pad"})
+        result = await chain.run(FakeTool("run_command"), {"command": "npm install left-pad"})
+        approvals = approval_store.list("session-a")
 
-        assert "Approval id: apr-" in first
-        assert len(pending) == 1
-        assert pending[0].scope == "once"
-        assert pending[0].requested_action == "ask"
-        assert pending[0].matched_subject == "command"
-        assert pending[0].matched_pattern == "npm install*"
-        assert second == "run_command executed"
-        assert third.startswith("Error: Approval required")
+        assert result == "run_command executed"
+        assert len(approvals) == 1
+        assert approvals[0].status == "used"
+        assert approvals[0].scope == "once"
+        assert approvals[0].requested_action == "ask"
+        assert approvals[0].matched_subject == "command"
+        assert approvals[0].matched_pattern == "npm install*"
 
     @pytest.mark.asyncio
     async def test_policy_approved_call_does_not_allow_changed_arguments(self, temp_dir):
-        approval_store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
-        shared_state = {
-            "approval_store": approval_store,
-            "session_key": "session-a",
-        }
+        approval_store, controller, shared_state = _permission_state(temp_dir)
         policy = PermissionPolicy(rules=(
             PermissionRule(subject="command", pattern="npm install*", action="ask"),
         ))
@@ -137,20 +142,45 @@ class TestPolicyPermissionMiddleware:
         ])
 
         await chain.run(FakeTool("run_command"), {"command": "npm install left-pad"})
-        pending = approval_store.list("session-a", status="pending")
-        approval_store.approve("session-a", pending[0].id)
+        shared_state.pop("event_sink")
         changed = await chain.run(FakeTool("run_command"), {"command": "npm install is-odd"})
 
-        assert changed.startswith("Error: Approval required")
-        assert len(approval_store.list("session-a", status="pending")) == 1
+        assert normalize_tool_result(changed).status == "denied"
+        assert "no approval UI is available" in normalize_tool_result(changed).content
+
+    @pytest.mark.asyncio
+    async def test_policy_uses_shared_approval_context_key_for_child_agents(self, temp_dir):
+        approval_store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+        controller = PermissionController(approval_store)
+
+        async def approve_once(event):
+            controller.reply(event["approval_id"], "once")
+
+        shared_state = {
+            "approval_store": approval_store,
+            "permission_controller": controller,
+            "session_key": "parent__coder__spawn__1",
+            "approval_context_key": "parent",
+            "event_sink": approve_once,
+        }
+        policy = PermissionPolicy(rules=(
+            PermissionRule(subject="command", pattern="npm install*", action="ask"),
+        ))
+        chain = MiddlewareChain([
+            PolicyPermissionMiddleware("full", policy=policy, shared_state=shared_state),
+        ])
+
+        result = await chain.run(FakeTool("run_command"), {"command": "npm install left-pad"})
+        approvals = approval_store.list("parent")
+
+        assert result == "run_command executed"
+        assert len(approvals) == 1
+        assert approvals[0].origin_session_key == "parent__coder__spawn__1"
+        assert approval_store.list("parent__coder__spawn__1", status="pending") == []
 
     @pytest.mark.asyncio
     async def test_policy_approved_run_command_ignores_output_limit_variations(self, temp_dir):
-        approval_store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
-        shared_state = {
-            "approval_store": approval_store,
-            "session_key": "session-a",
-        }
+        approval_store, _controller, shared_state = _permission_state(temp_dir)
         policy = PermissionPolicy(rules=(
             PermissionRule(subject="command", pattern="npm install*", action="ask"),
         ))
@@ -166,25 +196,15 @@ class TestPolicyPermissionMiddleware:
         ])
         tool = PolicyTool("run_command", policy_fn=policy_for)
 
-        first = await chain.run(tool, {
+        result = await chain.run(tool, {
             "command": "npm install left-pad",
             "cwd": ".",
             "max_output_chars": 20000,
             "network_access": True,
             "timeout_seconds": 120,
         })
-        pending = approval_store.list("session-a", status="pending")
-        approval_store.approve("session-a", pending[0].id)
-        second = await chain.run(tool, {
-            "command": "npm install left-pad",
-            "cwd": ".",
-            "max_output_chars": 60000,
-            "network_access": True,
-            "timeout_seconds": 600,
-        })
 
-        assert first.startswith("Error: Approval required")
-        assert second == "run_command executed"
+        assert result == "run_command executed"
         assert approval_store.list("session-a", status="pending") == []
 
     @pytest.mark.asyncio
@@ -239,14 +259,10 @@ class TestPolicyPermissionMiddleware:
 
     @pytest.mark.asyncio
     async def test_policy_ask_traces_approval_metadata(self, temp_dir):
-        approval_store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+        approval_store, controller, shared_state = _permission_state(temp_dir)
         trace_store = RunTraceStore(os.path.join(temp_dir, "traces"))
         recorder = trace_store.start_run("session-a")
-        shared_state = {
-            "approval_store": approval_store,
-            "session_key": "session-a",
-            "trace_recorder": recorder,
-        }
+        shared_state["trace_recorder"] = recorder
         policy = PermissionPolicy(rules=(
             PermissionRule(
                 subject="command",
@@ -259,24 +275,20 @@ class TestPolicyPermissionMiddleware:
             PolicyPermissionMiddleware("full", policy=policy, shared_state=shared_state),
         ])
 
-        first = await chain.run(FakeTool("run_command"), {"command": "npm install left-pad"})
-        pending = approval_store.list("session-a", status="pending")
-        approval_store.approve("session-a", pending[0].id)
-        second = await chain.run(FakeTool("run_command"), {"command": "npm install left-pad"})
+        result = await chain.run(FakeTool("run_command"), {"command": "npm install left-pad"})
+        approvals = approval_store.list("session-a")
         recorder.finish("complete", stop_reason="test")
 
-        assert first.startswith("Error: Approval required")
-        assert second == "run_command executed"
+        assert result == "run_command executed"
         events = trace_store.load_events("session-a", recorder.run_id)
         requested = [event for event in events if event.event == "approval.requested"][0]
         resolved = [event for event in events if event.event == "approval.resolved"][0]
-        assert requested.data["approval_id"] == pending[0].id
+        assert requested.data["approval_id"] == approvals[0].id
         assert requested.data["scope"] == "once"
         assert requested.data["matched_subject"] == "command"
         assert requested.data["matched_pattern"] == "npm install*"
-        assert requested.data["arguments_hash"] == pending[0].arguments_hash
-        assert resolved.data["approval_id"] == pending[0].id
-        assert resolved.data["scope"] == "once"
+        assert requested.data["arguments_hash"] == approvals[0].arguments_hash
+        assert resolved.data["approval_id"] == approvals[0].id
 
     def test_baseline_policy_for_mode_exports_mode_blocks(self):
         policy = baseline_policy_for_mode("plan")
@@ -317,16 +329,13 @@ class TestPolicyPermissionMiddleware:
 
         result = await chain.run(tool, {"command": "python -m pytest", "network_access": True})
 
-        assert str(result).startswith("Error: Approval required")
-        assert "network access requires approval" in result
+        normalized = normalize_tool_result(result)
+        assert normalized.status == "denied"
+        assert "no approval UI is available" in normalized.content
 
     @pytest.mark.asyncio
     async def test_approved_call_scopes_execution_grant(self, temp_dir):
-        approval_store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
-        shared_state = {
-            "approval_store": approval_store,
-            "session_key": "session-a",
-        }
+        _approval_store, _controller, shared_state = _permission_state(temp_dir)
         observed = []
 
         class GrantTool(PolicyTool):
@@ -342,13 +351,9 @@ class TestPolicyPermissionMiddleware:
             PolicyPermissionMiddleware("execute", policy=PermissionPolicy(), shared_state=shared_state),
         ])
 
-        first = await chain.run(tool, {"command": "python -m pytest", "network_access": True})
-        pending = approval_store.list("session-a", status="pending")
-        approval_store.approve("session-a", pending[0].id)
-        second = await chain.run(tool, {"command": "python -m pytest", "network_access": True})
+        result = await chain.run(tool, {"command": "python -m pytest", "network_access": True})
 
-        assert str(first).startswith("Error: Approval required")
-        assert second == "ok"
+        assert result == "ok"
         assert observed[0].allows("network")
         assert shared_state.get("active_execution_grant") is None
 
@@ -385,10 +390,37 @@ class TestPolicyPermissionMiddleware:
         result = await chain.run(tool, arguments)
         request = approval_store.get("session-a", stale_request.id)
 
-        assert str(result).startswith("Error: Approval required")
+        assert normalize_tool_result(result).status == "denied"
         assert observed == []
-        assert request.status == "pending"
-        assert set(request.granted_effects) == {"command_read", "network"}
+
+    @pytest.mark.asyncio
+    async def test_environment_approval_gate_reopens_approved_call(self, temp_dir):
+        approval_store, _controller, shared_state = _permission_state(temp_dir)
+        denied_messages = []
+
+        class ApprovedDeniedTool(PolicyTool):
+            async def execute(self, **kwargs):
+                denied_messages.append(kwargs)
+                return "command was blocked by the environment approval gate"
+
+        policy = PermissionPolicy(rules=(
+            PermissionRule(
+                subject="command",
+                pattern="npm install*",
+                action="ask",
+            ),
+        ))
+        chain = MiddlewareChain([
+            PolicyPermissionMiddleware("execute", policy=policy, shared_state=shared_state),
+        ])
+        tool = ApprovedDeniedTool("run_command", policy=ToolCallPolicy(effects=frozenset({"command_read", "command_write"})))
+
+        result = await chain.run(tool, {"command": "npm install left-pad"})
+
+        assert normalize_tool_result(result).status == "denied"
+        assert result == "command was blocked by the environment approval gate"
+        assert approval_store.list("session-a", status="pending") == []
+        assert len(denied_messages) == 1
 
     @pytest.mark.asyncio
     async def test_policy_approval_required_normalizes_as_denied(self):
@@ -396,17 +428,21 @@ class TestPolicyPermissionMiddleware:
 
         result = await chain.run(FakeTool("run_command"), {"command": "npm install left-pad"})
 
-        assert str(result).startswith("Error: Approval required")
         assert normalize_tool_result(result).status == "denied"
+        assert normalize_tool_result(result).status == "denied"
+
+    def test_tool_result_with_prefixed_error_text_normalizes_as_denied(self):
+        result = "exit code 126\nError: Approval required for Docker sandbox network access."
+
+        normalized = normalize_tool_result(result)
+
+        assert normalized.status == "denied"
+        assert normalized.content == result
 
     @pytest.mark.asyncio
     async def test_approved_install_command_bypasses_intrinsic_allowlist_once(self, temp_dir):
         workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
-        approval_store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
-        shared_state = {
-            "approval_store": approval_store,
-            "session_key": "session-a",
-        }
+        _approval_store, _controller, shared_state = _permission_state(temp_dir)
         calls = []
 
         def fake_run(args, **kwargs):
@@ -418,14 +454,10 @@ class TestPolicyPermissionMiddleware:
             PolicyPermissionMiddleware("execute", policy=PermissionPolicy(), shared_state=shared_state),
         ])
 
-        first = await chain.run(tool, {"command": "npm install left-pad"})
-        pending = approval_store.list("session-a", status="pending")
-        approval_store.approve("session-a", pending[0].id)
-        second = await chain.run(tool, {"command": "npm install left-pad"})
+        result = await chain.run(tool, {"command": "npm install left-pad"})
 
-        assert normalize_tool_result(first).status == "denied"
         assert calls == [["npm", "install", "left-pad"]]
-        assert "exit code 0" in second
+        assert "exit code 0" in result
 
     def test_load_permission_policy_reads_workspace_file(self, temp_dir, monkeypatch):
         monkeypatch.delenv("SMOLCLAW_PERMISSION_POLICY", raising=False)

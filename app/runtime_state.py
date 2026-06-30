@@ -16,9 +16,12 @@ from app.tools.base import (
 
 
 SESSION_KEY_STATE_KEY = "session_key"
+APPROVAL_CONTEXT_KEY_STATE_KEY = "approval_context_key"
 SAFETY_STATE_KEY = "safety_state"
 TRACE_STORE_STATE_KEY = "trace_store"
 APPROVAL_STORE_STATE_KEY = "approval_store"
+PERMISSION_CONTROLLER_STATE_KEY = "permission_controller"
+EVENT_SINK_STATE_KEY = "event_sink"
 CHECKPOINT_STORE_STATE_KEY = "checkpoint_store"
 PERMISSION_POLICY_STATE_KEY = "permission_policy"
 ALLOW_DENIED_COMMAND_ONCE_STATE_KEY = "allow_denied_command_once"
@@ -31,7 +34,10 @@ class RuntimeInvocationContext:
 
     trace_recorder: Any = None
     session_key: str | None = None
+    approval_context_key: str | None = None
     approval_store: Any = None
+    permission_controller: Any = None
+    event_sink: Any = None
     checkpoint_store: Any = None
     trace_store: Any = None
     safety_state: Any = None
@@ -70,12 +76,39 @@ class RuntimeSharedState:
         self._set_or_clear(SESSION_KEY_STATE_KEY, value)
 
     @property
+    def approval_context_key(self) -> str | None:
+        value = self.values.get(APPROVAL_CONTEXT_KEY_STATE_KEY)
+        if value:
+            return str(value)
+        return self.session_key
+
+    @approval_context_key.setter
+    def approval_context_key(self, value: str | None) -> None:
+        self._set_or_clear(APPROVAL_CONTEXT_KEY_STATE_KEY, value)
+
+    @property
     def approval_store(self):
         return self.values.get(APPROVAL_STORE_STATE_KEY)
 
     @approval_store.setter
     def approval_store(self, store) -> None:
         self._set_or_clear(APPROVAL_STORE_STATE_KEY, store)
+
+    @property
+    def permission_controller(self):
+        return self.values.get(PERMISSION_CONTROLLER_STATE_KEY)
+
+    @permission_controller.setter
+    def permission_controller(self, controller) -> None:
+        self._set_or_clear(PERMISSION_CONTROLLER_STATE_KEY, controller)
+
+    @property
+    def event_sink(self):
+        return self.values.get(EVENT_SINK_STATE_KEY)
+
+    @event_sink.setter
+    def event_sink(self, sink) -> None:
+        self._set_or_clear(EVENT_SINK_STATE_KEY, sink)
 
     @property
     def checkpoint_store(self):
@@ -150,7 +183,10 @@ class RuntimeSharedState:
         return RuntimeInvocationContext(
             trace_recorder=self.trace_recorder,
             session_key=self.session_key,
+            approval_context_key=self.approval_context_key,
             approval_store=self.approval_store,
+            permission_controller=self.permission_controller,
+            event_sink=self.event_sink,
             checkpoint_store=self.checkpoint_store,
             trace_store=self.trace_store,
             safety_state=self.safety_state,
@@ -208,6 +244,15 @@ class RuntimeSharedState:
             yield
         finally:
             self._restore(ACTIVE_EXECUTION_GRANT_STATE_KEY, previous)
+
+    @contextmanager
+    def scoped_event_sink(self, sink):
+        previous = self.values.get(EVENT_SINK_STATE_KEY)
+        self._set_or_clear(EVENT_SINK_STATE_KEY, sink)
+        try:
+            yield
+        finally:
+            self._restore(EVENT_SINK_STATE_KEY, previous)
 
     def _set_or_clear(self, key: str, value) -> None:
         if value is None:

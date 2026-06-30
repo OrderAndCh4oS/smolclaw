@@ -41,6 +41,18 @@ def _coerce_bool(value) -> bool:
     return bool(value)
 
 
+def _command_requires_network_access(command: str) -> bool:
+    try:
+        args = shlex.split(command)
+    except ValueError:
+        return False
+    if len(args) < 2:
+        return False
+    if args[0] not in {"npm", "pnpm", "yarn", "bun"}:
+        return False
+    return args[1] in {"install", "i", "add", "view"}
+
+
 class _WorkspaceCommandMixin:
     def __init__(
         self,
@@ -92,9 +104,13 @@ class _WorkspaceCommandMixin:
                 "timeout": timeout,
                 "check": False,
             }
-            if network_access:
-                run_kwargs["network_access"] = True
             execution_grant = self.runtime_state.active_execution_grant
+            grant_allows_network = bool(
+                execution_grant is not None
+                and execution_grant.allows(NETWORK_EFFECT)
+            )
+            if network_access or grant_allows_network:
+                run_kwargs["network_access"] = True
             if execution_grant is not None:
                 run_kwargs["execution_grant"] = execution_grant
             result = self.command_executor.run(AgentCommandRequest(
@@ -534,7 +550,10 @@ class RunCommandTool(_WorkspaceCommandMixin, Tool):
         mutates = self.command_classifier.may_mutate(command)
         tags.add(SHELL_WRITE if mutates else SHELL_READ)
         effects = {"command_write" if mutates else "command_read"}
-        if _coerce_bool((arguments or {}).get("network_access")):
+        if (
+            _coerce_bool((arguments or {}).get("network_access"))
+            or _command_requires_network_access(command)
+        ):
             effects.add(NETWORK_EFFECT)
         return self._with_provider_effects(ToolCallPolicy(
             effects=frozenset(effects),
@@ -663,8 +682,12 @@ class ShellSessionTool(Tool):
         )
 
     def get_call_policy(self, arguments: dict | None = None) -> ToolCallPolicy:
+        command = str((arguments or {}).get("command") or "")
         effects = {"command_write", SHELL_SESSION_EFFECT}
-        if _coerce_bool((arguments or {}).get("network_access")):
+        if (
+            _coerce_bool((arguments or {}).get("network_access"))
+            or _command_requires_network_access(command)
+        ):
             effects.add(NETWORK_EFFECT)
         if self._requires_image_management_approval():
             effects.add(IMAGE_MANAGEMENT_EFFECT)
@@ -729,13 +752,17 @@ class ShellSessionTool(Tool):
         timeout = RunCommandTool._coerce_int(self, kwargs.get("timeout_seconds", 120), minimum=1, maximum=600, default=120)
         max_output_chars = RunCommandTool._coerce_int(self, kwargs.get("max_output_chars", 20000), minimum=1000, maximum=100000, default=20000)
         service = self.service_factory(self.workspace, self.shared_state)
+        execution_grant = self.runtime_state.active_execution_grant
+        network_access = _coerce_bool(kwargs.get("network_access"))
+        if execution_grant is not None and execution_grant.allows(NETWORK_EFFECT):
+            network_access = True
         result = service.execute(
             session_id=session_id,
             command=command,
             cwd=kwargs.get("cwd"),
             timeout=timeout,
-            network_access=_coerce_bool(kwargs.get("network_access")),
-            execution_grant=self.runtime_state.active_execution_grant,
+            network_access=network_access,
+            execution_grant=execution_grant,
         )
         return _WorkspaceCommandMixin._format_output(
             self,

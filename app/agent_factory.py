@@ -11,7 +11,7 @@ from app.behaviors import load_behaviors, resolve_behavior_names
 from app.context_builder import ContextBuilder
 from app.definitions import PROJECT_ROOT
 from app.model_defaults import DEFAULT_AGENT_MODEL
-from app.approvals import ApprovalRequestStore
+from app.approvals import ApprovalRequestStore, PermissionController
 from app.goal_ledger import GoalLedgerStore
 from app.hooks import HookRunner, ON_AFTER_TOOL
 from app.llm import create_llm
@@ -71,6 +71,8 @@ class ChildAgentFactory:
     hook_runner_configurers: HookRunnerConfigurers = ()
     smol_rag_resolver: Optional[SmolRagResolver] = None
     hook_runner_configurers_resolver: Optional[HookRunnerConfigurersResolver] = None
+    approval_context_key: str | None = None
+    permission_controller: PermissionController | None = None
     _counter: count = field(default_factory=lambda: count(1), init=False, repr=False)
 
     @staticmethod
@@ -133,6 +135,8 @@ class ChildAgentFactory:
             adapter_config=self.adapter_config,
             trace_metadata=self.trace_metadata,
             is_child_agent=True,
+            approval_context_key=self.approval_context_key or self.parent_session_key,
+            permission_controller=self.permission_controller,
         )
         if self.loop_registrar:
             self.loop_registrar(loop)
@@ -164,6 +168,8 @@ def build_agent_loop(
     trace_metadata: dict[str, Any] | None = None,
     llm=None,
     is_child_agent: bool = False,
+    approval_context_key: str | None = None,
+    permission_controller: PermissionController | None = None,
 ) -> AgentLoop:
     selection = model_selection
     if selection is None and model_settings is not None:
@@ -228,11 +234,16 @@ def build_agent_loop(
     safety_state = SafetyState(workspace=workspace)
     runtime_state.safety_state = safety_state
     runtime_state.session_key = resolved_session_key
+    runtime_state.approval_context_key = approval_context_key or resolved_session_key
     trace_store = RunTraceStore(workspace.paths.traces_dir) if workspace is not None else None
     if trace_store is not None:
         runtime_state.trace_store = trace_store
     if workspace is not None:
         runtime_state.approval_store = ApprovalRequestStore(workspace.paths.approvals_dir)
+    runtime_state.permission_controller = (
+        permission_controller
+        or PermissionController(runtime_state.approval_store)
+    )
     runtime_ctx.child_agent_factory = ChildAgentFactory(
         master_registry=master_registry,
         registry_factory=registry_factory,
@@ -248,6 +259,8 @@ def build_agent_loop(
         hook_runner_configurers=hook_runner_configurers,
         smol_rag_resolver=child_smol_rag_resolver,
         hook_runner_configurers_resolver=child_hook_runner_configurers_resolver,
+        approval_context_key=runtime_state.approval_context_key,
+        permission_controller=runtime_state.permission_controller,
         model_settings=model_settings,
         adapter_config=adapter_config,
         trace_metadata=trace_metadata,
@@ -265,13 +278,13 @@ def build_agent_loop(
 
     permission_policy = load_permission_policy(workspace)
     runtime_state.permission_policy = permission_policy
+    filtered_registry.use(SafetyMiddleware(safety_state))
     filtered_registry.use(PolicyPermissionMiddleware(
         config.permission_mode,
         workspace=workspace,
         policy=permission_policy,
         shared_state=runtime_ctx.shared_state,
     ))
-    filtered_registry.use(SafetyMiddleware(safety_state))
     filtered_registry.use(EvidenceMiddleware(
         shared_state=runtime_ctx.shared_state,
         goal_store=goal_store,

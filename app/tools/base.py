@@ -101,9 +101,12 @@ def normalize_tool_result(value: ToolOutcome | None) -> ToolResult:
     if isinstance(value, ToolResult):
         return value
     text = "" if value is None else str(value)
+    lower_text = text.lower()
     if text.startswith("Denied:"):
         return ToolResult(status="denied", content=text)
-    if text.startswith("Error: Approval required"):
+    if "environment approval gate" in lower_text:
+        return ToolResult(status="denied", content=text)
+    if "error: approval required" in lower_text:
         return ToolResult(status="denied", content=text)
     if "denied by permission policy" in text:
         return ToolResult(status="denied", content=text)

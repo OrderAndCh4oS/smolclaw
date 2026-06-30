@@ -43,7 +43,7 @@ def test_approval_request_store_creates_stable_pending_request(temp_dir):
     assert len(store.list("session-a")) == 1
 
 
-def test_approval_request_store_approves_and_consumes_exact_call(temp_dir):
+def test_approval_request_store_approves_and_consumes_exact_call_after_mark(temp_dir):
     store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
     request = store.request(
         "session-a",
@@ -65,7 +65,19 @@ def test_approval_request_store_approves_and_consumes_exact_call(temp_dir):
 
     assert consumed is not None
     assert consumed.id == request.id
-    assert second is None
+    assert second is not None
+    assert second.id == request.id
+    assert store.get("session-a", request.id).status == "approved"
+
+    store.mark_used("session-a", request.id)
+
+    third = store.consume_approved(
+        "session-a",
+        tool_name="run_command",
+        arguments={"command": "npm install left-pad"},
+    )
+
+    assert third is None
     assert store.get("session-a", request.id).status == "used"
 
 
@@ -85,11 +97,83 @@ def test_approval_request_store_reopens_when_required_effects_expand(temp_dir):
         arguments={"command": "python -m pytest", "network_access": True},
         required_effects=("command_read", "network"),
     )
-    reopened = store.get("session-a", request.id)
-
     assert consumed is None
+    reopened = store.get("session-a", request.id)
+    assert reopened is not None
     assert reopened.status == "pending"
     assert reopened.granted_effects == ("command_read", "network")
+
+    expanded = store.request(
+        "session-a",
+        tool_name="run_command",
+        arguments={"command": "python -m pytest", "network_access": True},
+        granted_effects=("command_read", "network"),
+    )
+    assert expanded.id == request.id
+    assert expanded.status == "pending"
+    assert expanded.granted_effects == ("command_read", "network")
+
+
+def test_approval_request_store_consumes_across_continuation_runs(temp_dir):
+    store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+    request = store.request(
+        "session-a",
+        tool_name="run_command",
+        arguments={"command": "npm install left-pad"},
+        run_id="run-original",
+        granted_effects=("command_write",),
+    )
+
+    store.approve("session-a", request.id)
+    consumed = store.consume_approved(
+        "session-a",
+        tool_name="run_command",
+        arguments={"command": "npm install left-pad"},
+        required_effects=("command_write",),
+    )
+
+    assert consumed is not None
+    assert consumed.id == request.id
+    assert consumed.run_id == "run-original"
+
+
+def test_approval_request_store_lists_all_pending_requests(temp_dir):
+    store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+    first = store.request(
+        "session-a",
+        tool_name="run_command",
+        arguments={"command": "npm install left-pad"},
+    )
+    second = store.request(
+        "session-b",
+        tool_name="run_command",
+        arguments={"command": "npm install is-even"},
+    )
+    store.deny("session-b", second.id)
+
+    pending = store.list_all(status="pending")
+
+    assert [request.id for request in pending] == [first.id]
+
+
+def test_run_command_approval_request_expands_required_effects(temp_dir):
+    store = ApprovalRequestStore(os.path.join(temp_dir, "approvals"))
+    command_request = store.request(
+        "session-a",
+        tool_name="run_command",
+        arguments={"command": "npm install left-pad"},
+        granted_effects=("command_write",),
+    )
+    network_request = store.request(
+        "session-a",
+        tool_name="run_command",
+        arguments={"command": "npm install left-pad"},
+        granted_effects=("command_write", "network"),
+    )
+
+    assert network_request.id == command_request.id
+    assert network_request.granted_effects == ("command_write", "network")
+    assert len(store.list("session-a")) == 1
 
 
 def test_approval_request_store_rejects_unknown_approval_id(temp_dir):

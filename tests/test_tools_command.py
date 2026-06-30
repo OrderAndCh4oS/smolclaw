@@ -243,6 +243,22 @@ class TestRunCommandTool:
 
         assert "image_management" in policy.effects
 
+    def test_network_access_declared_for_package_install_commands(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        tool = RunCommandTool(workspace)
+
+        policy = tool.get_call_policy({"command": "npm install left-pad"})
+
+        assert "network" in policy.effects
+
+    def test_network_access_not_declared_for_local_test_commands(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        tool = RunCommandTool(workspace)
+
+        policy = tool.get_call_policy({"command": "npm test"})
+
+        assert "network" not in policy.effects
+
     @pytest.mark.asyncio
     async def test_network_access_is_forwarded_to_command_runner(self, temp_dir):
         workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()

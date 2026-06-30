@@ -13,7 +13,8 @@ import yaml
 from app.execution_grants import ExecutionGrant, IMAGE_MANAGEMENT_EFFECT, NETWORK_EFFECT, SHELL_SESSION_EFFECT
 from app.runtime_state import RuntimeSharedState
 from app.workspace import WorkspaceContext
-from app.tools.base import Tool, tool_policy_effects
+from app.approvals import PermissionInteractionUnavailableError, PermissionRejectedError
+from app.tools.base import Tool, ToolResult, normalize_tool_result, tool_policy_effects
 from app.tools.middleware import NextFn
 from app.tools.permissions import (
     PERMISSION_MODES,
@@ -117,23 +118,71 @@ class PolicyPermissionMiddleware(PermissionMiddleware):
             return f"Error: tool '{tool.name}' denied by permission policy{reason}"
         if decision.action == "ask":
             required_effects = tuple(sorted(tool_policy_effects(tool.get_call_policy(dict(kwargs)))))
-            approved_request = self._consume_approved_request(tool, kwargs, required_effects=required_effects)
-            if approved_request:
-                self._emit_approval_resolved(tool, "approved", approved_request)
-                return await self._run_with_approval_grant(tool, kwargs, next_fn, approved_request)
-            approval_id = self._create_approval_request(tool, kwargs, decision)
-            reason = f": {decision.reason}" if decision.reason else ""
-            suffix = f" Approval id: {approval_id}." if approval_id else ""
-            return f"Error: Approval required for tool '{tool.name}'{reason}.{suffix}"
+            try:
+                grant = await self._approval_grant(
+                    tool,
+                    kwargs,
+                    decision,
+                    required_effects=required_effects,
+                )
+            except PermissionRejectedError as exc:
+                reason = f": {exc.message}" if exc.message else ""
+                return ToolResult(
+                    status="denied",
+                    content=f"Denied: approval rejected for tool '{tool.name}'{reason}",
+                    metadata={"approval_id": exc.request.id},
+                )
+            except PermissionInteractionUnavailableError as exc:
+                return ToolResult(
+                    status="denied",
+                    content=(
+                        f"Denied: approval required for tool '{tool.name}', "
+                        "but no approval UI is available."
+                    ),
+                    metadata={"approval_id": exc.request.id, "approval_required": True},
+                )
+            return await self._run_with_approval_grant(tool, kwargs, next_fn, grant)
         return await next_fn(tool, kwargs)
 
-    async def _run_with_approval_grant(self, tool: Tool, kwargs: dict[str, Any], next_fn: NextFn, approval_request):
-        grant = ExecutionGrant.from_approval(approval_request, effects=approval_request.granted_effects)
+    async def _run_with_approval_grant(self, tool: Tool, kwargs: dict[str, Any], next_fn: NextFn, grant):
         with self.runtime_state.scoped_execution_grant(grant):
             if tool.name == "run_command":
                 with self.runtime_state.approved_command_bypass():
-                    return await next_fn(tool, kwargs)
-            return await next_fn(tool, kwargs)
+                    result = await next_fn(tool, kwargs)
+            else:
+                result = await next_fn(tool, kwargs)
+
+        normalized = normalize_tool_result(result)
+        if normalized.status == "ok":
+            self._mark_approval_request_used(grant)
+            self._emit_approval_resolved(tool, "approved", grant)
+        elif normalized.status == "denied" and self._is_environment_approval_denied(normalized.content):
+            self._mark_approval_request_pending(grant)
+        return result
+
+    def _is_environment_approval_denied(self, content: str) -> bool:
+        message = (content or "").lower()
+        return "approval required" in message or "environment approval gate" in message
+
+    def _mark_approval_request_pending(self, grant):
+        # A lower environment gate rejected an approved call. The new control
+        # plane does not retry via persisted approvals; leave the typed denied
+        # result visible to the caller.
+        _ = grant
+
+    def _mark_approval_request_used(self, grant):
+        controller = self.runtime_state.invocation_context.permission_controller
+        if controller is None:
+            return
+        request = getattr(controller, "get", lambda *_: None)(
+            self.runtime_state.invocation_context.approval_context_key or "",
+            grant.approval_id,
+        )
+        if request is None:
+            return
+        mark_used = getattr(controller, "mark_used", None)
+        if callable(mark_used):
+            mark_used(request)
 
     def resolve(self, tool: Tool, kwargs: Mapping[str, Any]) -> PolicyDecision:
         subjects = self._subjects(tool, kwargs)
@@ -199,58 +248,50 @@ class PolicyPermissionMiddleware(PermissionMiddleware):
             "matched_pattern": matched_pattern,
         })
 
-    def _consume_approved_request(
+    async def _approval_grant(
         self,
         tool: Tool,
         kwargs: Mapping[str, Any],
+        decision: PolicyDecision,
         *,
         required_effects: tuple[str, ...],
-    ):
+    ) -> ExecutionGrant:
         context = self.runtime_state.invocation_context
-        approval_store = context.approval_store
-        session_key = context.session_key
-        if approval_store is None or not session_key:
-            return None
-        return approval_store.consume_approved(
-            str(session_key),
-            tool_name=tool.name,
-            arguments=kwargs,
-            required_effects=required_effects,
-        )
-
-    def _create_approval_request(self, tool: Tool, kwargs: Mapping[str, Any], decision: PolicyDecision) -> str | None:
-        context = self.runtime_state.invocation_context
-        approval_store = context.approval_store
-        session_key = context.session_key
-        if approval_store is None or not session_key:
-            return None
+        controller = context.permission_controller
+        session_key = context.approval_context_key
+        if controller is None or not session_key:
+            raise PermissionInteractionUnavailableError(self._synthetic_request(tool, kwargs, decision))
         trace_recorder = context.trace_recorder
         run_id = getattr(trace_recorder, "run_id", None)
-        request = approval_store.request(
-            str(session_key),
+        return await controller.assert_allowed(
+            session_key=str(session_key),
             tool_name=tool.name,
             arguments=kwargs,
             reason=decision.reason,
             run_id=run_id,
-            scope="once",
-            requested_action=decision.action,
             matched_subject=decision.matched_subject,
             matched_pattern=decision.matched_pattern,
-            granted_effects=tuple(sorted(tool_policy_effects(tool.get_call_policy(dict(kwargs))))),
+            effects=required_effects,
+            origin_session_key=context.session_key,
+            origin_run_id=run_id,
+            event_sink=context.event_sink,
+            trace_recorder=trace_recorder,
         )
-        if trace_recorder is not None:
-            trace_recorder.append("approval.requested", {
-                "approval_id": request.id,
-                "tool": tool.name,
-                "reason": decision.reason,
-                "scope": request.scope,
-                "arguments_hash": request.arguments_hash,
-                "matched_subject": request.matched_subject,
-                "matched_pattern": request.matched_pattern,
-                "granted_effects": list(request.granted_effects),
-                "run_id": request.run_id,
-            })
-        return request.id
+
+    def _synthetic_request(self, tool: Tool, kwargs: Mapping[str, Any], decision: PolicyDecision):
+        from app.approvals import ApprovalRequest, approval_arguments_hash, approval_request_id
+        session_key = self.runtime_state.invocation_context.approval_context_key or ""
+        arguments_hash = approval_arguments_hash(tool.name, kwargs)
+        return ApprovalRequest(
+            id=approval_request_id(session_key, tool.name, arguments_hash),
+            session_key=session_key,
+            tool_name=tool.name,
+            arguments_hash=arguments_hash,
+            arguments_preview=dict(kwargs),
+            reason=decision.reason,
+            matched_subject=decision.matched_subject,
+            matched_pattern=decision.matched_pattern,
+        )
 
     def _emit_approval_resolved(self, tool: Tool, status: str, request=None):
         trace_recorder = self.runtime_state.invocation_context.trace_recorder
@@ -259,10 +300,10 @@ class PolicyPermissionMiddleware(PermissionMiddleware):
         trace_recorder.append("approval.resolved", {
             "tool": tool.name,
             "status": status,
-            "approval_id": getattr(request, "id", None),
+            "approval_id": getattr(request, "approval_id", None) or getattr(request, "id", None),
             "scope": getattr(request, "scope", None),
             "arguments_hash": getattr(request, "arguments_hash", None),
-            "granted_effects": list(getattr(request, "granted_effects", ()) or ()),
+            "granted_effects": list(getattr(request, "effects", ()) or getattr(request, "granted_effects", ()) or ()),
             "run_id": getattr(request, "run_id", None),
         })
 
