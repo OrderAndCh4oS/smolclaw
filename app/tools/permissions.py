@@ -51,6 +51,39 @@ WORK_LOOP_MUTATION_TOOLS: Final[Set[str]] = {
     "work_loop_close_task",
 }
 
+GIT_CWD_TOOLS: Final[Set[str]] = {
+    "git_status",
+    "git_status_rich",
+    "git_branch",
+    "git_checkout",
+    "git_pull",
+    "git_push",
+    "git_push_refspec",
+    "git_commit",
+    "git_fetch",
+    "git_log",
+    "git_show",
+    "git_attach_head_to_branch",
+    "git_branch_create",
+    "git_branch_delete",
+    "git_upstream",
+    "git_merge",
+    "git_merge_continue",
+    "git_merge_abort",
+    "git_cherry_pick",
+    "git_cherry_pick_continue",
+    "git_cherry_pick_abort",
+    "git_stash_push",
+    "git_stash_list",
+    "git_stash_apply",
+}
+
+GIT_PATH_TOOLS: Final[Set[str]] = {
+    "git_diff",
+    "git_restore_staged",
+    "git_restore_paths",
+}
+
 @dataclass(frozen=True)
 class PermissionModeConfig:
     blocked_tools: frozenset[str]
@@ -187,9 +220,7 @@ class PermissionMiddleware:
             return [("path", str(kwargs.get("path") or ""))]
         if tool_name in {"find_files", "grep_search"}:
             return [("path", str(kwargs.get("path") or "."))]
-        if tool_name == "git_status":
-            return [("cwd", str(kwargs.get("cwd") or "."))]
-        if tool_name in {"git_branch", "git_checkout", "git_pull", "git_push", "git_commit"}:
+        if tool_name in GIT_CWD_TOOLS:
             return [("cwd", str(kwargs.get("cwd") or "."))]
         if tool_name == "git_add":
             paths = [("cwd", str(kwargs.get("cwd") or "."))]
@@ -199,6 +230,10 @@ class PermissionMiddleware:
             paths = [("cwd", str(kwargs.get("cwd") or "."))]
             if kwargs.get("path"):
                 paths.append(("path", str(kwargs.get("path"))))
+            return paths
+        if tool_name in GIT_PATH_TOOLS:
+            paths = [("cwd", str(kwargs.get("cwd") or "."))]
+            paths.extend(("path", str(path)) for path in (kwargs.get("paths") or []))
             return paths
         if tool_name == "run_command":
             return [("cwd", str(kwargs.get("cwd") or "."))]

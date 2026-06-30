@@ -13,7 +13,7 @@ from app.tools.permissions import FILESYSTEM_WRITE, SHELL_WRITE
 
 READ_TOOLS = {"read_file"}
 SEARCH_TOOLS = {"find_files", "grep_search", "list_dir", "git_diff"}
-STATUS_TOOLS = {"git_status"}
+STATUS_TOOLS = {"git_status", "git_status_rich"}
 FILESYSTEM_WRITE_TOOLS = {"write_file", "edit_file", "apply_patch"}
 
 
@@ -136,7 +136,7 @@ class SafetyState:
             return self.normalize_path(arguments.get("path") or ".")
         if tool_name == "git_diff":
             return self.normalize_path(arguments.get("path") or arguments.get("cwd") or ".")
-        if tool_name == "git_status" or self._is_status_command(tool_name, arguments):
+        if tool_name in STATUS_TOOLS or self._is_status_command(tool_name, arguments):
             return self.normalize_path(arguments.get("cwd") or ".")
         return None
 

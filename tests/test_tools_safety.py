@@ -100,6 +100,26 @@ class TestSafetyMiddleware:
         assert result == "edit_file ok"
 
     @pytest.mark.asyncio
+    async def test_git_status_rich_satisfies_status_requirement(self, temp_dir):
+        workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
+        with open(os.path.join(temp_dir, "app.py"), "w") as f:
+            f.write("print('hi')\n")
+        _, chain = _chain(workspace)
+
+        await chain.run(FakeTool("git_status_rich"), {})
+        await chain.run(FakeTool("find_files"), {"path": ".", "pattern": "*.py"})
+        await chain.run(
+            FakeTool("read_file", ToolCallPolicy(tags=frozenset({FILESYSTEM_READ}))),
+            {"path": "app.py"},
+        )
+        result = await chain.run(
+            FakeTool("edit_file", ToolCallPolicy(mutates_state=True, tags=frozenset({FILESYSTEM_WRITE}))),
+            {"path": "app.py", "old_text": "hi", "new_text": "bye"},
+        )
+
+        assert result == "edit_file ok"
+
+    @pytest.mark.asyncio
     async def test_blocks_unread_target_even_after_other_file_read(self, temp_dir):
         workspace = WorkspaceContext.from_root(temp_dir).ensure_dirs()
         for name in ("app.py", "other.py"):

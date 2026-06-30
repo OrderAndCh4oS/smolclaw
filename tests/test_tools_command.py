@@ -7,13 +7,33 @@ from app.execution_grants import ExecutionGrant, SHELL_SESSION_EFFECT
 from app.shell_sessions import DockerShellSessionService
 from app.tools.command import (
     GitAddTool,
+    GitAttachHeadToBranchTool,
     GitBranchTool,
+    GitBranchCreateTool,
+    GitBranchDeleteTool,
+    GitCherryPickAbortTool,
+    GitCherryPickContinueTool,
+    GitCherryPickTool,
     GitCheckoutTool,
     GitCommitTool,
     GitDiffTool,
+    GitFetchTool,
+    GitLogTool,
+    GitMergeAbortTool,
+    GitMergeContinueTool,
+    GitMergeTool,
     GitPullTool,
     GitPushTool,
+    GitPushRefspecTool,
+    GitRestorePathsTool,
+    GitRestoreStagedTool,
+    GitShowTool,
+    GitStashApplyTool,
+    GitStashListTool,
+    GitStashPushTool,
     GitStatusTool,
+    GitStatusRichTool,
+    GitUpstreamTool,
     RunCommandTool,
     ShellSessionTool,
 )
@@ -153,6 +173,210 @@ class TestGitTools:
         assert "exit code 0" in pull_result
         with open(os.path.join(git_workspace.root_dir, "app.py")) as f:
             assert "print('remote')" in f.read()
+
+    @pytest.mark.asyncio
+    async def test_git_status_rich_reports_detached_head(self, git_workspace):
+        _git(git_workspace.root_dir, "checkout", "--detach")
+
+        result = await GitStatusRichTool(git_workspace).execute()
+
+        assert "exit code 0" in result
+        assert "branch: <detached>" in result
+        assert "operation: none" in result
+
+    @pytest.mark.asyncio
+    async def test_git_log_and_show_inspect_history(self, git_workspace):
+        log_result = await GitLogTool(git_workspace).execute(max_count=1)
+        show_result = await GitShowTool(git_workspace).execute(ref="HEAD", path="app.py")
+
+        assert "exit code 0" in log_result
+        assert "initial" in log_result
+        assert "exit code 0" in show_result
+        assert "app.py" in show_result
+
+    @pytest.mark.asyncio
+    async def test_git_fetch_updates_remote_refs(self, git_workspace, temp_dir):
+        remote = os.path.join(temp_dir, "remote.git")
+        subprocess.run(["git", "init", "--bare", remote], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        _git(git_workspace.root_dir, "remote", "add", "origin", remote)
+
+        result = await GitFetchTool(git_workspace).execute(remote="origin")
+
+        assert "exit code 0" in result
+
+    @pytest.mark.asyncio
+    async def test_git_attach_head_to_branch_recovers_detached_commit(self, git_workspace):
+        _git(git_workspace.root_dir, "checkout", "--detach")
+        with open(os.path.join(git_workspace.root_dir, "app.py"), "a") as f:
+            f.write("print('detached')\n")
+        _git(git_workspace.root_dir, "add", "app.py")
+        _git(git_workspace.root_dir, "commit", "-m", "detached work")
+
+        result = await GitAttachHeadToBranchTool(git_workspace).execute(branch="recovered/work")
+
+        assert "exit code 0" in result
+        assert _current_branch(git_workspace.root_dir) == "recovered/work"
+        log = subprocess.run(
+            ["git", "log", "--oneline", "-1"],
+            cwd=git_workspace.root_dir,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout
+        assert "detached work" in log
+
+    @pytest.mark.asyncio
+    async def test_git_push_refspec_publishes_detached_head(self, git_workspace, temp_dir):
+        remote = os.path.join(temp_dir, "remote.git")
+        subprocess.run(["git", "init", "--bare", remote], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        _git(git_workspace.root_dir, "remote", "add", "origin", remote)
+        _git(git_workspace.root_dir, "checkout", "--detach")
+        with open(os.path.join(git_workspace.root_dir, "app.py"), "a") as f:
+            f.write("print('detached push')\n")
+        _git(git_workspace.root_dir, "add", "app.py")
+        _git(git_workspace.root_dir, "commit", "-m", "detached push")
+
+        result = await GitPushRefspecTool(git_workspace).execute(target_branch="feature/detached")
+
+        assert "exit code 0" in result
+        listed = subprocess.run(
+            ["git", "ls-remote", "--heads", remote, "feature/detached"],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout
+        assert "refs/heads/feature/detached" in listed
+
+    @pytest.mark.asyncio
+    async def test_git_push_refspec_rejects_raw_destination_refspec(self, git_workspace):
+        result = await GitPushRefspecTool(git_workspace).execute(target_branch="HEAD:bad")
+
+        assert result == "Error: invalid target_branch: HEAD:bad"
+
+    @pytest.mark.asyncio
+    async def test_git_branch_create_delete_and_upstream(self, git_workspace, temp_dir):
+        base_branch = _current_branch(git_workspace.root_dir)
+        remote = os.path.join(temp_dir, "remote.git")
+        subprocess.run(["git", "init", "--bare", remote], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        _git(git_workspace.root_dir, "remote", "add", "origin", remote)
+        create_result = await GitBranchCreateTool(git_workspace).execute(branch="feature/new", checkout=True)
+        push_result = await GitPushTool(git_workspace).execute(remote="origin", branch="feature/new", set_upstream=True)
+        upstream_result = await GitUpstreamTool(git_workspace).execute()
+        _git(git_workspace.root_dir, "checkout", base_branch)
+        delete_result = await GitBranchDeleteTool(git_workspace).execute(branch="feature/new", force=True)
+
+        assert "exit code 0" in create_result
+        assert "exit code 0" in push_result
+        assert "origin/feature/new" in upstream_result
+        assert "exit code 0" in delete_result
+
+    @pytest.mark.asyncio
+    async def test_git_branch_delete_rejects_current_branch(self, git_workspace):
+        branch = _current_branch(git_workspace.root_dir)
+
+        result = await GitBranchDeleteTool(git_workspace).execute(branch=branch, force=True)
+
+        assert result == f"Error: refusing to delete current branch: {branch}"
+
+    @pytest.mark.asyncio
+    async def test_git_merge_continue_rejects_without_merge(self, git_workspace):
+        result = await GitMergeContinueTool(git_workspace).execute()
+
+        assert result == "Error: no merge is in progress"
+
+    @pytest.mark.asyncio
+    async def test_git_merge_and_abort(self, git_workspace):
+        base_branch = _current_branch(git_workspace.root_dir)
+        _git(git_workspace.root_dir, "checkout", "-b", "feature/conflict")
+        with open(os.path.join(git_workspace.root_dir, "app.py"), "w") as f:
+            f.write("print('feature')\n")
+        _git(git_workspace.root_dir, "add", "app.py")
+        _git(git_workspace.root_dir, "commit", "-m", "feature change")
+        _git(git_workspace.root_dir, "checkout", base_branch)
+        with open(os.path.join(git_workspace.root_dir, "app.py"), "w") as f:
+            f.write("print('master')\n")
+        _git(git_workspace.root_dir, "add", "app.py")
+        _git(git_workspace.root_dir, "commit", "-m", "master change")
+
+        merge_result = await GitMergeTool(git_workspace).execute(ref="feature/conflict")
+        abort_result = await GitMergeAbortTool(git_workspace).execute()
+
+        assert "exit code 1" in merge_result
+        assert "CONFLICT" in merge_result
+        assert "exit code 0" in abort_result
+
+    @pytest.mark.asyncio
+    async def test_git_cherry_pick_continue_and_abort_reject_without_operation(self, git_workspace):
+        continue_result = await GitCherryPickContinueTool(git_workspace).execute()
+        abort_result = await GitCherryPickAbortTool(git_workspace).execute()
+
+        assert continue_result == "Error: no cherry-pick is in progress"
+        assert abort_result == "Error: no cherry-pick is in progress"
+
+    @pytest.mark.asyncio
+    async def test_git_cherry_pick_applies_commit(self, git_workspace):
+        base_branch = _current_branch(git_workspace.root_dir)
+        _git(git_workspace.root_dir, "checkout", "-b", "feature/pick")
+        with open(os.path.join(git_workspace.root_dir, "app.py"), "a") as f:
+            f.write("print('pick')\n")
+        _git(git_workspace.root_dir, "add", "app.py")
+        _git(git_workspace.root_dir, "commit", "-m", "pick change")
+        pick_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=git_workspace.root_dir,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.strip()
+        _git(git_workspace.root_dir, "checkout", base_branch)
+
+        result = await GitCherryPickTool(git_workspace).execute(ref=pick_sha)
+
+        assert "exit code 0" in result
+        with open(os.path.join(git_workspace.root_dir, "app.py")) as f:
+            assert "print('pick')" in f.read()
+
+    @pytest.mark.asyncio
+    async def test_git_restore_staged_and_paths(self, git_workspace):
+        with open(os.path.join(git_workspace.root_dir, "app.py"), "a") as f:
+            f.write("print('changed')\n")
+        _git(git_workspace.root_dir, "add", "app.py")
+
+        unstage_result = await GitRestoreStagedTool(git_workspace).execute(paths=["app.py"])
+        restore_result = await GitRestorePathsTool(git_workspace).execute(paths=["app.py"])
+
+        assert "exit code 0" in unstage_result
+        assert "exit code 0" in restore_result
+        with open(os.path.join(git_workspace.root_dir, "app.py")) as f:
+            assert "print('changed')" not in f.read()
+
+    @pytest.mark.asyncio
+    async def test_git_restore_paths_blocks_external_path(self, git_workspace):
+        result = await GitRestorePathsTool(git_workspace).execute(paths=["../outside.txt"])
+
+        assert result.startswith("Error:")
+        assert "outside workspace" in result
+
+    @pytest.mark.asyncio
+    async def test_git_stash_push_list_and_apply(self, git_workspace):
+        with open(os.path.join(git_workspace.root_dir, "app.py"), "a") as f:
+            f.write("print('stash')\n")
+
+        push_result = await GitStashPushTool(git_workspace).execute(message="save stash")
+        list_result = await GitStashListTool(git_workspace).execute()
+        apply_result = await GitStashApplyTool(git_workspace).execute()
+
+        assert "exit code 0" in push_result
+        assert "save stash" in list_result
+        assert "exit code 0" in apply_result
+        with open(os.path.join(git_workspace.root_dir, "app.py")) as f:
+            assert "print('stash')" in f.read()
+
+    @pytest.mark.asyncio
+    async def test_git_stash_apply_rejects_invalid_ref(self, git_workspace):
+        result = await GitStashApplyTool(git_workspace).execute(stash_ref="stash@{0}:bad")
+
+        assert result == "Error: invalid stash_ref: stash@{0}:bad"
 
 
 class TestRunCommandTool:

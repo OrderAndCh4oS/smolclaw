@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import inspect
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
@@ -78,9 +79,9 @@ class SubprocessCallableAgentExecutor:
             "timeout": request.timeout,
             "check": False,
         }
-        if request.network_access:
+        if request.network_access and self._accepts_kwarg("network_access"):
             kwargs["network_access"] = True
-        if request.execution_grant is not None:
+        if request.execution_grant is not None and self._accepts_kwarg("execution_grant"):
             kwargs["execution_grant"] = request.execution_grant
         result = self.command_runner(request.args, **kwargs)
         return CommandResult(
@@ -105,6 +106,17 @@ class SubprocessCallableAgentExecutor:
     def requires_image_management_approval(self) -> bool:
         checker = getattr(self.command_runner, "requires_image_management_approval", None)
         return bool(checker()) if callable(checker) else False
+
+    def _accepts_kwarg(self, name: str) -> bool:
+        if self.command_runner is subprocess.run:
+            return False
+        try:
+            signature = inspect.signature(self.command_runner)
+        except (TypeError, ValueError):
+            return False
+        if name in signature.parameters:
+            return True
+        return any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
 
 
 class AgentExecutorSubprocessAdapter:

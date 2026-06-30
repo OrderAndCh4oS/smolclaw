@@ -236,9 +236,13 @@ class TestRepoAgentsConfig:
         assert "exec" not in configs["default"].tools
         assert "list_dir" not in configs["default"].tools
         assert "git_status" in configs["default"].tools
+        assert "git_status_rich" in configs["default"].tools
         assert "git_branch" in configs["default"].tools
+        assert "git_log" in configs["default"].tools
+        assert "git_show" in configs["default"].tools
         assert "git_commit" not in configs["default"].tools
         assert "git_push" not in configs["default"].tools
+        assert "git_push_refspec" not in configs["default"].tools
         assert "goal_start" in configs["default"].tools
         assert "goal_status" in configs["default"].tools
         assert "run_command" not in configs["default"].tools
@@ -252,8 +256,12 @@ class TestRepoAgentsConfig:
         assert "list_dir" not in configs["researcher"].tools
         assert "git_diff" in configs["researcher"].tools
         assert "git_branch" in configs["researcher"].tools
+        assert "git_status_rich" in configs["researcher"].tools
+        assert "git_log" in configs["researcher"].tools
+        assert "git_show" in configs["researcher"].tools
         assert "git_commit" not in configs["researcher"].tools
         assert "git_push" not in configs["researcher"].tools
+        assert "git_attach_head_to_branch" not in configs["researcher"].tools
         assert "goal_start" in configs["researcher"].tools
         assert "goal_update" in configs["researcher"].tools
 
@@ -270,6 +278,12 @@ class TestRepoAgentsConfig:
         assert "git_add" in configs["coder"].tools
         assert "git_commit" in configs["coder"].tools
         assert "git_push" in configs["coder"].tools
+        assert "git_status_rich" in configs["coder"].tools
+        assert "git_push_refspec" in configs["coder"].tools
+        assert "git_attach_head_to_branch" in configs["coder"].tools
+        assert "git_merge_continue" in configs["coder"].tools
+        assert "git_cherry_pick_abort" in configs["coder"].tools
+        assert "git_stash_apply" in configs["coder"].tools
         assert "exec" not in configs["coder"].tools
         assert "write_file" in configs["coder"].tools
         assert "edit_file" in configs["coder"].tools
@@ -285,6 +299,21 @@ class TestRepoAgentsConfig:
         assert "work_loop_move_task" not in configs["ticket_writer"].tools
         assert "write_file" not in configs["ticket_writer"].tools
         assert "run_command" not in configs["ticket_writer"].tools
+
+        assert configs["git_recovery"].model == DEFAULT_AGENT_MODEL
+        assert configs["git_recovery"].capabilities == ["filesystem", "command"]
+        assert configs["git_recovery"].permission_mode == "execute"
+        assert configs["git_recovery"].bootstrap_path == "agents/git_recovery.md"
+        assert "git_status_rich" in configs["git_recovery"].tools
+        assert "git_push_refspec" in configs["git_recovery"].tools
+        assert "git_attach_head_to_branch" in configs["git_recovery"].tools
+        assert "git_merge" in configs["git_recovery"].tools
+        assert "git_cherry_pick_continue" in configs["git_recovery"].tools
+        assert "git_restore_paths" in configs["git_recovery"].tools
+        assert "git_stash_apply" in configs["git_recovery"].tools
+        assert "apply_patch" in configs["git_recovery"].tools
+        assert "run_command" in configs["git_recovery"].tools
+        assert "work_loop_create_task" not in configs["git_recovery"].tools
 
         assert configs["orchestrator"].model == DEFAULT_AGENT_MODEL
         assert configs["orchestrator"].capabilities == ["memory", "orchestration", "subagents"]

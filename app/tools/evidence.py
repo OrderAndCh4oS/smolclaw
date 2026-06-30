@@ -56,7 +56,7 @@ class EvidenceMiddleware:
                 trace_event_id=tool_trace_event_id,
                 tool_call_id=tool_call_id,
             )
-        elif tool.name == "git_status":
+        elif tool.name in {"git_status", "git_status_rich"}:
             tool_call_id, tool_trace_event_id = self._active_tool_ids()
             self._record_ledger_evidence(
                 kind="status",

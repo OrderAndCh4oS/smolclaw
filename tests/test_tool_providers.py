@@ -27,6 +27,16 @@ def test_register_capability_tools_uses_explicit_providers(temp_dir):
 
     assert "run_command" in registry.tool_names()
     assert {
+        "git_status_rich",
+        "git_fetch",
+        "git_log",
+        "git_show",
+        "git_push_refspec",
+        "git_attach_head_to_branch",
+        "git_merge_continue",
+        "git_stash_apply",
+    }.issubset(registry.tool_names())
+    assert {
         "work_loop_list_tasks",
         "work_loop_view_task",
         "work_loop_create_task",

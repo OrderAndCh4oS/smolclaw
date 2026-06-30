@@ -128,13 +128,33 @@ class CommandToolProvider:
             return
         from app.tools.command import (
             GitAddTool,
+            GitAttachHeadToBranchTool,
             GitBranchTool,
+            GitBranchCreateTool,
+            GitBranchDeleteTool,
+            GitCherryPickAbortTool,
+            GitCherryPickContinueTool,
+            GitCherryPickTool,
             GitCheckoutTool,
             GitCommitTool,
             GitDiffTool,
+            GitFetchTool,
+            GitLogTool,
+            GitMergeAbortTool,
+            GitMergeContinueTool,
+            GitMergeTool,
             GitPullTool,
             GitPushTool,
+            GitPushRefspecTool,
+            GitRestorePathsTool,
+            GitRestoreStagedTool,
+            GitShowTool,
+            GitStashApplyTool,
+            GitStashListTool,
+            GitStashPushTool,
             GitStatusTool,
+            GitStatusRichTool,
+            GitUpstreamTool,
             RunCommandTool,
         )
         from app.tools.work_loop import (
@@ -147,13 +167,33 @@ class CommandToolProvider:
         )
 
         registry.register(GitStatusTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
+        registry.register(GitStatusRichTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
         registry.register(GitDiffTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
         registry.register(GitBranchTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
+        registry.register(GitFetchTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
+        registry.register(GitLogTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
+        registry.register(GitShowTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
         registry.register(GitCheckoutTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
         registry.register(GitPullTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
         registry.register(GitAddTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
         registry.register(GitCommitTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
         registry.register(GitPushTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
+        registry.register(GitPushRefspecTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
+        registry.register(GitAttachHeadToBranchTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
+        registry.register(GitBranchCreateTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
+        registry.register(GitBranchDeleteTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
+        registry.register(GitUpstreamTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
+        registry.register(GitMergeTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
+        registry.register(GitMergeContinueTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
+        registry.register(GitMergeAbortTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
+        registry.register(GitCherryPickTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
+        registry.register(GitCherryPickContinueTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
+        registry.register(GitCherryPickAbortTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
+        registry.register(GitRestoreStagedTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
+        registry.register(GitRestorePathsTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
+        registry.register(GitStashPushTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
+        registry.register(GitStashListTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
+        registry.register(GitStashApplyTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
         registry.register(RunCommandTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
         registry.register(WorkLoopListTasksTool(workspace=context.workspace), capability_name=self.capability_name)
         registry.register(WorkLoopViewTaskTool(workspace=context.workspace), capability_name=self.capability_name)

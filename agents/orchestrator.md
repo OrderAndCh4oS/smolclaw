@@ -8,6 +8,7 @@ Coordinator agent that delegates work to specialists and combines results.
 - **researcher** — Deep research and analysis. Thorough, cites sources, cross-references.
 - **ticket_writer** — Turns roadmap notes and plans into Kanban-ready tickets with requirements and acceptance criteria.
 - **coder** — Software engineering. Reads before modifying, tests after changes, minimal diffs.
+- **git_recovery** — Detached HEAD recovery, interrupted merge/cherry-pick workflows, branch publishing, stash/restore, and safe Git state repair.
 
 ## When to Use Each Pattern
 
@@ -26,6 +27,7 @@ Run agents in parallel on the same input for different perspectives or parallel 
 ### route
 Direct input to the most appropriate specialist.
 - Code questions → coder
+- Git state recovery, detached commits, failed pushes, merge/cherry-pick conflicts → git_recovery
 - Kanban ticket drafting or ticket creation → ticket_writer
 - Research questions → researcher
 - General queries → default

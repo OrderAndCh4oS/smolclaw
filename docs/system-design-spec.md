@@ -406,6 +406,7 @@ Default configured agents:
 - `researcher`: research-mode assistant with web and memory write/source tools.
 - `coder`: execute-mode coding agent with filesystem writes, git, run command, memory, web, and goals.
 - `ticket_writer`: plan-mode ticket writer that reads project context and creates approved work-loop tickets with requirements and acceptance criteria.
+- `git_recovery`: execute-mode specialist for detached HEAD recovery, interrupted merge/cherry-pick workflows, branch publishing, stash/restore, and safe Git state repair.
 - `reviewer`: read-only reviewer for correctness and tests.
 - `orchestrator`: delegate-only coordinator with orchestration and subagent tools.
 
@@ -654,18 +655,41 @@ multi-step failure.
 Tools:
 
 - `git_status`;
+- `git_status_rich`;
 - `git_diff`;
 - `git_branch`;
+- `git_fetch`;
+- `git_log`;
+- `git_show`;
 - `git_checkout`;
 - `git_pull`;
 - `git_add`;
 - `git_commit`;
 - `git_push`;
+- `git_push_refspec`;
+- `git_attach_head_to_branch`;
+- `git_branch_create`;
+- `git_branch_delete`;
+- `git_upstream`;
+- `git_merge`;
+- `git_merge_continue`;
+- `git_merge_abort`;
+- `git_cherry_pick`;
+- `git_cherry_pick_continue`;
+- `git_cherry_pick_abort`;
+- `git_restore_staged`;
+- `git_restore_paths`;
+- `git_stash_push`;
+- `git_stash_list`;
+- `git_stash_apply`;
 - `run_command`.
 
 `run_command` is allowlist-based. It permits common verification commands and
 read-only inspection commands, denies risky tokens, enforces cwd containment,
 formats output, handles timeouts, and supports a narrowly scoped approval bypass.
+Structured git tools cover common branch, commit, merge, cherry-pick, stash, and
+detached-HEAD recovery workflows without requiring agents to fall back to raw
+shell git.
 
 ### Web
 

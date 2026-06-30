@@ -17,8 +17,12 @@ agents:
       - read_file
       - grep_search
       - git_status
+      - git_status_rich
       - git_diff
       - git_branch
+      - git_log
+      - git_show
+      - git_stash_list
       - work_loop_list_tasks
       - work_loop_view_task
       - work_loop_create_task
@@ -68,8 +72,12 @@ agents:
       - read_file
       - grep_search
       - git_status
+      - git_status_rich
       - git_diff
       - git_branch
+      - git_log
+      - git_show
+      - git_stash_list
       - work_loop_list_tasks
       - work_loop_view_task
       - goal_start
@@ -107,13 +115,33 @@ agents:
       - read_file
       - grep_search
       - git_status
+      - git_status_rich
       - git_diff
       - git_branch
+      - git_fetch
+      - git_log
+      - git_show
       - git_checkout
       - git_pull
       - git_add
       - git_commit
       - git_push
+      - git_push_refspec
+      - git_attach_head_to_branch
+      - git_branch_create
+      - git_branch_delete
+      - git_upstream
+      - git_merge
+      - git_merge_continue
+      - git_merge_abort
+      - git_cherry_pick
+      - git_cherry_pick_continue
+      - git_cherry_pick_abort
+      - git_restore_staged
+      - git_restore_paths
+      - git_stash_push
+      - git_stash_list
+      - git_stash_apply
       - work_loop_list_tasks
       - work_loop_view_task
       - work_loop_create_task
@@ -159,7 +187,11 @@ agents:
       - read_file
       - grep_search
       - git_status
+      - git_status_rich
       - git_diff
+      - git_log
+      - git_show
+      - git_stash_list
       - work_loop_list_tasks
       - work_loop_view_task
       - work_loop_create_task
@@ -176,6 +208,61 @@ agents:
     max_iterations: 20
     memory_window: 20
     context_budget: 7000
+    timeout: 600
+
+  - name: git_recovery
+    model: default
+    persona: >
+      You are a Git recovery specialist. Diagnose repository state, preserve
+      completed work, recover detached HEAD commits, finish or abort interrupted
+      merge/cherry-pick workflows, and publish branches only when explicitly
+      requested. Prefer the smallest safe git operation that preserves work.
+    tools:
+      - find_files
+      - read_file
+      - grep_search
+      - git_status
+      - git_status_rich
+      - git_diff
+      - git_branch
+      - git_fetch
+      - git_log
+      - git_show
+      - git_checkout
+      - git_pull
+      - git_add
+      - git_commit
+      - git_push
+      - git_push_refspec
+      - git_attach_head_to_branch
+      - git_branch_create
+      - git_branch_delete
+      - git_upstream
+      - git_merge
+      - git_merge_continue
+      - git_merge_abort
+      - git_cherry_pick
+      - git_cherry_pick_continue
+      - git_cherry_pick_abort
+      - git_restore_staged
+      - git_restore_paths
+      - git_stash_push
+      - git_stash_list
+      - git_stash_apply
+      - edit_file
+      - apply_patch
+      - run_command
+    capabilities:
+      - filesystem
+      - command
+    permission_mode: execute
+    bootstrap_path: agents/git_recovery.md
+    behaviors:
+      - plan
+      - reflect
+    max_iterations: 30
+    memory_window: 10
+    context_budget: 5000
     timeout: 600
 
   - name: reviewer

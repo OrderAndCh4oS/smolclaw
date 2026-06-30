@@ -1877,7 +1877,7 @@ class CliAgentTaskExecutor:
     ) -> TaskExecutionResult:
         profile = profile or execution_profile_from_item(item, config)
         commands = self.done_gate.discover(item.workspace_path, config)
-        prompt = build_task_prompt(candidate, commands, review_feedback=review_feedback)
+        prompt = build_task_prompt(candidate, commands, review_feedback=review_feedback, branch_name=item.branch_name)
         blocker = ""
         verification: list[VerificationRecord] = []
         max_attempts = max(1, min(profile.repair_attempts + 1, MAX_INNER_ATTEMPTS))
@@ -2417,9 +2417,15 @@ def parse_run_once_response(raw: str) -> str:
     return raw or ""
 
 
-def build_task_prompt(candidate: TaskCandidate, commands: list[str], *, review_feedback: str = "") -> str:
+def build_task_prompt(candidate: TaskCandidate, commands: list[str], *, review_feedback: str = "", branch_name: str = "") -> str:
     feedback = f"\n\nReview feedback to address:\n{review_feedback}" if review_feedback else ""
     command_block = "\n".join(f"- {command}" for command in commands) or "- <none discovered>"
+    branch_guidance = (
+        f"\n\nWork-loop branch:\n{branch_name}\n\n"
+        "Keep completed commits attached to this branch. If work is accidentally committed on detached HEAD, "
+        "use the structured git recovery tools instead of restarting the merge or losing the detached commit."
+        if branch_name else ""
+    )
     return (
         f"Complete Jira ticket {candidate.key}: {candidate.summary}\n\n"
         f"Ticket description:\n{candidate.description or candidate.summary}\n\n"
@@ -2427,6 +2433,7 @@ def build_task_prompt(candidate: TaskCandidate, commands: list[str], *, review_f
         "validation, testing, and established UX/UI patterns. Read relevant files before editing. "
         "Write or update appropriate tests. Continue until the ticket requirements are complete.\n\n"
         f"Verification commands expected by the outer loop:\n{command_block}"
+        f"{branch_guidance}"
         f"{feedback}"
     )
 
