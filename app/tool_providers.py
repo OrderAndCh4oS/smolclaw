@@ -137,6 +137,14 @@ class CommandToolProvider:
             GitStatusTool,
             RunCommandTool,
         )
+        from app.tools.work_loop import (
+            WorkLoopCloseTaskTool,
+            WorkLoopCommentTaskTool,
+            WorkLoopCreateTaskTool,
+            WorkLoopListTasksTool,
+            WorkLoopMoveTaskTool,
+            WorkLoopViewTaskTool,
+        )
 
         registry.register(GitStatusTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
         registry.register(GitDiffTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
@@ -147,6 +155,12 @@ class CommandToolProvider:
         registry.register(GitCommitTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
         registry.register(GitPushTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
         registry.register(RunCommandTool(context.workspace, command_runner=context.command_runner), capability_name=self.capability_name)
+        registry.register(WorkLoopListTasksTool(workspace=context.workspace), capability_name=self.capability_name)
+        registry.register(WorkLoopViewTaskTool(workspace=context.workspace), capability_name=self.capability_name)
+        registry.register(WorkLoopCreateTaskTool(workspace=context.workspace), capability_name=self.capability_name)
+        registry.register(WorkLoopMoveTaskTool(workspace=context.workspace), capability_name=self.capability_name)
+        registry.register(WorkLoopCommentTaskTool(workspace=context.workspace), capability_name=self.capability_name)
+        registry.register(WorkLoopCloseTaskTool(workspace=context.workspace), capability_name=self.capability_name)
 
 
 class GoalToolProvider:

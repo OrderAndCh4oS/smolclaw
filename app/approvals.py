@@ -91,6 +91,8 @@ class ApprovalRequest:
     run_id: str | None = None
     origin_session_key: str | None = None
     origin_run_id: str | None = None
+    rationale: str = ""
+    expected_outcome: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -112,6 +114,8 @@ class ApprovalRequest:
             "run_id": self.run_id,
             "origin_session_key": self.origin_session_key,
             "origin_run_id": self.origin_run_id,
+            "rationale": self.rationale,
+            "expected_outcome": self.expected_outcome,
         }
 
     @classmethod
@@ -143,6 +147,8 @@ class ApprovalRequest:
                 if data.get("origin_run_id")
                 else str(data["run_id"]) if data.get("run_id") else None
             ),
+            rationale=str(data.get("rationale") or ""),
+            expected_outcome=str(data.get("expected_outcome") or ""),
         )
 
 
@@ -196,6 +202,8 @@ class ApprovalRequestStore:
         expires_at: float | None = None,
         origin_session_key: str | None = None,
         origin_run_id: str | None = None,
+        rationale: str = "",
+        expected_outcome: str = "",
     ) -> ApprovalRequest:
         granted_effects = tuple(sorted(set(granted_effects)))
         arguments_hash = approval_arguments_hash(tool_name, arguments)
@@ -218,6 +226,8 @@ class ApprovalRequestStore:
                 if existing.status in {"used", "approved"}:
                     existing.status = "pending"
                 existing.reason = reason or existing.reason
+                existing.rationale = rationale or existing.rationale
+                existing.expected_outcome = expected_outcome or existing.expected_outcome
                 existing.run_id = run_id or existing.run_id
                 existing.origin_session_key = origin_session_key or existing.origin_session_key
                 existing.origin_run_id = origin_run_id or run_id or existing.origin_run_id
@@ -247,6 +257,8 @@ class ApprovalRequestStore:
             run_id=run_id,
             origin_session_key=origin_session_key or session_key,
             origin_run_id=origin_run_id or run_id,
+            rationale=rationale,
+            expected_outcome=expected_outcome,
         )
         requests.append(request)
         self._save(session_key, requests)
@@ -378,6 +390,8 @@ class PermissionController:
         run_id: str | None = None,
         origin_session_key: str | None = None,
         origin_run_id: str | None = None,
+        rationale: str = "",
+        expected_outcome: str = "",
         event_sink: PermissionEventSink | None = None,
         trace_recorder: Any = None,
     ) -> ExecutionGrant:
@@ -404,6 +418,8 @@ class PermissionController:
             granted_effects=tuple(sorted(effects_set)),
             origin_session_key=origin_session_key,
             origin_run_id=origin_run_id,
+            rationale=rationale,
+            expected_outcome=expected_outcome,
         )
         if event_sink is None:
             self._set_status(request, "denied")
@@ -429,6 +445,8 @@ class PermissionController:
             "origin_session_key": request.origin_session_key,
             "tool": request.tool_name,
             "reason": request.reason,
+            "rationale": request.rationale,
+            "expected_outcome": request.expected_outcome,
             "effects": list(request.granted_effects),
             "matched_subject": request.matched_subject,
             "matched_pattern": request.matched_pattern,
@@ -524,6 +542,8 @@ class PermissionController:
             arguments_hash=approval_arguments_hash(tool_name, arguments),
             arguments_preview=_argument_preview(arguments),
             reason=kwargs.get("reason") or "",
+            rationale=kwargs.get("rationale") or "",
+            expected_outcome=kwargs.get("expected_outcome") or "",
             matched_subject=kwargs.get("matched_subject"),
             matched_pattern=kwargs.get("matched_pattern"),
             granted_effects=tuple(kwargs.get("granted_effects") or ()),
@@ -565,6 +585,8 @@ class PermissionController:
             "approval_id": request.id,
             "tool": request.tool_name,
             "reason": request.reason,
+            "rationale": request.rationale,
+            "expected_outcome": request.expected_outcome,
             "scope": request.scope,
             "arguments_hash": request.arguments_hash,
             "matched_subject": request.matched_subject,
@@ -679,6 +701,26 @@ def format_approval_review_option(request: ApprovalRequest) -> str:
     return f"{request.id}: {request.tool_name}{rule_suffix}{run}{origin}{effects}{reason}{preview_suffix}"
 
 
+def format_approval_summary_lines(request: ApprovalRequest, *, max_argument_lines: int = 4) -> list[str]:
+    lines = [
+        f"Tool: {request.tool_name}",
+    ]
+    if request.rationale:
+        lines.append(f"Rationale: {_truncate_text(request.rationale, 220)}")
+    elif request.reason:
+        lines.append(f"Reason: {_truncate_text(request.reason, 220)}")
+    if request.expected_outcome:
+        lines.append(f"Expected outcome: {_truncate_text(request.expected_outcome, 220)}")
+    operation = _format_operation_summary(request)
+    if operation:
+        lines.append(f"Operation: {operation}")
+    for line in _format_argument_summary_lines(request.arguments_preview)[:max_argument_lines]:
+        lines.append(line)
+    if request.granted_effects:
+        lines.append(f"Effects: {', '.join(sorted(request.granted_effects))}")
+    return lines
+
+
 def format_approval_detail(store: ApprovalRequestStore, session_key: str, approval_id: str) -> str:
     request = store.get(session_key, approval_id)
     if request is None:
@@ -693,6 +735,10 @@ def format_approval_detail(store: ApprovalRequestStore, session_key: str, approv
     ]
     if request.reason:
         lines.append(f"Reason: {request.reason}")
+    if request.rationale:
+        lines.append(f"Rationale: {request.rationale}")
+    if request.expected_outcome:
+        lines.append(f"Expected outcome: {request.expected_outcome}")
     rule = _format_rule(request)
     if rule:
         lines.append(f"Matched rule: {rule}")
@@ -736,6 +782,54 @@ def _format_arguments_preview(arguments_preview: Any) -> str:
     if isinstance(arguments_preview, str):
         return _truncate_text(arguments_preview, 80)
     return ""
+
+
+def _format_operation_summary(request: ApprovalRequest) -> str:
+    arguments = request.arguments_preview
+    if not isinstance(arguments, Mapping):
+        return ""
+    if request.tool_name == "run_command":
+        command = arguments.get("command")
+        cwd = arguments.get("cwd") or "."
+        if isinstance(command, str) and command:
+            return f"run `{_truncate_text(command, 120)}` in {cwd}"
+    if request.tool_name.startswith("work_loop_"):
+        return request.tool_name.removeprefix("work_loop_").replace("_", " ")
+    path = arguments.get("path")
+    if isinstance(path, str) and path:
+        return f"use path {path}"
+    title = arguments.get("title")
+    if isinstance(title, str) and title:
+        return _truncate_text(title, 120)
+    return ""
+
+
+def _format_argument_summary_lines(arguments_preview: Any) -> list[str]:
+    if not isinstance(arguments_preview, Mapping):
+        return []
+    if arguments_preview.get("truncated") is True:
+        preview = arguments_preview.get("preview")
+        return [f"Arguments: {_truncate_text(str(preview), 180)}"] if preview else []
+    lines: list[str] = []
+    for key, value in arguments_preview.items():
+        if key in {"approval_rationale", "approval_expected_outcome"}:
+            continue
+        if value in (None, "", [], {}):
+            continue
+        label = str(key).replace("_", " ").title()
+        rendered = _truncate_text(_format_argument_value(value), 160)
+        lines.append(f"{label}: {rendered}")
+    return lines
+
+
+def _format_argument_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value.replace("\n", "\\n")
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(item) for item in value)
+    if isinstance(value, Mapping):
+        return json.dumps(value, sort_keys=True, default=str)
+    return str(value)
 
 
 def _truncate_text(value: str, max_chars: int) -> str:

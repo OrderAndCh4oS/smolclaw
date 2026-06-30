@@ -61,6 +61,7 @@ from app.run_views import build_run_status_view
 from app.worktree import WorktreeRunner
 from app.work_loop import (
     DEFAULT_WORK_LOOP_CONFIG,
+    TaskCandidate,
     WorkLoopControl,
     WorkLoopConfig,
     WorkLoopJobStore,
@@ -71,6 +72,7 @@ from app.work_loop import (
     format_work_loop_jobs,
     format_work_item_status,
     format_work_items,
+    resolve_work_loop_config_path,
     terminate_active_work_loop_processes,
 )
 from cli.commands import (
@@ -157,7 +159,7 @@ app = typer.Typer(
     rich_markup_mode=None,
 )
 work_loop_app = typer.Typer(
-    help="Run Jira task automation and GitHub PR review follow-up loops.",
+    help="Run task-source automation and GitHub PR review follow-up loops.",
     rich_markup_mode=None,
 )
 app.add_typer(work_loop_app, name="work-loop")
@@ -754,8 +756,10 @@ def _work_loop_explicit_adapter_types(config_path: str) -> tuple[bool, bool]:
     task_source = data.get("task_source")
     code_review = data.get("code_review")
     return (
-        "task_source_type" in data or (isinstance(task_source, dict) and "type" in task_source),
-        "code_review_type" in data or (isinstance(code_review, dict) and "type" in code_review),
+        "task_source_type" in data
+        or (isinstance(task_source, dict) and ("type" in task_source or "provider" in task_source)),
+        "code_review_type" in data
+        or (isinstance(code_review, dict) and ("type" in code_review or "provider" in code_review)),
     )
 
 
@@ -770,8 +774,9 @@ def _build_work_loop_runner(
     deps = get_cli_dependencies(deps)
     workspace_ctx = _workspace_context(workspace)
     adapter_config = load_runtime_config(workspace_ctx)
+    resolved_config_path = resolve_work_loop_config_path(config_path, workspace=workspace_ctx)
     config = _load_work_loop_config(
-        config_path,
+        resolved_config_path,
         project=project,
         max_concurrency=max_concurrency,
         adapter_config=adapter_config,
@@ -794,7 +799,8 @@ def _work_loop_worker_args(
     max_concurrency: int | None = None,
     dry_run: bool = False,
 ) -> list[str]:
-    args = ["--workspace", workspace, "--config", config_path]
+    resolved_config_path = resolve_work_loop_config_path(config_path, workspace=workspace)
+    args = ["--workspace", workspace, "--config", resolved_config_path]
     if project:
         args.extend(["--project", project])
     if limit is not None:
@@ -834,8 +840,9 @@ def _run_work_loop_mode(
     deps = get_cli_dependencies(deps)
     workspace_ctx = _workspace_context(workspace)
     adapter_config = load_runtime_config(workspace_ctx)
+    resolved_config_path = resolve_work_loop_config_path(config_path, workspace=workspace_ctx)
     config = _load_work_loop_config(
-        config_path,
+        resolved_config_path,
         project=project,
         max_concurrency=max_concurrency,
         adapter_config=adapter_config,
@@ -857,10 +864,48 @@ def _run_work_loop_mode(
         return "\n\n".join([
             "Review follow-up:",
             format_work_items(review_items),
-            "Jira tasks:",
+            "Task-source work:",
             format_work_items(task_items),
         ])
     raise ValueError(f"Unsupported work-loop mode: {mode}")
+
+
+def _format_created_task(candidate: TaskCandidate) -> str:
+    lines = [f"Created task {candidate.key}: {candidate.summary}"]
+    if candidate.status:
+        lines.append(f"Status: {candidate.status}")
+    if candidate.labels:
+        lines.append(f"Labels: {', '.join(candidate.labels)}")
+    if candidate.url:
+        lines.append(f"URL: {candidate.url}")
+    return "\n".join(lines)
+
+
+def _create_work_loop_task(
+    *,
+    workspace: str,
+    config_path: str,
+    project: str = "",
+    title: str,
+    description: str = "",
+    labels: list[str] | None = None,
+    status: str = "",
+    deps: CliDependencies | None = None,
+) -> str:
+    runner = _build_work_loop_runner(
+        workspace=workspace,
+        config_path=config_path,
+        project=project,
+        deps=deps,
+    )
+    return _format_created_task(
+        runner.create_task(
+            title=title,
+            description=description,
+            labels=labels or [],
+            status=status,
+        )
+    )
 
 
 def _pop_flag(args: list[str], *names: str, default: str | None = None) -> str | None:
@@ -913,10 +958,12 @@ def _resolve_work_loop_command(
             "Work-loop commands:",
             "  /work-loop list [--state STATE]",
             "  /work-loop jobs",
-            "  /work-loop status <JIRA_KEY_OR_PR_NUMBER>",
-            "  /work-loop tasks --project KEY [--limit N] [--max-concurrency N] [--config PATH] [--dry-run] [--foreground]",
+            "  /work-loop status <TASK_KEY_OR_PR_NUMBER>",
+            "  /work-loop create-task \"Title\" --project KEY [--description TEXT] [--label LABEL] [--status COLUMN] [--config PATH]",
+            "  /work-loop start [--limit N] [--project KEY] [--config PATH] [--dry-run] [--foreground]",
+            "  /work-loop tasks [--project KEY] [--limit N] [--max-concurrency N] [--config PATH] [--dry-run] [--foreground]",
             "  /work-loop reviews [--config PATH] [--dry-run] [--foreground]",
-            "  /work-loop run --project KEY [--limit N] [--max-concurrency N] [--config PATH] [--dry-run] [--foreground]",
+            "  /work-loop run [--project KEY] [--limit N] [--max-concurrency N] [--config PATH] [--dry-run] [--foreground]",
             "  /work-loop stop [job-id|all] [reason]",
             "  /work-loop pause [job-id|all] [reason]",
             "  /work-loop resume [job-id|all]",
@@ -962,6 +1009,31 @@ def _resolve_work_loop_command(
         config_path = _pop_flag(parts, "--config", default=DEFAULT_WORK_LOOP_CONFIG) or DEFAULT_WORK_LOOP_CONFIG
         dry_run = _pop_bool_flag(parts, "--dry-run")
         foreground = _pop_bool_flag(parts, "--foreground")
+        if subcommand == "create-task":
+            project = _pop_flag(parts, "--project", "-p")
+            if not project:
+                return "Usage: /work-loop create-task \"Title\" --project KEY"
+            description = _pop_flag(parts, "--description", "-d", default="") or ""
+            status = _pop_flag(parts, "--status", default="") or ""
+            labels: list[str] = []
+            while True:
+                label = _pop_flag(parts, "--label", "-l")
+                if label is None:
+                    break
+                labels.append(label)
+            title = " ".join(parts).strip()
+            if not title:
+                return "Usage: /work-loop create-task \"Title\" --project KEY"
+            return _create_work_loop_task(
+                workspace=workspace.root_dir,
+                config_path=config_path,
+                project=project,
+                title=title,
+                description=description,
+                labels=labels,
+                status=status,
+                deps=deps,
+            )
         if subcommand == "list":
             state = _pop_flag(parts, "--state", default="all") or "all"
             if parts:
@@ -970,7 +1042,7 @@ def _resolve_work_loop_command(
         if subcommand == "status":
             target = parts.pop(0) if parts else ""
             if not target:
-                return "Usage: /work-loop status <JIRA_KEY_OR_PR_NUMBER>"
+                return "Usage: /work-loop status <TASK_KEY_OR_PR_NUMBER>"
             if parts:
                 return f"Error: unexpected arguments for /work-loop status: {' '.join(parts)}"
             if target.startswith("job-"):
@@ -982,10 +1054,9 @@ def _resolve_work_loop_command(
                 pr_number = int(target)
                 item = next((candidate for candidate in ledger.list("all") if candidate.pr_number == pr_number), None)
             return format_work_item_status(item)
-        if subcommand in {"tasks", "run"}:
+        if subcommand in {"start", "tasks", "run"}:
+            mode = "run" if subcommand == "start" else subcommand
             project = _pop_flag(parts, "--project", "-p")
-            if not project:
-                return f"Usage: /work-loop {subcommand} --project KEY"
             limit = _int_option(_pop_flag(parts, "--limit"), label="--limit")
             max_concurrency = _int_option(_pop_flag(parts, "--max-concurrency"), label="--max-concurrency")
             if parts:
@@ -999,9 +1070,9 @@ def _resolve_work_loop_command(
                 dry_run=dry_run,
             )
             if not foreground:
-                return _start_work_loop_job(workspace=workspace.root_dir, mode=subcommand, worker_args=worker_args, deps=deps)
+                return _start_work_loop_job(workspace=workspace.root_dir, mode=mode, worker_args=worker_args, deps=deps)
             return _run_work_loop_mode(
-                mode=subcommand,
+                mode=mode,
                 workspace=workspace.root_dir,
                 config_path=config_path,
                 project=project,
@@ -1031,7 +1102,7 @@ def _resolve_work_loop_command(
         return f"Error: {exc}"
     except ValueError as exc:
         return f"Error: {exc}"
-    return "Usage: /work-loop list|status|tasks|reviews|run"
+    return "Usage: /work-loop list|status|create-task|tasks|reviews|run"
 
 
 @work_loop_app.command(name="worker", hidden=True)
@@ -1040,8 +1111,8 @@ def work_loop_worker(
     mode: str = typer.Option(..., "--mode", help="Worker mode: tasks, reviews, or run"),
     workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root"),
     config_path: str = typer.Option(DEFAULT_WORK_LOOP_CONFIG, "--config", help="Work-loop YAML config"),
-    project: str = typer.Option("", "--project", "-p", help="Jira project key to search"),
-    limit: Optional[int] = typer.Option(None, "--limit", help="Maximum tickets to start"),
+    project: str = typer.Option("", "--project", "-p", help="Task source project key, identifier, name, or id"),
+    limit: Optional[int] = typer.Option(None, "--limit", help="Maximum tasks to start"),
     max_concurrency: Optional[int] = typer.Option(None, "--max-concurrency", help="Override configured concurrency"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Exercise discovery without changing branches"),
 ):
@@ -1090,15 +1161,15 @@ def work_loop_worker(
 
 @work_loop_app.command(name="tasks")
 def work_loop_tasks(
-    project: str = typer.Option(..., "--project", "-p", help="Jira project key to search"),
+    project: str = typer.Option(..., "--project", "-p", help="Task source project key, identifier, name, or id"),
     workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root"),
     config_path: str = typer.Option(DEFAULT_WORK_LOOP_CONFIG, "--config", help="Work-loop YAML config"),
-    limit: Optional[int] = typer.Option(None, "--limit", help="Maximum tickets to start"),
+    limit: Optional[int] = typer.Option(None, "--limit", help="Maximum tasks to start"),
     max_concurrency: Optional[int] = typer.Option(None, "--max-concurrency", help="Override configured concurrency"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Select and record candidates without starting implementation"),
     foreground: bool = typer.Option(False, "--foreground", help="Run synchronously instead of starting a background job"),
 ):
-    """Search Jira, start suitable coding tasks, push branches, and create PRs."""
+    """Search the task source, start suitable coding tasks, push branches, and create PRs."""
     try:
         if foreground:
             output = _run_work_loop_mode(
@@ -1123,6 +1194,33 @@ def work_loop_tasks(
                     dry_run=dry_run,
                 ),
             )
+    except RuntimeError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2) from exc
+    console.print(output, markup=False)
+
+
+@work_loop_app.command(name="create-task")
+def work_loop_create_task(
+    title: str = typer.Argument(..., help="Task title"),
+    project: str = typer.Option(..., "--project", "-p", help="Task source project key, identifier, name, or id"),
+    workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root"),
+    config_path: str = typer.Option(DEFAULT_WORK_LOOP_CONFIG, "--config", help="Work-loop YAML config"),
+    description: str = typer.Option("", "--description", "-d", help="Task description"),
+    label: Optional[list[str]] = typer.Option(None, "--label", "-l", help="Task label/tag; may be passed more than once"),
+    status: str = typer.Option("", "--status", help="Initial task status/column"),
+):
+    """Create a task in the configured task source."""
+    try:
+        output = _create_work_loop_task(
+            workspace=workspace,
+            config_path=config_path,
+            project=project,
+            title=title,
+            description=description,
+            labels=list(label or []),
+            status=status,
+        )
     except RuntimeError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(2) from exc
@@ -1163,7 +1261,7 @@ def work_loop_reviews(
 
 @work_loop_app.command(name="run")
 def work_loop_run(
-    project: str = typer.Option(..., "--project", "-p", help="Jira project key to search"),
+    project: str = typer.Option(..., "--project", "-p", help="Task source project key, identifier, name, or id"),
     workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root"),
     config_path: str = typer.Option(DEFAULT_WORK_LOOP_CONFIG, "--config", help="Work-loop YAML config"),
     limit: Optional[int] = typer.Option(None, "--limit", help="Maximum new tickets to start after reviews"),
@@ -1171,7 +1269,7 @@ def work_loop_run(
     dry_run: bool = typer.Option(False, "--dry-run", help="Exercise selection/review discovery without changing branches"),
     foreground: bool = typer.Option(False, "--foreground", help="Run synchronously instead of starting a background job"),
 ):
-    """Run one combined cycle: PR review follow-up first, then new Jira work."""
+    """Run one combined cycle: PR review follow-up first, then new task-source work."""
     try:
         if foreground:
             output = _run_work_loop_mode(
@@ -1223,7 +1321,7 @@ def work_loop_jobs(
 
 @work_loop_app.command(name="status")
 def work_loop_status(
-    ticket_or_pr: str = typer.Argument(..., help="Jira key or PR number"),
+    ticket_or_pr: str = typer.Argument(..., help="Task key or PR number"),
     workspace: str = typer.Option(WORKSPACE_DIR, "--workspace", "-w", help="Workspace root"),
 ):
     """Show one work-loop ticket/PR record."""

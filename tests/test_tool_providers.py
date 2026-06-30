@@ -26,4 +26,12 @@ def test_register_capability_tools_uses_explicit_providers(temp_dir):
     )
 
     assert "run_command" in registry.tool_names()
+    assert {
+        "work_loop_list_tasks",
+        "work_loop_view_task",
+        "work_loop_create_task",
+        "work_loop_move_task",
+        "work_loop_comment_task",
+        "work_loop_close_task",
+    }.issubset(registry.tool_names())
     assert "shell_session" in registry.tool_names()

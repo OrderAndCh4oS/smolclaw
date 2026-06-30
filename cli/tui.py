@@ -2,12 +2,14 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
 import threading
 import textwrap
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from prompt_toolkit import Application
@@ -24,7 +26,13 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.styles import Style
 
 from app import diagnostics
-from app.approvals import ApprovalRequest, PermissionController, format_approval_detail, format_approval_review_option
+from app.approvals import (
+    ApprovalRequest,
+    PermissionController,
+    format_approval_detail,
+    format_approval_review_option,
+    format_approval_summary_lines,
+)
 from app.checkpoints import CheckpointStore
 from app.model_settings import (
     apply_subagent_model_selection,
@@ -37,7 +45,8 @@ from app.model_settings import (
     subagent_model_status,
 )
 from app.pricing import format_costs
-from app.work_loop import WorkLoopJobSupervisor, terminate_active_work_loop_processes
+from app.storage_paths import load_json_with_backup
+from app.work_loop import WorkLoopJobStore, WorkLoopJobSupervisor, terminate_active_work_loop_processes
 from app.workspace import WorkspaceContext
 from cli.commands import (
     APPROVAL_CONTINUATION_PROMPT,
@@ -55,7 +64,7 @@ from cli.commands import (
 
 SPINNER_FRAMES = ("|", "/", "-", "\\")
 DETAILS_HEIGHT = 4
-APPROVAL_PANEL_HEIGHT = 10
+APPROVAL_PANEL_HEIGHT = 16
 APPROVAL_REVIEW_OPTIONS = (
     ("approve", "Approve once", "Allow this exact tool call one time."),
     ("deny", "Deny", "Reject this pending tool call."),
@@ -83,6 +92,9 @@ ACTIVE_RUN_STATES = {
     "shutting_down",
 }
 _TASK_FAILED = object()
+WORK_LOOP_STARTED_RE = re.compile(r"\bStarted work-loop job (?P<job_id>job-[A-Za-z0-9_-]+)\b")
+WORK_LOOP_TERMINAL_STATES = {"complete", "failed", "stopped", "done"}
+WORK_LOOP_WATCH_INTERVAL_SECONDS = 1.0
 
 
 class _WorkerLoop:
@@ -147,6 +159,7 @@ class UiState:
     cwd: str = "."
     git_state: str = "git:unknown"
     goal_state: str = ""
+    work_loop_state: str = ""
     token_total: int = 0
     session_cost: dict = field(default_factory=lambda: {"totals": {}, "unknown_calls": 0, "unknown_models": []})
     active_tool: str = "idle"
@@ -303,6 +316,8 @@ class CoderTui:
         self._agent_task: asyncio.Task | None = None
         self._goal_refresh_task: asyncio.Task | None = None
         self._git_refresh_task: asyncio.Task | None = None
+        self._work_loop_watch_tasks: dict[str, asyncio.Task] = {}
+        self._work_loop_watch_interval = WORK_LOOP_WATCH_INTERVAL_SECONDS
         self._spinner_task: asyncio.Task | None = None
         self._shutdown_task: asyncio.Task | None = None
         self._invalidate_handle = None
@@ -601,6 +616,62 @@ class CoderTui:
             return
         self._goal_refresh_task = asyncio.create_task(self._refresh_goal_state())
 
+    def _schedule_work_loop_job_watch(self, text: str):
+        if self._app is None or self._shutdown_started or self._shutdown_forced:
+            return
+        match = WORK_LOOP_STARTED_RE.search(text)
+        if match is None:
+            return
+        job_id = match.group("job_id")
+        self.state.work_loop_state = f"loop:running {job_id}"
+        self._invalidate()
+        existing = self._work_loop_watch_tasks.get(job_id)
+        if existing is not None and not existing.done():
+            return
+        task = asyncio.create_task(self._watch_work_loop_job(job_id))
+        self._work_loop_watch_tasks[job_id] = task
+        task.add_done_callback(lambda _task, _job_id=job_id: self._work_loop_watch_tasks.pop(_job_id, None))
+
+    async def _watch_work_loop_job(self, job_id: str):
+        workspace = WorkspaceContext.from_root(self.workspace_root).ensure_dirs()
+        store = WorkLoopJobStore.for_workspace(workspace)
+        heartbeat_path = Path(workspace.paths.work_loop_dir) / "controls" / job_id / "heartbeat.json"
+        last_state = "running"
+        last_step = ""
+        while True:
+            await asyncio.sleep(self._work_loop_watch_interval)
+            step = self._work_loop_heartbeat_step(heartbeat_path)
+            if step and step != last_step:
+                self._record_activity("system", f"{job_id} step: {step}")
+                self.state.work_loop_state = f"loop:running {job_id} {step}"
+                last_step = step
+                self._invalidate()
+            job = store.load(job_id)
+            if job is None:
+                continue
+            if job.state != last_state:
+                self._record_activity("system", self._format_work_loop_job_update(job))
+                self.state.work_loop_state = f"loop:{job.state} {job_id}"
+                last_state = job.state
+                self._invalidate()
+            if job.state in WORK_LOOP_TERMINAL_STATES:
+                kind = "error" if job.state == "failed" else "system"
+                self.state.work_loop_state = f"loop:{job.state} {job_id}"
+                self._append(kind, self._format_work_loop_job_update(job))
+                return
+
+    @staticmethod
+    def _format_work_loop_job_update(job) -> str:
+        message = job.message.strip() if job.message else "no message"
+        return f"{job.job_id} [{job.state}] {job.mode} - {message}"
+
+    @staticmethod
+    def _work_loop_heartbeat_step(path: Path) -> str:
+        data = load_json_with_backup(str(path), default={})
+        if not isinstance(data, dict):
+            return ""
+        return str(data.get("step") or "")
+
     async def _refresh_git_state(self):
         try:
             git_state = await self._run_in_worker(lambda: self.git_state_provider(self.workspace_root))
@@ -757,7 +828,9 @@ class CoderTui:
                 worker_fn=lambda: self.resolve_work_loop_command(command_arg),
             )
             if result is not _TASK_FAILED:
-                self._append("system", str(result))
+                result_text = str(result)
+                self._append("system", result_text)
+                self._schedule_work_loop_job_watch(result_text)
             return
         if text == "/undo":
             await self._handle_undo()
@@ -1382,6 +1455,12 @@ class CoderTui:
             self._git_refresh_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._git_refresh_task
+        for task in list(self._work_loop_watch_tasks.values()):
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        self._work_loop_watch_tasks.clear()
         if self._agent_task is not None and not self._agent_task.done():
             request_stop = getattr(self.agent, "request_stop", None)
             if callable(request_stop):
@@ -1576,6 +1655,8 @@ class CoderTui:
         ])
         if self.state.goal_state:
             parts.append(self.state.goal_state)
+        if self.state.work_loop_state:
+            parts.append(self.state.work_loop_state)
         return [("", _fit_line("  " + "  ".join(parts), width))]
 
     def _render_bottom_bar(self) -> StyleAndTextTuples:
@@ -1610,11 +1691,17 @@ class CoderTui:
         selected_request = items[selected_request_index]
         request_line = format_approval_review_option(selected_request) if selected_request is not None else ""
         output.append(("class:approval", f"{_fit_line('  Request: ' + request_line, width)}\n"))
+        summary_lines = format_approval_summary_lines(selected_request, max_argument_lines=3)
+        summary_rows = min(6, len(summary_lines))
+        for line in summary_lines[:summary_rows]:
+            output.append(("class:approval", f"{_fit_line('  ' + line, width)}\n"))
+        if summary_rows < 6:
+            output.append(("class:approval", "\n" * (6 - summary_rows)))
         output.append(("class:approval", f"{_fit_line('  Use Up/Down to choose. Enter selects. Esc leaves pending.', width)}\n"))
 
         options = self._approval_options()
         selected_choice = min(max(0, self.state.approval_choice_index), len(options) - 1)
-        visible_rows = APPROVAL_PANEL_HEIGHT - 5
+        visible_rows = APPROVAL_PANEL_HEIGHT - 11
         start = max(0, min(selected_choice - visible_rows // 2, len(options) - visible_rows))
         end = min(len(options), start + visible_rows)
         for index in range(start, end):

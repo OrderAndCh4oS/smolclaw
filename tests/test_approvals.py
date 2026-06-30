@@ -319,8 +319,10 @@ def test_approval_formatters_show_status_and_detail(temp_dir):
     request = store.request(
         "session-a",
         tool_name="run_command",
-        arguments={"command": "npm install left-pad"},
+        arguments={"command": "npm install approval-rationale-left-pad"},
         reason="dependency changes need approval",
+        rationale="Install the package requested by the user.",
+        expected_outcome="npm will add left-pad to the project dependency tree.",
         run_id="run-123",
         matched_subject="command",
         matched_pattern="npm install*",
@@ -337,12 +339,14 @@ def test_approval_formatters_show_status_and_detail(temp_dir):
     assert "Tool: run_command" in detail
     assert "Scope: once" in detail
     assert "Requested action: ask" in detail
+    assert "Rationale: Install the package requested by the user." in detail
+    assert "Expected outcome: npm will add left-pad to the project dependency tree." in detail
     assert "Matched rule: command:npm install*" in detail
     assert "Run: run-123" in detail
     assert "Granted effects: command_write" in detail
     assert "Expiry: none" in detail
     assert "Arguments hash:" in detail
-    assert "\"command\": \"npm install left-pad\"" in detail
+    assert "\"command\": \"npm install approval-rationale-left-pad\"" in detail
 
 
 def test_approval_review_formatter_shows_numbered_exact_call_options(temp_dir):
@@ -350,8 +354,10 @@ def test_approval_review_formatter_shows_numbered_exact_call_options(temp_dir):
     request = store.request(
         "session-a",
         tool_name="run_command",
-        arguments={"command": "npm install left-pad"},
+        arguments={"command": "npm install review-rationale-left-pad"},
         reason="dependency changes need approval",
+        rationale="Install the package requested by the user.",
+        expected_outcome="npm will add left-pad to the project dependency tree.",
         run_id="run-123",
         granted_effects=("network", "command_write"),
     )
@@ -364,4 +370,4 @@ def test_approval_review_formatter_shows_numbered_exact_call_options(temp_dir):
     assert "Actions: approve, deny, detail, skip, quit." in review
     assert "run:run-123" in option
     assert "effects:command_write,network" in option
-    assert "args:npm install left-pad" in option
+    assert "args:npm install review-rationale-left-pad" in option

@@ -26,6 +26,7 @@ from pathlib import Path
 from collections.abc import Callable
 from typing import Any, Literal, Protocol
 
+import httpx
 import yaml
 
 from app.coding_lifecycle import (
@@ -59,6 +60,16 @@ WorkItemState = Literal[
 ]
 
 DEFAULT_WORK_LOOP_CONFIG = "smolclaw.jira-loop.yaml"
+WORK_LOOP_CONFIG_CANDIDATES = (
+    ".work-loop.yaml",
+    ".work-loop.yml",
+    "work-loop.yaml",
+    "work-loop.yml",
+    "smolclaw.work-loop.yaml",
+    "smolclaw.kanboard-loop.yaml",
+    DEFAULT_WORK_LOOP_CONFIG,
+)
+DEFAULT_AGENTS_CONFIG = os.path.join(os.path.dirname(os.path.dirname(__file__)), "agents.yaml")
 PR_MARKER_PREFIX = "<!-- smolclaw-work-loop:"
 MAX_INNER_ATTEMPTS = 5
 STOP_FILE = "STOP"
@@ -70,6 +81,39 @@ WORK_ITEM_SCHEMA_VERSION = 2
 
 def terminate_active_work_loop_processes():
     terminate_active_processes()
+
+
+def resolve_work_loop_config_path(config_path: str | None = "", *, workspace=None) -> str:
+    """Resolve a work-loop config path from the active workspace.
+
+    Agent-facing tools should not need the LLM to know config filenames. When no
+    explicit path is provided, or only the legacy default is present, prefer the
+    workspace's mounted-provider config files before falling back to the legacy
+    Jira filename.
+    """
+    root = _workspace_root(workspace)
+    requested = str(config_path or "").strip()
+    if requested and requested != DEFAULT_WORK_LOOP_CONFIG:
+        return _resolve_workspace_relative_path(requested, root)
+
+    for candidate in WORK_LOOP_CONFIG_CANDIDATES:
+        path = _resolve_workspace_relative_path(candidate, root)
+        if os.path.exists(path):
+            return path
+    return _resolve_workspace_relative_path(DEFAULT_WORK_LOOP_CONFIG, root)
+
+
+def _workspace_root(workspace) -> str:
+    if workspace is None:
+        return ""
+    return str(getattr(workspace, "root_dir", "") or workspace)
+
+
+def _resolve_workspace_relative_path(path: str, root: str) -> str:
+    expanded = os.path.expanduser(path)
+    if os.path.isabs(expanded) or not root:
+        return expanded
+    return os.path.join(root, expanded)
 
 
 atexit.register(terminate_active_work_loop_processes)
@@ -218,7 +262,7 @@ class WorkLoopConfig:
     models: WorkLoopModels = field(default_factory=WorkLoopModels)
     task_profiles: list[TaskProfile] = field(default_factory=list)
     coder_agent: str = "coder"
-    agents_config: str = "agents.yaml"
+    agents_config: str = DEFAULT_AGENTS_CONFIG
     inner_max_turns: int = 6
     repair_attempts: int = 4
     verification_commands: list[str] = field(default_factory=list)
@@ -228,6 +272,15 @@ class WorkLoopConfig:
     internal_review_enabled: bool = True
     reviewer_agent: str = "reviewer"
     internal_review_repair_cycles: int = 1
+    kanboard_url: str = ""
+    kanboard_username: str = "jsonrpc"
+    kanboard_token: str = ""
+    kanboard_token_env: str = "KANBOARD_API_TOKEN"
+    kanboard_token_file: str = ""
+    kanboard_user_id: int = 1
+    kanboard_project_id: str = ""
+    kanboard_project_name: str = ""
+    kanboard_project_identifier: str = ""
 
     def __post_init__(self):
         if isinstance(self.models, dict):
@@ -254,7 +307,12 @@ class WorkLoopConfig:
         values = {key: data[key] for key in cls.__dataclass_fields__ if key in data}
         task_source = data.get("task_source")
         if isinstance(task_source, dict):
-            values["task_source_type"] = str(task_source.get("type") or values.get("task_source_type") or "jira")
+            values["task_source_type"] = str(
+                task_source.get("type")
+                or task_source.get("provider")
+                or values.get("task_source_type")
+                or "jira"
+            )
             for key in (
                 "project",
                 "issue_types",
@@ -267,9 +325,32 @@ class WorkLoopConfig:
             ):
                 if key in task_source:
                     values[key] = task_source[key]
+            kanboard_aliases = {
+                "url": "kanboard_url",
+                "api_url": "kanboard_url",
+                "username": "kanboard_username",
+                "token": "kanboard_token",
+                "token_env": "kanboard_token_env",
+                "token_file": "kanboard_token_file",
+                "user_id": "kanboard_user_id",
+                "project_id": "kanboard_project_id",
+                "project_name": "kanboard_project_name",
+                "project_identifier": "kanboard_project_identifier",
+            }
+            for source_key, target_key in kanboard_aliases.items():
+                if source_key in task_source:
+                    value = task_source[source_key]
+                    if target_key == "kanboard_token_file" and value:
+                        value = _resolve_config_relative_path(str(value), path)
+                    values[target_key] = value
         code_review = data.get("code_review")
         if isinstance(code_review, dict):
-            values["code_review_type"] = str(code_review.get("type") or values.get("code_review_type") or "github")
+            values["code_review_type"] = str(
+                code_review.get("type")
+                or code_review.get("provider")
+                or values.get("code_review_type")
+                or "github"
+            )
             if "label" in code_review:
                 values["github_label"] = str(code_review["label"])
             if "github_label" in code_review:
@@ -309,6 +390,13 @@ class WorkLoopConfig:
         if project:
             values["project"] = project
         return cls(**values)
+
+
+def _resolve_config_relative_path(value: str, config_path: str | None) -> str:
+    expanded = os.path.expanduser(value)
+    if os.path.isabs(expanded) or not config_path:
+        return expanded
+    return os.path.join(os.path.dirname(os.path.abspath(config_path)), expanded)
 
 
 def _as_str_list(value: Any) -> list[str]:
@@ -372,6 +460,19 @@ class TaskSourceAdapter(Protocol):
         ...
 
     def comment(self, key: str, body: str):
+        ...
+
+
+class TaskCreationAdapter(Protocol):
+    def create_task(
+        self,
+        config: WorkLoopConfig,
+        *,
+        title: str,
+        description: str = "",
+        labels: list[str] | None = None,
+        status: str = "",
+    ) -> TaskCandidate:
         ...
 
 
@@ -940,6 +1041,352 @@ class WorkLoopJobSupervisor:
                 os.kill(job.pid, sig)
 
 
+class KanboardApiError(RuntimeError):
+    pass
+
+
+class KanboardClient:
+    def __init__(
+        self,
+        *,
+        url: str,
+        username: str,
+        token: str,
+        http_client_factory: Callable[..., Any] | None = None,
+        timeout: int = 30,
+    ):
+        self.url = _kanboard_api_url(url)
+        self.username = username
+        self.token = token
+        self.http_client_factory = http_client_factory or httpx.Client
+        self.timeout = timeout
+
+    def call(self, method: str, params: Any | None = None) -> Any:
+        payload: dict[str, Any] = {
+            "jsonrpc": "2.0",
+            "method": method,
+            "id": int(time.time() * 1000),
+        }
+        if params is not None:
+            payload["params"] = params
+        try:
+            with self.http_client_factory(timeout=self.timeout) as client:
+                response = client.post(
+                    self.url,
+                    json=payload,
+                    auth=(self.username, self.token),
+                )
+        except Exception as exc:  # pragma: no cover - exercised by auth_ok behavior
+            raise KanboardApiError(str(exc)) from exc
+        if hasattr(response, "raise_for_status"):
+            try:
+                response.raise_for_status()
+            except Exception as exc:
+                raise KanboardApiError(str(exc)) from exc
+        try:
+            data = response.json()
+        except Exception as exc:
+            raise KanboardApiError("Kanboard returned invalid JSON.") from exc
+        if not isinstance(data, dict):
+            raise KanboardApiError("Kanboard returned a non-object JSON-RPC response.")
+        if data.get("error"):
+            raise KanboardApiError(str(data["error"]))
+        return data.get("result")
+
+
+class KanboardAdapter:
+    def __init__(
+        self,
+        config: WorkLoopConfig,
+        runner: CommandRunner | None = None,
+        *,
+        client: KanboardClient | None = None,
+        http_client_factory: Callable[..., Any] | None = None,
+        environ: dict[str, str] | None = None,
+    ):
+        self.config = config
+        self.runner = runner
+        self.environ = environ if environ is not None else os.environ
+        self.client = client or KanboardClient(
+            url=self._configured_url(),
+            username=self._configured_username(),
+            token=self._configured_token(),
+            http_client_factory=http_client_factory,
+        )
+
+    def auth_ok(self) -> bool:
+        try:
+            self.client.call("getAllProjects")
+            return True
+        except KanboardApiError:
+            return False
+
+    def search_backlog(self, config: WorkLoopConfig, *, limit: int = 50) -> list[TaskCandidate]:
+        project_id = self._project_id(config)
+        result = self.client.call("getAllTasks", {"project_id": project_id, "status_id": 1})
+        tasks = result if isinstance(result, list) else []
+        columns = self._columns_by_id(project_id)
+        candidates = [
+            self._candidate_from_task(task, columns=columns, labels=self._task_labels(task))
+            for task in tasks
+            if isinstance(task, dict)
+        ]
+        return candidates[:limit]
+
+    def create_task(
+        self,
+        config: WorkLoopConfig,
+        *,
+        title: str,
+        description: str = "",
+        labels: list[str] | None = None,
+        status: str = "",
+    ) -> TaskCandidate:
+        project_id = self._project_id(config)
+        label_values = _dedupe_labels([*(labels or []), config.required_label])
+        params: dict[str, Any] = {
+            "project_id": project_id,
+            "title": title,
+            "description": description,
+        }
+        if label_values:
+            params["tags"] = label_values
+        target_status = status or (config.eligible_statuses[0] if config.eligible_statuses else "")
+        if target_status:
+            params["column_id"] = self._column_id_for_status(project_id, target_status)
+        result = self.client.call("createTask", params)
+        task_id = _int_value(result)
+        if not task_id:
+            raise RuntimeError("Kanboard createTask failed.")
+        return self.view(f"KB-{task_id}")
+
+    def view(self, key: str) -> TaskCandidate:
+        task_id = _kanboard_task_id(key)
+        task = self.client.call("getTask", {"task_id": task_id})
+        if not isinstance(task, dict):
+            raise RuntimeError(f"Kanboard task not found: {key}")
+        project_id = _int_value(task.get("project_id"))
+        if not project_id:
+            project_id = self._project_id(self.config)
+        columns = self._columns_by_id(project_id)
+        return self._candidate_from_task(task, columns=columns, labels=self._task_labels(task))
+
+    def transition(self, key: str, status: str):
+        if not status:
+            return
+        task_id = _kanboard_task_id(key)
+        if status.lower() in {"closed", "close", "done"}:
+            result = self.client.call("closeTask", {"task_id": task_id})
+            if result is False:
+                raise RuntimeError(f"Kanboard closeTask failed for {key}")
+            return
+        task = self.client.call("getTask", {"task_id": task_id})
+        if not isinstance(task, dict):
+            raise RuntimeError(f"Kanboard task not found: {key}")
+        project_id = _int_value(task.get("project_id"))
+        if not project_id:
+            project_id = self._project_id(self.config)
+        column_id = self._column_id_for_status(project_id, status)
+        result = self.client.call(
+            "moveTaskPosition",
+            {
+                "project_id": project_id,
+                "task_id": task_id,
+                "column_id": column_id,
+                "position": 1,
+                "swimlane_id": _int_value(task.get("swimlane_id"), default=1) or 1,
+            },
+        )
+        if result is False:
+            raise RuntimeError(f"Kanboard moveTaskPosition failed for {key}")
+
+    def comment(self, key: str, body: str):
+        result = self.client.call(
+            "createComment",
+            {
+                "task_id": _kanboard_task_id(key),
+                "user_id": int(self.config.kanboard_user_id or 1),
+                "content": body,
+            },
+        )
+        if result is False:
+            raise RuntimeError(f"Kanboard createComment failed for {key}")
+
+    def _configured_url(self) -> str:
+        return self.config.kanboard_url or self.environ.get("KANBOARD_URL") or self.environ.get("KANBOARD_API_URL") or ""
+
+    def _configured_username(self) -> str:
+        return self.config.kanboard_username or self.environ.get("KANBOARD_USERNAME") or "jsonrpc"
+
+    def _configured_token(self) -> str:
+        return (
+            self.config.kanboard_token
+            or self._configured_token_file()
+            or self.environ.get(self.config.kanboard_token_env or "KANBOARD_API_TOKEN")
+            or self.environ.get("KANBOARD_PASSWORD")
+            or ""
+        )
+
+    def _configured_token_file(self) -> str:
+        if not self.config.kanboard_token_file:
+            return ""
+        try:
+            with open(os.path.expanduser(self.config.kanboard_token_file), encoding="utf-8") as handle:
+                return handle.read().strip()
+        except OSError:
+            return ""
+
+    def _project_id(self, config: WorkLoopConfig) -> int:
+        configured_id = config.kanboard_project_id or self.environ.get("KANBOARD_PROJECT_ID") or ""
+        if str(configured_id).isdigit():
+            return int(configured_id)
+        configured = config.project or self.environ.get("KANBOARD_PROJECT") or ""
+        configured_identifier = (
+            config.kanboard_project_identifier
+            or self.environ.get("KANBOARD_PROJECT_IDENTIFIER")
+            or configured
+        )
+        configured_name = (
+            config.kanboard_project_name
+            or self.environ.get("KANBOARD_PROJECT_NAME")
+            or configured
+        )
+        if configured_identifier:
+            project = self.client.call(
+                "getProjectByIdentifier",
+                {"identifier": str(configured_identifier)},
+            )
+            if isinstance(project, dict) and project.get("id"):
+                return int(project["id"])
+        if configured_name:
+            project = self.client.call(
+                "getProjectByName",
+                {"name": str(configured_name)},
+            )
+            if isinstance(project, dict) and project.get("id"):
+                return int(project["id"])
+        raise RuntimeError(
+            "Kanboard project not found; set task_source.project, task_source.project_id, "
+            "KANBOARD_PROJECT, or KANBOARD_PROJECT_ID."
+        )
+
+    def _columns_by_id(self, project_id: int) -> dict[int, str]:
+        result = self.client.call("getColumns", [project_id])
+        columns: dict[int, str] = {}
+        for item in result if isinstance(result, list) else []:
+            if isinstance(item, dict):
+                columns[_int_value(item.get("id"))] = str(item.get("title") or "")
+        return columns
+
+    def _column_id_for_status(self, project_id: int, status: str) -> int:
+        columns = self._columns_by_id(project_id)
+        normalized = status.strip().lower()
+        for column_id, title in columns.items():
+            if title.strip().lower() == normalized:
+                return column_id
+        raise RuntimeError(f"Kanboard column not found for status: {status}")
+
+    def _candidate_from_task(self, task: dict, *, columns: dict[int, str], labels: list[str] | None = None) -> TaskCandidate:
+        task_id = _int_value(task.get("id"))
+        column_id = _int_value(task.get("column_id"))
+        column_name = str(task.get("column_name") or columns.get(column_id) or column_id or "")
+        owner_id = _int_value(task.get("owner_id"))
+        return TaskCandidate(
+            key=f"KB-{task_id}",
+            summary=str(task.get("title") or ""),
+            issue_type="Task",
+            status=column_name,
+            assignee=str(owner_id) if owner_id else "",
+            priority=str(task.get("priority") or ""),
+            labels=labels if labels is not None else _kanboard_task_labels(task),
+            description=str(task.get("description") or ""),
+            url=str(task.get("url") or ""),
+            source_type="kanboard",
+            metadata={
+                "task_id": task_id,
+                "project_id": _int_value(task.get("project_id")),
+                "column_id": column_id,
+                "swimlane_id": _int_value(task.get("swimlane_id")),
+                "position": _int_value(task.get("position")),
+                "reference": str(task.get("reference") or ""),
+            },
+        )
+
+    def _task_labels(self, task: dict) -> list[str]:
+        labels = _kanboard_task_labels(task)
+        if labels:
+            return labels
+        task_id = _int_value(task.get("id"))
+        if not task_id:
+            return []
+        try:
+            raw = self.client.call("getTaskTags", {"task_id": task_id})
+        except KanboardApiError:
+            return []
+        return _kanboard_labels_from_tag_result(raw)
+
+
+def _kanboard_api_url(url: str) -> str:
+    if not url:
+        raise KanboardApiError("Kanboard URL is required.")
+    normalized = url.rstrip("/")
+    if normalized.endswith("jsonrpc.php"):
+        return normalized
+    return f"{normalized}/jsonrpc.php"
+
+
+def _kanboard_task_id(key: str) -> int:
+    value = key.strip()
+    if value.upper().startswith("KB-"):
+        value = value[3:]
+    if not value.isdigit():
+        raise RuntimeError(f"Kanboard task id must be numeric or KB-<id>: {key}")
+    return int(value)
+
+
+def _kanboard_task_labels(task: dict) -> list[str]:
+    raw = task.get("tags") or task.get("tag_names") or task.get("labels") or []
+    return _kanboard_labels_from_tag_result(raw)
+
+
+def _kanboard_labels_from_tag_result(raw: Any) -> list[str]:
+    if isinstance(raw, str):
+        return [item.strip() for item in raw.split(",") if item.strip()]
+    if isinstance(raw, dict):
+        return [str(value).strip() for value in raw.values() if str(value).strip()]
+    if isinstance(raw, list):
+        labels: list[str] = []
+        for item in raw:
+            if isinstance(item, dict):
+                labels.append(str(item.get("name") or item.get("tag") or item.get("label") or ""))
+            else:
+                labels.append(str(item))
+        return [label for label in labels if label]
+    return []
+
+
+def _dedupe_labels(labels: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for label in labels:
+        normalized = str(label or "").strip()
+        if not normalized:
+            continue
+        lowered = normalized.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        result.append(normalized)
+    return result
+
+
+def _int_value(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class JiraAdapter:
     def __init__(self, runner: CommandRunner):
         self.runner = runner
@@ -1042,6 +1489,8 @@ class GitHubAdapter:
         return self.runner.run(["gh", "auth", "status"], timeout=30).ok
 
     def create_pr(self, item: WorkItem, body: str, *, base_branch: str, label: str = "") -> tuple[int | None, str]:
+        if label:
+            self._ensure_label(label, cwd=item.workspace_path)
         args = [
             "gh",
             "pr",
@@ -1062,6 +1511,36 @@ class GitHubAdapter:
             raise RuntimeError(f"PR creation failed for {item.jira_key}: {result.output.strip()}")
         url = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
         return parse_pr_number(url), url
+
+    def _ensure_label(self, label: str, *, cwd: str):
+        result = self.runner.run(
+            ["gh", "label", "list", "--search", label, "--json", "name"],
+            cwd=cwd,
+            timeout=60,
+        )
+        if result.ok:
+            try:
+                labels = json.loads(result.stdout or "[]")
+            except json.JSONDecodeError:
+                labels = []
+            if any(isinstance(item, dict) and item.get("name") == label for item in labels):
+                return
+        create = self.runner.run(
+            [
+                "gh",
+                "label",
+                "create",
+                label,
+                "--color",
+                "5319e7",
+                "--description",
+                "PRs created by SmolClaw work-loop automation",
+            ],
+            cwd=cwd,
+            timeout=60,
+        )
+        if not create.ok and "already exists" not in create.output.lower():
+            raise RuntimeError(f"GitHub label creation failed for {label}: {create.output.strip()}")
 
     def view_pr(self, pr_number: int) -> dict:
         result = self.runner.run(
@@ -1148,8 +1627,10 @@ class GitHubAdapter:
         )
 
 
-TASK_SOURCE_ADAPTER_FACTORIES: dict[str, Callable[[CommandRunner], TaskSourceAdapter]] = {
-    "jira": JiraAdapter,
+TASK_SOURCE_ADAPTER_FACTORIES: dict[str, Callable[[WorkLoopConfig, CommandRunner], TaskSourceAdapter]] = {
+    "jira": lambda _config, runner: JiraAdapter(runner),
+    "kanboard": lambda config, runner: KanboardAdapter(config, runner),
+    "local": lambda config, runner: KanboardAdapter(config, runner),
 }
 CODE_REVIEW_ADAPTER_FACTORIES: dict[str, Callable[[CommandRunner], CodeReviewAdapter]] = {
     "github": GitHubAdapter,
@@ -1157,12 +1638,12 @@ CODE_REVIEW_ADAPTER_FACTORIES: dict[str, Callable[[CommandRunner], CodeReviewAda
 
 
 def build_task_source_adapter(config: WorkLoopConfig, runner: CommandRunner) -> TaskSourceAdapter:
-    provider = config.task_source_type or "jira"
+    provider = (config.task_source_type or "jira").lower()
     factory = TASK_SOURCE_ADAPTER_FACTORIES.get(provider)
     if factory is None:
         supported = ", ".join(sorted(TASK_SOURCE_ADAPTER_FACTORIES))
         raise ValueError(f"Unsupported task source adapter: {provider}. Supported adapters: {supported}.")
-    return factory(runner)
+    return factory(config, runner)
 
 
 def build_code_review_adapter(config: WorkLoopConfig, runner: CommandRunner) -> CodeReviewAdapter:
@@ -1230,6 +1711,7 @@ class GitOperations:
         return errors
 
     def create_worktree(self, item: WorkItem, config: WorkLoopConfig):
+        item.branch_name = self._available_branch_name(item.branch_name)
         result = self.runner.run(
             [
                 "git",
@@ -1247,6 +1729,24 @@ class GitOperations:
             raise RuntimeError(f"Could not create worktree for {item.jira_key}: {result.output.strip()}")
         rev = self.runner.run(["git", "rev-parse", "HEAD"], cwd=item.workspace_path, timeout=30)
         item.base_commit = rev.stdout.strip() if rev.ok else ""
+
+    def _available_branch_name(self, branch_name: str) -> str:
+        if not self._branch_exists(branch_name):
+            return branch_name
+        for _ in range(20):
+            suffix = uuid.uuid4().hex[:8]
+            candidate = f"{branch_name[: max(1, 240 - len(suffix))]}-{suffix}"
+            if not self._branch_exists(candidate):
+                return candidate
+        raise RuntimeError(f"Could not find an available retry branch for {branch_name}.")
+
+    def _branch_exists(self, branch_name: str) -> bool:
+        result = self.runner.run(
+            ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch_name}"],
+            cwd=self.workspace.root_dir,
+            timeout=30,
+        )
+        return result.returncode == 0
 
     def ensure_worktree(self, item: WorkItem):
         if item.workspace_path and os.path.exists(item.workspace_path):
@@ -1496,7 +1996,7 @@ class WorkLoopRunner:
         selected = select_candidates(candidates, limit=limit or self.config.max_concurrency)
         items: list[WorkItem] = []
         for index, candidate in enumerate(selected, start=1):
-            self.control.check(f"selecting Jira task {candidate.key}")
+            self.control.check(f"selecting task-source item {candidate.key}")
             detailed = self.task_source.view(candidate.key)
             profile = select_execution_profile(detailed, self.config)
             item = self.ledger.load(detailed.key) or WorkItem(
@@ -1504,9 +2004,10 @@ class WorkLoopRunner:
                 title=detailed.summary,
                 task_source_type=detailed.source_type or self.config.task_source_type,
                 jira_url=detailed.url,
-                selected_reason="Selected as low-risk unassigned Jira task.",
+                selected_reason="Selected as low-risk unassigned task-source item.",
                 base_branch=self.config.base_branch,
             )
+            self._reset_first_pass_item(item, detailed)
             item.branch_name = branch_name_for_ticket(detailed.key, detailed.summary)
             item.execution_profile = profile.to_dict()
             item.workspace_path = self.run_workspaces.path_for_item(item, index)
@@ -1589,6 +2090,42 @@ class WorkLoopRunner:
         first_pass_items = self.run_first_pass(limit=limit, dry_run=dry_run)
         return followup_items, first_pass_items
 
+    def create_task(
+        self,
+        *,
+        title: str,
+        description: str = "",
+        labels: list[str] | None = None,
+        status: str = "",
+    ) -> TaskCandidate:
+        creator = getattr(self.task_source, "create_task", None)
+        if not callable(creator):
+            raise RuntimeError(f"{self.config.task_source_type} task source does not support task creation.")
+        return creator(
+            self.config,
+            title=title,
+            description=description,
+            labels=labels or [],
+            status=status,
+        )
+
+    def _reset_first_pass_item(self, item: WorkItem, candidate: TaskCandidate):
+        item.run_id = f"run-{uuid.uuid4().hex[:12]}"
+        item.state = "selected"
+        item.title = candidate.summary
+        item.task_source_type = candidate.source_type or self.config.task_source_type
+        item.jira_url = candidate.url
+        item.selected_reason = "Selected as low-risk unassigned task-source item."
+        item.base_branch = self.config.base_branch
+        item.base_commit = ""
+        item.pr_number = None
+        item.pr_url = ""
+        item.commits = []
+        item.verification = []
+        item.processed_review_comments = []
+        item.internal_review = None
+        item.blocker = ""
+
     def _execute_item(self, item: WorkItem, candidate: TaskCandidate, profile: TaskExecutionProfile):
         self.control.check(f"creating workspace for {item.jira_key}")
         self._create_branch_workspace(item)
@@ -1644,7 +2181,7 @@ class WorkLoopRunner:
         item.state = "open-pr"
         self.control.check(f"transitioning {item.jira_key} to review")
         self.task_source.transition(item.jira_key, self.config.review_status)
-        self.control.check(f"commenting on Jira for {item.jira_key}")
+        self.control.check(f"commenting on task source for {item.jira_key}")
         self.task_source.comment(item.jira_key, render_jira_pr_comment(
             pr_url,
             result,

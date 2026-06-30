@@ -228,6 +228,85 @@ adapters:
       provider: subprocess
 ```
 
+For local Kanboard task intake with GitHub PR publication:
+
+```yaml
+adapters:
+  task_source:
+    default:
+      provider: kanboard
+  code_review:
+    default:
+      provider: github
+
+task_source:
+  provider: local
+  url: http://localhost:8080
+  username: jsonrpc
+  token_env: KANBOARD_API_TOKEN
+  project: SMOL
+  eligible_statuses: [Backlog]
+  in_progress_status: Work in progress
+  review_status: Review
+  required_label: agent-ready
+```
+
+The local task-source provider is backed by Kanboard. Kanboard columns are
+mapped to work-loop statuses. Task tags are mapped to labels, so
+`required_label` and `blocked_labels` work the same way as Jira labels.
+
+If you prefer environment-based setup, the Kanboard adapter also reads
+`KANBOARD_URL` or `KANBOARD_API_URL`, `KANBOARD_API_TOKEN`,
+`KANBOARD_USERNAME`, and one of `KANBOARD_PROJECT`, `KANBOARD_PROJECT_ID`,
+`KANBOARD_PROJECT_IDENTIFIER`, or `KANBOARD_PROJECT_NAME`. When these are set,
+agents can omit `project` in work-loop tool calls. Agent-facing tools do not
+expose config paths; they discover `.work-loop.yaml` or the workspace runtime
+adapter config from the active workspace.
+
+Create a Kanboard task through the configured task source:
+
+```bash
+smolclaw work-loop create-task "Add totals empty state" \
+  --workspace ~/code/my-project \
+  --config smolclaw.kanboard-loop.yaml \
+  --project SMOL \
+  --description "Implement and verify the empty state." \
+  --label agent-ready \
+  --status Backlog
+```
+
+The `coder` agent can also operate on the configured task source from terminal
+chat when asked. These provider-neutral tools work with Kanboard or any other
+task-source adapter that implements the operation:
+
+- `work_loop_list_tasks`
+- `work_loop_view_task`
+- `work_loop_create_task`
+- `work_loop_move_task`
+- `work_loop_comment_task`
+- `work_loop_close_task`
+
+Read-only tools (`work_loop_list_tasks` and `work_loop_view_task`) do not require
+approval. Mutation tools (`work_loop_create_task`, `work_loop_move_task`,
+`work_loop_comment_task`, and `work_loop_close_task`) are approval-gated because
+they change external state. The TUI will show a pending approval, and the call
+only continues after `/approval approve <id>`.
+
+The `ticket_writer` agent is specialized for turning roadmap notes into
+Kanban-ready tickets. It reads project context, drafts problem/solution/
+acceptance-criteria sections, checks existing tasks when useful, and creates
+work-loop tasks only through approval-gated task-source tools.
+
+From terminal chat, start the mounted work loop with:
+
+```text
+/work-loop start --limit 1
+```
+
+`start` runs review follow-up first, then starts eligible task-source work. It
+uses the configured project from `.work-loop.yaml` unless `--project` is passed
+explicitly.
+
 To run agent command and git tools through the Docker sandbox, set the command
 provider to `docker`. The legacy `model` field selects the container image;
 `sandbox.image` takes precedence when both are present. When omitted, SmolClaw

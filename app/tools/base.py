@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import copy
 from dataclasses import dataclass, field
 from typing import Any, List, Literal, Optional, TYPE_CHECKING
 
@@ -205,11 +206,41 @@ class Tool(ABC):
 
     def to_schema(self) -> dict:
         descriptor = self.descriptor
+        input_schema = _with_approval_metadata_schema(descriptor.input_schema)
         func = {
             "name": descriptor.name,
             "description": descriptor.description,
-            "parameters": descriptor.input_schema,
+            "parameters": input_schema,
         }
         if descriptor.examples:
             func["examples"] = list(descriptor.examples)
         return {"type": "function", "function": func}
+
+
+APPROVAL_METADATA_PROPERTIES = {
+    "approval_rationale": {
+        "type": "string",
+        "description": (
+            "For approval-gated calls, explain why this tool call is needed. "
+            "Visible to the user before approval; not passed to the tool."
+        ),
+    },
+    "approval_expected_outcome": {
+        "type": "string",
+        "description": (
+            "For approval-gated calls, describe the concrete external/local "
+            "change expected if approved. Visible to the user; not passed to the tool."
+        ),
+    },
+}
+
+
+def _with_approval_metadata_schema(input_schema: dict) -> dict:
+    schema = copy.deepcopy(input_schema)
+    if schema.get("type") != "object":
+        return schema
+    properties = schema.setdefault("properties", {})
+    if isinstance(properties, dict):
+        for key, value in APPROVAL_METADATA_PROPERTIES.items():
+            properties.setdefault(key, copy.deepcopy(value))
+    return schema

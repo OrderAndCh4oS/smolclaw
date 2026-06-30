@@ -277,6 +277,15 @@ class TestRepoAgentsConfig:
         assert "goal_start" in configs["coder"].tools
         assert "goal_update" in configs["coder"].tools
 
+        assert configs["ticket_writer"].model == DEFAULT_AGENT_MODEL
+        assert configs["ticket_writer"].capabilities == ["filesystem", "command", "memory"]
+        assert configs["ticket_writer"].permission_mode == "plan"
+        assert configs["ticket_writer"].bootstrap_path == "agents/ticket_writer.md"
+        assert "work_loop_create_task" in configs["ticket_writer"].tools
+        assert "work_loop_move_task" not in configs["ticket_writer"].tools
+        assert "write_file" not in configs["ticket_writer"].tools
+        assert "run_command" not in configs["ticket_writer"].tools
+
         assert configs["orchestrator"].model == DEFAULT_AGENT_MODEL
         assert configs["orchestrator"].capabilities == ["memory", "orchestration", "subagents"]
         assert configs["orchestrator"].permission_mode == "delegate_only"

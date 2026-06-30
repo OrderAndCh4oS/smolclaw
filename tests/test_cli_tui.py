@@ -18,6 +18,9 @@ from cli.tui import (
 )
 from app.approvals import ApprovalRequestStore
 from app.model_settings import RuntimeModelSettings
+from app.storage_paths import atomic_write_json
+from app.work_loop import WorkLoopJob, WorkLoopJobStore
+from app.workspace import WorkspaceContext
 
 
 def _fake_tui(
@@ -26,6 +29,7 @@ def _fake_tui(
     terminal_size_provider=None,
     shutdown_phase_timeout=8.0,
     approval_store=None,
+    workspace_root=".",
 ):
     agent = MagicMock()
     agent.llm.completion_model = "gpt-test"
@@ -49,7 +53,7 @@ def _fake_tui(
         smol_rag=MagicMock(),
         checkpoint_store=checkpoint_store,
         approval_store=approval_store or MagicMock(),
-        workspace_root=".",
+        workspace_root=workspace_root,
         log_dir="./.smolclaw/stores/logs",
         model="fallback-model",
         auto_export=True,
@@ -81,6 +85,7 @@ def test_tui_status_bars_include_satellite_info():
         cwd="~/code/smolclaw",
         git_state="git:main*",
         goal_state="goal:2",
+        work_loop_state="loop:running job-123 preflight",
         token_total=12400,
         session_cost={"totals": {"credits": 1.25}, "unknown_calls": 0, "unknown_models": []},
         active_tool="grep_search",
@@ -98,6 +103,7 @@ def test_tui_status_bars_include_satellite_info():
     assert "~/code/smolclaw" in top
     assert "git:main*" in top
     assert "goal:2" in top
+    assert "loop:running job-123 preflight" in top
     assert "tok:12,400" in bottom
     assert "cost:1.25cr" in bottom
     assert "tools:grep_search" in bottom
@@ -374,6 +380,8 @@ async def test_tui_approval_review_opens_selectable_panel(temp_dir):
         tool_name="run_command",
         arguments={"command": "npm install"},
         reason="network access requires approval",
+        rationale="Install dependencies needed for the requested change.",
+        expected_outcome="npm will update local dependency state.",
         granted_effects=("network",),
     )
     tui = _fake_tui(approval_store=approval_store)
@@ -383,6 +391,9 @@ async def test_tui_approval_review_opens_selectable_panel(temp_dir):
     rendered = "".join(text for _, text in tui._render_approval_review())
     assert tui.state.approval_review_visible is True
     assert request.id in rendered
+    assert "Rationale: Install dependencies needed for the requested change." in rendered
+    assert "Expected outcome: npm will update local dependency state." in rendered
+    assert "Operation: run `npm install` in ." in rendered
     assert "Approve once" in rendered
     assert "Deny" in rendered
     assert "Provide or request further information" in rendered
@@ -535,6 +546,99 @@ async def test_tui_work_loop_command_shows_work_loop_status():
 
     rendered = "".join(text for _, text in tui._render_transcript())
     assert "Work-loop result for list --state open-pr" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tui_work_loop_started_job_reports_terminal_failure(tmp_path):
+    workspace = WorkspaceContext.from_root(str(tmp_path)).ensure_dirs()
+    store = WorkLoopJobStore.for_workspace(workspace)
+    store.save(
+        WorkLoopJob(
+            job_id="job-abc123",
+            mode="run",
+            command=[],
+            state="running",
+            message="Job started.",
+        )
+    )
+    tui = _fake_tui(
+        workspace_root=str(tmp_path),
+        resolve_work_loop_command=lambda arg: "Started work-loop job job-abc123 [running] pid:99 mode:run",
+    )
+    tui._app = MagicMock()
+    tui._work_loop_watch_interval = 0.01
+
+    await tui.submit("/work-loop run --project text-editor --limit 3")
+    assert tui.state.work_loop_state == "loop:running job-abc123"
+    job = store.load("job-abc123")
+    assert job is not None
+    job.state = "failed"
+    job.exit_code = 1
+    job.message = "Base repository has uncommitted changes."
+    store.save(job)
+
+    for _ in range(20):
+        rendered = "\n".join(entry.text for entry in tui.state.transcript)
+        if "job-abc123 [failed] run - Base repository has uncommitted changes." in rendered:
+            break
+        await asyncio.sleep(0.01)
+
+    rendered = "\n".join(entry.text for entry in tui.state.transcript)
+    assert "Started work-loop job job-abc123 [running] pid:99 mode:run" in rendered
+    assert "job-abc123 [failed] run - Base repository has uncommitted changes." in rendered
+    assert tui.state.work_loop_state == "loop:failed job-abc123"
+
+
+@pytest.mark.asyncio
+async def test_tui_work_loop_started_job_shows_heartbeat_state(tmp_path):
+    workspace = WorkspaceContext.from_root(str(tmp_path)).ensure_dirs()
+    store = WorkLoopJobStore.for_workspace(workspace)
+    store.save(
+        WorkLoopJob(
+            job_id="job-heartbeat",
+            mode="run",
+            command=[],
+            state="running",
+            message="Job started.",
+        )
+    )
+    tui = _fake_tui(
+        workspace_root=str(tmp_path),
+        resolve_work_loop_command=lambda arg: "Started work-loop job job-heartbeat [running] pid:99 mode:run",
+    )
+    tui._app = MagicMock()
+    tui._work_loop_watch_interval = 0.01
+
+    await tui.submit("/work-loop start --limit 1")
+    controls_dir = os.path.join(workspace.paths.work_loop_dir, "controls", "job-heartbeat")
+    os.makedirs(controls_dir, exist_ok=True)
+    atomic_write_json(
+        os.path.join(controls_dir, "heartbeat.json"),
+        {"job_id": "job-heartbeat", "step": "preflight", "timestamp": time.time()},
+        backup=False,
+    )
+
+    for _ in range(20):
+        if tui.state.work_loop_state == "loop:running job-heartbeat preflight":
+            break
+        await asyncio.sleep(0.01)
+
+    assert tui.state.work_loop_state == "loop:running job-heartbeat preflight"
+    assert any("job-heartbeat step: preflight" in item.text for item in tui.state.activity_log)
+
+    job = store.load("job-heartbeat")
+    assert job is not None
+    job.state = "complete"
+    job.exit_code = 0
+    job.message = "No work-loop items found."
+    store.save(job)
+
+    for _ in range(20):
+        if tui.state.work_loop_state == "loop:complete job-heartbeat":
+            break
+        await asyncio.sleep(0.01)
+
+    assert tui.state.work_loop_state == "loop:complete job-heartbeat"
 
 
 @pytest.mark.asyncio

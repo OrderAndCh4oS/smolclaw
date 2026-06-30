@@ -27,6 +27,8 @@ from app.tools.permissions import (
 PermissionAction = Literal["allow", "ask", "deny"]
 VALID_POLICY_SUBJECTS = frozenset({"tool", "capability", "path", "command"})
 _ACTION_RANK = {"allow": 0, "ask": 1, "deny": 2}
+APPROVAL_RATIONALE_ARG = "approval_rationale"
+APPROVAL_EXPECTED_OUTCOME_ARG = "approval_expected_outcome"
 
 
 @dataclass(frozen=True)
@@ -96,15 +98,17 @@ class PolicyPermissionMiddleware(PermissionMiddleware):
         validate_permission_policy(self.policy)
 
     async def __call__(self, tool: Tool, kwargs: dict[str, Any], next_fn: NextFn):
-        hard_deny = self._path_policy_error(tool.name, kwargs)
+        approval_metadata = _approval_metadata(kwargs)
+        tool_kwargs = _strip_approval_metadata(kwargs)
+        hard_deny = self._path_policy_error(tool.name, tool_kwargs)
         if hard_deny:
             self._emit_decision(tool, "deny", "hard_deny", hard_deny)
             return hard_deny
-        mode_deny = self._mode_denial(tool, kwargs)
+        mode_deny = self._mode_denial(tool, tool_kwargs)
         if mode_deny:
             self._emit_decision(tool, "deny", "mode", mode_deny)
             return mode_deny
-        decision = self.resolve(tool, kwargs)
+        decision = self.resolve(tool, tool_kwargs)
         self._emit_decision(
             tool,
             decision.action,
@@ -117,13 +121,15 @@ class PolicyPermissionMiddleware(PermissionMiddleware):
             reason = f": {decision.reason}" if decision.reason else ""
             return f"Error: tool '{tool.name}' denied by permission policy{reason}"
         if decision.action == "ask":
-            required_effects = tuple(sorted(tool_policy_effects(tool.get_call_policy(dict(kwargs)))))
+            required_effects = tuple(sorted(tool_policy_effects(tool.get_call_policy(dict(tool_kwargs)))))
             try:
                 grant = await self._approval_grant(
                     tool,
-                    kwargs,
+                    tool_kwargs,
                     decision,
                     required_effects=required_effects,
+                    rationale=approval_metadata["rationale"],
+                    expected_outcome=approval_metadata["expected_outcome"],
                 )
             except PermissionRejectedError as exc:
                 reason = f": {exc.message}" if exc.message else ""
@@ -141,8 +147,8 @@ class PolicyPermissionMiddleware(PermissionMiddleware):
                     ),
                     metadata={"approval_id": exc.request.id, "approval_required": True},
                 )
-            return await self._run_with_approval_grant(tool, kwargs, next_fn, grant)
-        return await next_fn(tool, kwargs)
+            return await self._run_with_approval_grant(tool, tool_kwargs, next_fn, grant)
+        return await next_fn(tool, tool_kwargs)
 
     async def _run_with_approval_grant(self, tool: Tool, kwargs: dict[str, Any], next_fn: NextFn, grant):
         with self.runtime_state.scoped_execution_grant(grant):
@@ -196,6 +202,14 @@ class PolicyPermissionMiddleware(PermissionMiddleware):
                     matched_subject=rule.subject,
                     matched_pattern=rule.pattern,
                 )
+        if tool.get_call_policy(dict(kwargs)).requires_approval:
+            return PolicyDecision(
+                action="ask",
+                reason="tool requires approval",
+                source="tool_policy",
+                matched_subject="tool",
+                matched_pattern=tool.name,
+            )
         return PolicyDecision(
             action=self.policy.default_action,
             reason="default policy",
@@ -255,6 +269,8 @@ class PolicyPermissionMiddleware(PermissionMiddleware):
         decision: PolicyDecision,
         *,
         required_effects: tuple[str, ...],
+        rationale: str = "",
+        expected_outcome: str = "",
     ) -> ExecutionGrant:
         context = self.runtime_state.invocation_context
         controller = context.permission_controller
@@ -274,6 +290,8 @@ class PolicyPermissionMiddleware(PermissionMiddleware):
             effects=required_effects,
             origin_session_key=context.session_key,
             origin_run_id=run_id,
+            rationale=rationale,
+            expected_outcome=expected_outcome,
             event_sink=context.event_sink,
             trace_recorder=trace_recorder,
         )
@@ -317,6 +335,7 @@ def baseline_policy_for_mode(mode: str) -> PermissionPolicy:
         PermissionRule(subject="tool", pattern=tool_name, action="deny", reason=f"{mode} blocks tool")
         for tool_name in sorted(config.blocked_tools)
     ]
+    rules.extend(_approval_work_loop_tool_rules())
     rules.extend(
         PermissionRule(subject="capability", pattern=capability, action="deny", reason=f"{mode} blocks capability")
         for capability in sorted(config.blocked_capabilities)
@@ -346,6 +365,26 @@ def baseline_policy_for_mode(mode: str) -> PermissionPolicy:
     return PermissionPolicy(default_action="allow", rules=tuple(rules))
 
 
+def _approval_work_loop_tool_rules() -> list[PermissionRule]:
+    read_reason = "external task-source read does not require approval"
+    write_reason = "external task-source mutation requires approval"
+    return [
+        PermissionRule(subject="tool", pattern=tool_name, action="allow", reason=read_reason)
+        for tool_name in (
+            "work_loop_list_tasks",
+            "work_loop_view_task",
+        )
+    ] + [
+        PermissionRule(subject="tool", pattern=tool_name, action="ask", reason=write_reason)
+        for tool_name in (
+            "work_loop_create_task",
+            "work_loop_move_task",
+            "work_loop_comment_task",
+            "work_loop_close_task",
+        )
+    ]
+
+
 def _approval_command_rules() -> list[PermissionRule]:
     reason = "command requires approval"
     return [
@@ -367,6 +406,21 @@ def _approval_command_rules() -> list[PermissionRule]:
             "node -e*",
         )
     ]
+
+
+def _approval_metadata(kwargs: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        "rationale": str(kwargs.get(APPROVAL_RATIONALE_ARG) or "").strip(),
+        "expected_outcome": str(kwargs.get(APPROVAL_EXPECTED_OUTCOME_ARG) or "").strip(),
+    }
+
+
+def _strip_approval_metadata(kwargs: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        str(key): value
+        for key, value in kwargs.items()
+        if key not in {APPROVAL_RATIONALE_ARG, APPROVAL_EXPECTED_OUTCOME_ARG}
+    }
 
 
 def validate_permission_policy(policy: PermissionPolicy):

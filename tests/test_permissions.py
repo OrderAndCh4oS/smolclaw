@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from app.approvals import ApprovalRequestStore, PermissionController
+from app.approvals import ApprovalRequestStore, PermissionController, approval_arguments_hash
 from app.tools.command import RunCommandTool
 from app.tools.base import Tool, ToolCallPolicy, normalize_tool_result
 from app.tools.middleware import MiddlewareChain
@@ -67,6 +67,13 @@ class PolicyTool(FakeTool):
         if self._policy_fn is not None:
             return self._policy_fn(arguments or {})
         return self._policy or ToolCallPolicy()
+
+
+def test_tool_schema_includes_generic_approval_metadata():
+    schema = FakeTool("example_tool").to_schema()["function"]["parameters"]
+
+    assert "approval_rationale" in schema["properties"]
+    assert "approval_expected_outcome" in schema["properties"]
 
 
 class TestPolicyPermissionMiddleware:
@@ -334,6 +341,61 @@ class TestPolicyPermissionMiddleware:
         assert "no approval UI is available" in normalized.content
 
     @pytest.mark.asyncio
+    async def test_tool_policy_requires_approval(self):
+        chain = MiddlewareChain([
+            PolicyPermissionMiddleware("full", policy=PermissionPolicy()),
+        ])
+        tool = PolicyTool(
+            "approval_tool",
+            policy=ToolCallPolicy(requires_approval=True),
+        )
+
+        result = await chain.run(tool, {"title": "Create external task"})
+
+        normalized = normalize_tool_result(result)
+        assert normalized.status == "denied"
+        assert "approval required" in normalized.content
+
+    def test_baseline_policy_splits_work_loop_reads_and_mutations(self):
+        policy = baseline_policy_for_mode("execute")
+        tool_rules = {
+            rule.pattern: rule
+            for rule in policy.rules
+            if rule.subject == "tool"
+        }
+
+        assert tool_rules["work_loop_list_tasks"].action == "allow"
+        assert tool_rules["work_loop_view_task"].action == "allow"
+        assert "read" in tool_rules["work_loop_list_tasks"].reason
+        assert tool_rules["work_loop_create_task"].action == "ask"
+        assert tool_rules["work_loop_move_task"].action == "ask"
+        assert tool_rules["work_loop_comment_task"].action == "ask"
+        assert tool_rules["work_loop_close_task"].action == "ask"
+        assert "mutation" in tool_rules["work_loop_create_task"].reason
+
+    @pytest.mark.asyncio
+    async def test_plan_mode_work_loop_mutation_reaches_approval_gate(self):
+        chain = MiddlewareChain([
+            PolicyPermissionMiddleware("plan", policy=PermissionPolicy()),
+        ])
+        tool = PolicyTool(
+            "work_loop_create_task",
+            policy=ToolCallPolicy(
+                effects=frozenset({"network"}),
+                requires_approval=True,
+                mutates_state=True,
+                tags=frozenset({"work_loop", "external_task"}),
+            ),
+        )
+
+        result = await chain.run(tool, {"title": "Create ticket"})
+
+        normalized = normalize_tool_result(result)
+        assert normalized.status == "denied"
+        assert "approval required" in normalized.content
+        assert "not permitted" not in normalized.content
+
+    @pytest.mark.asyncio
     async def test_approved_call_scopes_execution_grant(self, temp_dir):
         _approval_store, _controller, shared_state = _permission_state(temp_dir)
         observed = []
@@ -356,6 +418,41 @@ class TestPolicyPermissionMiddleware:
         assert result == "ok"
         assert observed[0].allows("network")
         assert shared_state.get("active_execution_grant") is None
+
+    @pytest.mark.asyncio
+    async def test_approval_metadata_is_stored_but_not_executed(self, temp_dir):
+        approval_store, _controller, shared_state = _permission_state(temp_dir)
+        observed = []
+
+        class GrantTool(PolicyTool):
+            async def execute(self, **kwargs):
+                observed.append(dict(kwargs))
+                return "ok"
+
+        tool = GrantTool(
+            "run_command",
+            policy=ToolCallPolicy(effects=frozenset({"command_read", "network"})),
+        )
+        chain = MiddlewareChain([
+            PolicyPermissionMiddleware("execute", policy=PermissionPolicy(), shared_state=shared_state),
+        ])
+
+        result = await chain.run(tool, {
+            "command": "python -m pytest",
+            "network_access": True,
+            "approval_rationale": "Run tests before reporting completion.",
+            "approval_expected_outcome": "The test command will execute with network access if needed.",
+        })
+        requests = approval_store.list("session-a")
+
+        assert result == "ok"
+        assert observed == [{"command": "python -m pytest", "network_access": True}]
+        assert requests[0].rationale == "Run tests before reporting completion."
+        assert requests[0].expected_outcome == "The test command will execute with network access if needed."
+        assert requests[0].arguments_hash == approval_arguments_hash(
+            "run_command",
+            {"command": "python -m pytest", "network_access": True},
+        )
 
     @pytest.mark.asyncio
     async def test_approved_call_requires_stored_effect_coverage(self, temp_dir):

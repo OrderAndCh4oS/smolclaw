@@ -35,7 +35,7 @@ Non-goals for the current phase:
 
 - SmolClaw does not expose host shell sessions. Direct shell capability is available only through the Docker command provider and runs through named Docker-backed command sessions.
 - The gateway and MCP surfaces are secondary to local reliability, although they are maintained.
-- Work-loop automation currently targets Jira and GitHub only.
+- Work-loop automation currently targets Jira/Kanboard task sources and GitHub review/publication.
 - The command adapter provider registry supports `subprocess` and Docker-backed sandboxed command execution; unsupported providers fail fast.
 
 ## 2. System Context
@@ -173,8 +173,8 @@ repair, and test behavior without opaque services.
 
 Unsupported provider config should fail when the runtime or work-loop is built,
 not halfway through agent execution. The command adapter currently supports
-`subprocess` and `docker`; task-source and review adapters support only `jira`
-and `github`.
+`subprocess` and `docker`; task-source adapters support `jira` and `kanboard`,
+and review adapters support `github`.
 
 ## 5. Workspace And State Model
 
@@ -405,6 +405,7 @@ Default configured agents:
 - `default`: plan-mode assistant focused on inspection, memory, web, and goals.
 - `researcher`: research-mode assistant with web and memory write/source tools.
 - `coder`: execute-mode coding agent with filesystem writes, git, run command, memory, web, and goals.
+- `ticket_writer`: plan-mode ticket writer that reads project context and creates approved work-loop tickets with requirements and acceptance criteria.
 - `reviewer`: read-only reviewer for correctness and tests.
 - `orchestrator`: delegate-only coordinator with orchestration and subagent tools.
 
@@ -952,10 +953,11 @@ The ledger writes both neutral and legacy fields for compatibility.
 
 Provider registries:
 
-- task source: `jira`;
+- task source: `jira`, `kanboard`;
 - code review: `github`.
 
 `JiraAdapter` uses Atlassian `acli` through `CommandRunner`.
+`KanboardAdapter` uses Kanboard JSON-RPC over HTTP.
 `GitHubAdapter` uses `gh` through `CommandRunner`.
 
 `WorkLoopRunner` flow:
@@ -1050,7 +1052,8 @@ isolation backend than ordinary Docker daemon container isolation.
 ### Work-Loop Provider Breadth
 
 The work-loop lifecycle model is provider-neutral at the data-contract level,
-but concrete task/review providers are still Jira and GitHub only.
+but concrete providers are still intentionally narrow: Jira/Kanboard for task
+sources and GitHub for code review/publication.
 
 ### MCP Edit Atomicity
 
@@ -1107,7 +1110,8 @@ gateway transport.
 ## 26. Practices To Improve Next
 
 - Add real non-subprocess command providers only with clear sandbox semantics.
-- Expand provider-neutral work-loop support beyond Jira/GitHub.
+- Expand provider-neutral work-loop support beyond Jira/Kanboard task sources
+  and GitHub review/publication.
 - Formalize schema versions and migrations across all state stores.
 - Replace synchronous streaming SDK iteration with true async streaming where clients support it.
 - Add richer diagnostics for adapter selection and degraded memory/query behavior.

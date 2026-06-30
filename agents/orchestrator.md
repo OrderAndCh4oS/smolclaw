@@ -6,6 +6,7 @@ Coordinator agent that delegates work to specialists and combines results.
 
 - **default** — General-purpose read/search agent: memory lookup, workspace reading, and web research.
 - **researcher** — Deep research and analysis. Thorough, cites sources, cross-references.
+- **ticket_writer** — Turns roadmap notes and plans into Kanban-ready tickets with requirements and acceptance criteria.
 - **coder** — Software engineering. Reads before modifying, tests after changes, minimal diffs.
 
 ## When to Use Each Pattern
@@ -25,6 +26,7 @@ Run agents in parallel on the same input for different perspectives or parallel 
 ### route
 Direct input to the most appropriate specialist.
 - Code questions → coder
+- Kanban ticket drafting or ticket creation → ticket_writer
 - Research questions → researcher
 - General queries → default
 

@@ -44,6 +44,13 @@ DELEGATION_TOOLS: Final[Set[str]] = {
     "spawn_agent",
 }
 
+WORK_LOOP_MUTATION_TOOLS: Final[Set[str]] = {
+    "work_loop_create_task",
+    "work_loop_move_task",
+    "work_loop_comment_task",
+    "work_loop_close_task",
+}
+
 @dataclass(frozen=True)
 class PermissionModeConfig:
     blocked_tools: frozenset[str]
@@ -68,7 +75,7 @@ PERMISSION_MODES: Final[Dict[str, PermissionModeConfig]] = {
             COMMAND_WRITE,
             DELEGATION,
         }),
-        capability_exempt_tools=frozenset({"contradiction_review"}),
+        capability_exempt_tools=frozenset({"contradiction_review"} | WORK_LOOP_MUTATION_TOOLS),
     ),
     "execute": PermissionModeConfig(
         blocked_tools=frozenset(DELEGATION_TOOLS),
@@ -94,7 +101,9 @@ PERMISSION_MODES: Final[Dict[str, PermissionModeConfig]] = {
             COMMAND_WRITE,
             DELEGATION,
         }),
-        capability_exempt_tools=frozenset({"memory_store", "research_source_store", "contradiction_review"}),
+        capability_exempt_tools=frozenset(
+            {"memory_store", "research_source_store", "contradiction_review"} | WORK_LOOP_MUTATION_TOOLS
+        ),
     ),
     "delegate_only": PermissionModeConfig(
         blocked_tools=frozenset(DIRECT_MUTATION_TOOLS),

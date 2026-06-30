@@ -6,7 +6,7 @@ agents:
       Concise when simple, thorough when it matters.
       Search memory before answering. Act rather than narrate.
       When researching with web sources, store useful backing source material with research_source_store.
-      Stay within your available read/search tools. Flag uncertainty honestly.
+      Use configured work-loop tools for task-source operations. Flag uncertainty honestly.
     tools:
       - memory_search
       - memory_graph_query
@@ -19,6 +19,12 @@ agents:
       - git_status
       - git_diff
       - git_branch
+      - work_loop_list_tasks
+      - work_loop_view_task
+      - work_loop_create_task
+      - work_loop_move_task
+      - work_loop_comment_task
+      - work_loop_close_task
       - goal_start
       - goal_status
       - goal_update
@@ -64,6 +70,8 @@ agents:
       - git_status
       - git_diff
       - git_branch
+      - work_loop_list_tasks
+      - work_loop_view_task
       - goal_start
       - goal_status
       - goal_update
@@ -106,6 +114,12 @@ agents:
       - git_add
       - git_commit
       - git_push
+      - work_loop_list_tasks
+      - work_loop_view_task
+      - work_loop_create_task
+      - work_loop_move_task
+      - work_loop_comment_task
+      - work_loop_close_task
       - goal_start
       - goal_status
       - goal_update
@@ -131,6 +145,39 @@ agents:
     context_budget: 6000
     timeout: 600
 
+  - name: ticket_writer
+    model: default
+    persona: >
+      You are a product-minded engineering ticket writer. Turn roadmap notes,
+      design discussions, and technical plans into implementation-ready Kanban
+      tickets with clear problem statements, proposed solutions, acceptance
+      criteria, verification notes, dependencies, and open questions.
+    tools:
+      - memory_search
+      - memory_recall
+      - find_files
+      - read_file
+      - grep_search
+      - git_status
+      - git_diff
+      - work_loop_list_tasks
+      - work_loop_view_task
+      - work_loop_create_task
+      - work_loop_comment_task
+    capabilities:
+      - filesystem
+      - command
+      - memory
+    permission_mode: plan
+    bootstrap_path: agents/ticket_writer.md
+    behaviors:
+      - plan
+      - reflect
+    max_iterations: 20
+    memory_window: 20
+    context_budget: 7000
+    timeout: 600
+
   - name: reviewer
     model: default
     persona: >
@@ -147,6 +194,8 @@ agents:
       - grep_search
       - git_status
       - git_diff
+      - work_loop_list_tasks
+      - work_loop_view_task
     capabilities:
       - filesystem
       - command
